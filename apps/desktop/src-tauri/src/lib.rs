@@ -94,6 +94,7 @@ pub fn run() {
             commands::send_clipboard,
             commands::delete_clip,
             commands::set_default_ttl,
+            commands::phone_pairing,
             commands::hide_spotlight,
             commands::open_settings,
         ])

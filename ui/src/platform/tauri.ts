@@ -19,6 +19,7 @@ export const tauriPlatform: Platform = {
   sendClipboard: (ttlSecs) => invoke("send_clipboard", { ttlSecs }),
   deleteClip: (id) => invoke("delete_clip", { id }),
   setDefaultTtl: (ttlSecs) => invoke("set_default_ttl", { ttlSecs }),
+  phonePairing: () => invoke("phone_pairing"),
   hideSpotlight: () => invoke("hide_spotlight"),
   openSettings: () => invoke("open_settings"),
   onSpotlightShown: (handler) => listen("spotlight-shown", handler),

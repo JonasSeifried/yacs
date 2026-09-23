@@ -432,3 +432,48 @@ async fn survives_restart() {
         0
     );
 }
+
+#[tokio::test]
+async fn serves_the_web_app_without_a_token() {
+    let app = app(&["--access-token", "s3cret"]).await;
+    let res = app.get("/").await;
+    let built = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../ui/dist/web/index.html")
+        .exists();
+    // CI's Rust job doesn't build the UI; then the page explains what's missing.
+    if !built {
+        assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(String::from_utf8_lossy(&res.body).contains("build:web"));
+    } else {
+        assert_eq!(res.status, StatusCode::OK);
+        assert_eq!(res.headers[header::CONTENT_TYPE], "text/html");
+        assert_eq!(res.headers[header::CACHE_CONTROL], "no-cache");
+        let csp = res.headers[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap();
+        assert!(
+            csp.contains("script-src 'self' 'wasm-unsafe-eval'"),
+            "{csp}"
+        );
+        assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+        assert_eq!(res.headers[header::REFERRER_POLICY], "no-referrer");
+    }
+
+    assert_eq!(
+        app.get("/assets/missing.js").await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        app.get("/../Cargo.toml").await.status,
+        StatusCode::NOT_FOUND
+    );
+    let share = app.post("/share", vec![]).await;
+    assert_eq!(share.status, StatusCode::SEE_OTHER);
+    assert_eq!(share.headers[header::LOCATION], "/");
+
+    // The API still wants the token.
+    assert_eq!(
+        app.get("/api/v1/config").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}

@@ -6,6 +6,8 @@
     "desktop": "pnpm --filter @yacs/desktop tauri dev",
     "desktop:build": "pnpm --filter @yacs/desktop tauri build",
     "ui:check": "pnpm --filter @yacs/ui check",
-    "ui:test": "pnpm --filter @yacs/ui test"
+    "ui:test": "pnpm --filter @yacs/ui test",
+    "web": "pnpm --filter @yacs/ui wasm && pnpm --filter @yacs/ui dev",
+    "web:build": "pnpm --filter @yacs/ui wasm && pnpm --filter @yacs/ui build:web"
   }
 }

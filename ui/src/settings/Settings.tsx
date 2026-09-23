@@ -2,7 +2,7 @@ import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useState } 
 import { platform } from "../platform";
 import { acceleratorFromEvent, formatAccelerator } from "../shared/hotkey";
 import { ttlChoices } from "../shared/time";
-import type { Os, Preferences, ServerConfig, Status } from "../shared/types";
+import type { Os, PhonePairing, Preferences, ServerConfig, Status } from "../shared/types";
 
 export function Settings() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -51,12 +51,66 @@ function Paired({ status }: { status: Status }) {
         <span className="dot" /> Paired through <strong>{status.serverUrl}</strong>
       </p>
       {error && <p className="error">{error}</p>}
+      <PairPhone />
       <div className="actions">
         <button className="danger" onClick={unpair}>
           Unpair this device
         </button>
       </div>
     </>
+  );
+}
+
+function PairPhone() {
+  const [pairing, setPairing] = useState<PhonePairing | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Don't leave the key on screen when the window is hidden and shown again.
+  useEffect(() => {
+    const hide = () => document.visibilityState === "hidden" && setPairing(null);
+    document.addEventListener("visibilitychange", hide);
+    return () => document.removeEventListener("visibilitychange", hide);
+  }, []);
+
+  const show = async () => {
+    setError(null);
+    try {
+      setPairing(await platform.phonePairing());
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  if (!pairing) {
+    return (
+      <div className="phone">
+        <p className="hint">Scan a QR code with your phone's camera to open YACS there, already paired.</p>
+        {error && <p className="error">{error}</p>}
+        <button onClick={show}>Pair a phone…</button>
+      </div>
+    );
+  }
+  return (
+    <div className="phone">
+      <img className="qr" src={pairing.qr} alt="Pairing QR code" />
+      {pairing.warning && <p className="error">{pairing.warning}</p>}
+      <p className="hint">
+        Anyone who scans this code can read and send your clips. Only show it to your own devices.
+      </p>
+      <div className="actions">
+        <button
+          onClick={async () => {
+            await navigator.clipboard.writeText(pairing.url);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1500);
+          }}
+        >
+          {copied ? "Copied" : "Copy link"}
+        </button>
+        <button onClick={() => setPairing(null)}>Hide</button>
+      </div>
+    </div>
   );
 }
 

@@ -50,9 +50,31 @@ export interface Status {
   os: Os;
 }
 
+/** The desktop's "Pair a phone" QR code. */
+export interface PhonePairing {
+  url: string;
+  /** `data:image/svg+xml` URL. */
+  qr: string;
+  warning: string | null;
+}
+
 export interface Preferences {
   deviceName: string;
   hotkey: string;
   defaultTtlSecs: number;
   autostart: boolean;
+}
+
+/** `yacs_core::ClipItem`, as serde hands it to JS through `yacs-wasm`. */
+export type ClipItem =
+  | { Text: string }
+  | { Html: string }
+  | { Rtf: string }
+  | { Image: { mime: string; data: Uint8Array } };
+
+/** `yacs_core::Clip`: a decrypted clip with every format it carries. */
+export interface Clip {
+  created_at_ms: number;
+  device_name: string;
+  items: ClipItem[];
 }

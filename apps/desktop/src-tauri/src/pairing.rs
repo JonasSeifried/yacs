@@ -45,10 +45,80 @@ pub async fn connect(
     })
 }
 
+/// What the "Pair a phone" QR code encodes: the relay's web app with the
+/// pairing in the fragment, which browsers never send to the server.
+pub struct PhoneLink {
+    pub url: String,
+    /// Why the phone might not get far with this link, if there's a reason.
+    pub warning: Option<String>,
+}
+
+pub fn phone_link(server_url: &str, pairing: &Pairing, token: Option<&str>) -> PhoneLink {
+    let mut url = format!(
+        "{}/#pair={}",
+        server_url.trim_end_matches('/'),
+        pairing.to_secret()
+    );
+    if let Some(token) = token {
+        url.push_str("&token=");
+        url.extend(url::form_urlencoded::byte_serialize(token.as_bytes()));
+    }
+
+    let parsed = url::Url::parse(server_url).ok();
+    let host = parsed
+        .as_ref()
+        .and_then(|u| u.host_str())
+        .unwrap_or_default();
+    let local = matches!(host, "localhost" | "[::1]") || host.starts_with("127.");
+    let warning = if local {
+        Some(format!(
+            "Your phone can't reach {host}: it's this computer. Pair this computer with the relay's network address (its IP or domain) to pair a phone."
+        ))
+    } else if parsed.is_some_and(|u| u.scheme() == "http") {
+        Some("The relay uses http://, so the phone's browser won't allow Copy and Paste or installing the app. Put it behind HTTPS (see deploy/ in the repo).".into())
+    } else {
+        None
+    };
+    PhoneLink { url, warning }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::{PHRASE, relay};
+
+    fn pairing() -> Pairing {
+        Pairing {
+            channel_id: yacs_core::ChannelId::from_bytes([7; 32]),
+            key: yacs_core::ChannelKey::from_bytes([9; 32]),
+        }
+    }
+
+    #[test]
+    fn phone_link_carries_the_pairing_in_the_fragment() {
+        let link = phone_link("https://clip.example.com/", &pairing(), Some("s3cret &x"));
+        let secret = pairing().to_secret();
+        assert_eq!(
+            link.url,
+            format!("https://clip.example.com/#pair={secret}&token=s3cret+%26x")
+        );
+        assert_eq!(link.warning, None);
+        let (_, fragment) = link.url.split_once('#').unwrap();
+        assert!(!link.url[..link.url.len() - fragment.len()].contains(&secret));
+
+        let link = phone_link("http://192.168.0.5:8080", &pairing(), None);
+        assert_eq!(link.url, format!("http://192.168.0.5:8080/#pair={secret}"));
+        assert!(link.warning.unwrap().contains("HTTPS"));
+
+        for local in [
+            "http://127.0.0.1:8080",
+            "http://localhost:8080",
+            "http://[::1]:8080",
+        ] {
+            let warning = phone_link(local, &pairing(), None).warning.unwrap();
+            assert!(warning.contains("can't reach"), "{local}: {warning}");
+        }
+    }
 
     #[tokio::test]
     async fn connects_and_normalizes_input() {

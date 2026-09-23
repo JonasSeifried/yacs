@@ -1,4 +1,4 @@
-import type { ClipMeta, ClipView, Preferences, ServerConfig, Status } from "../shared/types";
+import type { ClipMeta, ClipView, PhonePairing, Preferences, ServerConfig, Status } from "../shared/types";
 import { tauriPlatform } from "./tauri";
 
 /**
@@ -23,6 +23,8 @@ export interface Platform {
   sendClipboard(ttlSecs: number): Promise<ClipView>;
   deleteClip(id: string): Promise<void>;
   setDefaultTtl(ttlSecs: number): Promise<void>;
+  /** Contains the channel key: only fetch it when the user asks to see it. */
+  phonePairing(): Promise<PhonePairing>;
   hideSpotlight(): Promise<void>;
   openSettings(): Promise<void>;
   /** Returns an unsubscribe function. */

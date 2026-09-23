@@ -4,7 +4,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "wasm": "wasm-pack build ../crates/yacs-wasm --target web --release --out-dir ../../ui/src/wasm --out-name yacs --no-pack",
+    "build": "tsc --noEmit && vite build --mode desktop && vite build --mode web",
+    "build:desktop": "vite build --mode desktop",
+    "build:web": "vite build --mode web",
     "check": "tsc --noEmit",
     "test": "vitest run"
   },

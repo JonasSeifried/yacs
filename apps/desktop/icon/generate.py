@@ -67,6 +67,17 @@ def app_icon(x, y, size=1024):
     return bytes([round(c) for c in rgb] + [round(255 * tile)])
 
 
+def web_icon(x, y, size=512):
+    # Full-bleed and opaque: Android masks it to its own shape (the glyph stays
+    # inside the 80% safe zone) and iOS would show transparency as black.
+    t = (x + y) / (2 * size)
+    top, bottom = (79, 70, 229), (124, 58, 237)
+    bg = [a + (b - a) * t for a, b in zip(top, bottom)]
+    glyph = clipboard(x, y, size)
+    rgb = [c + (255 - c) * glyph for c in bg]
+    return bytes([round(c) for c in rgb] + [255])
+
+
 def tray_icon(x, y, size=44):
     # Template images: only alpha matters, macOS tints them for light/dark menu bars.
     glyph = clipboard(x, y, size * 1.25, ox=-size * 0.125, oy=-size * 0.16)
@@ -76,4 +87,6 @@ def tray_icon(x, y, size=44):
 if __name__ == "__main__":
     write_png(HERE / "icon.png", 1024, app_icon)
     write_png(HERE.parent / "src-tauri/icons/tray-template.png", 44, tray_icon)
-    print("wrote icon.png and src-tauri/icons/tray-template.png")
+    web = HERE.parents[2] / "ui/public/icons"
+    write_png(web / "icon-512.png", 512, web_icon)
+    print("wrote icon.png, src-tauri/icons/tray-template.png and ui/public/icons/icon-512.png")

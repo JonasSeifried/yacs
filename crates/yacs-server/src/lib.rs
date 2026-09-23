@@ -5,6 +5,7 @@ mod api;
 pub mod clock;
 mod config;
 pub mod store;
+mod web;
 
 use std::future::Future;
 use std::io;

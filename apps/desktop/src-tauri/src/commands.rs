@@ -247,6 +247,44 @@ pub fn set_default_ttl(app: AppHandle, state: State<'_, AppState>, ttl_secs: u64
     Ok(())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhonePairing {
+    url: String,
+    /// `data:image/svg+xml` URL of the QR code.
+    qr: String,
+    warning: Option<String>,
+}
+
+/// For the "Pair a phone" QR code. Only shown on request: it's the key.
+#[tauri::command]
+pub fn phone_pairing(state: State<'_, AppState>) -> CmdResult<PhonePairing> {
+    let client = client(&state)?;
+    let server_url = state
+        .settings()
+        .server_url
+        .clone()
+        .ok_or("this device isn't paired yet")?;
+    let link = pairing::phone_link(&server_url, client.pairing(), client.token());
+    let svg = qrcode::QrCode::new(&link.url)
+        .map_err(|e| e.to_string())?
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(240, 240)
+        .quiet_zone(true)
+        .build();
+    let qr = format!(
+        "data:image/svg+xml,{}",
+        url::form_urlencoded::byte_serialize(svg.as_bytes())
+            .collect::<String>()
+            .replace('+', "%20")
+    );
+    Ok(PhonePairing {
+        url: link.url,
+        qr,
+        warning: link.warning,
+    })
+}
+
 #[tauri::command]
 pub fn hide_spotlight(app: AppHandle) {
     windows::hide_spotlight(&app);

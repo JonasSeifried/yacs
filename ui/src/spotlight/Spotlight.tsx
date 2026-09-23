@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { platform } from "../platform";
+import { EAGER_BYTES, EAGER_CONCURRENCY, runLimited } from "../shared/async";
 import { clipTitle, previewDocument, previewKind } from "../shared/clip";
 import { guessOs, modKey } from "../shared/hotkey";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
@@ -9,9 +10,6 @@ type List = { state: "loading" } | { state: "ok"; clips: ClipMeta[] } | { state:
 type Loaded = { state: "loading" } | { state: "ok"; clip: ClipView } | { state: "gone" } | { state: "error"; message: string };
 type Notice = { kind: "ok" | "error"; text: string };
 
-/** Clips up to this size are decrypted right away so their rows show a title; bigger ones when selected. */
-const EAGER_BYTES = 256 * 1024;
-const EAGER_CONCURRENCY = 4;
 /** How long "Sent" stays up before Spotlight gets out of the way. */
 const SENT_HIDE_MS = 5000;
 
@@ -420,16 +418,4 @@ function GearIcon() {
       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
     </svg>
   );
-}
-
-/** Run async tasks with at most `limit` in flight. */
-function runLimited(tasks: (() => Promise<unknown>)[], limit: number) {
-  const queue = [...tasks];
-  const worker = async (): Promise<void> => {
-    const task = queue.shift();
-    if (!task) return;
-    await task().catch(() => {});
-    return worker();
-  };
-  for (let i = 0; i < limit; i++) worker();
 }

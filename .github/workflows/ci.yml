@@ -30,19 +30,30 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-bindgen-cli@${{ env.WASM_BINDGEN_VERSION }}
-      - name: Test vectors under WASM
-        run: cargo test -p yacs-core --target wasm32-unknown-unknown --test vectors
+      - name: Test vectors and the PWA bindings under WASM
+        run: |
+          cargo test -p yacs-core --target wasm32-unknown-unknown --test vectors
+          cargo test -p yacs-wasm --target wasm32-unknown-unknown
 
+  # The PWA imports yacs-wasm, so the UI needs Rust to type-check and build.
   ui:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @yacs/ui wasm
       - run: pnpm ui:check
       - run: pnpm ui:test
       - run: pnpm --filter @yacs/ui build
@@ -61,7 +72,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @yacs/ui build
+      - run: pnpm --filter @yacs/ui build:desktop
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

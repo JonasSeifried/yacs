@@ -6,8 +6,8 @@
   "build": {
     "beforeDevCommand": "pnpm --filter @yacs/ui dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm --filter @yacs/ui build",
-    "frontendDist": "../../../ui/dist"
+    "beforeBuildCommand": "pnpm --filter @yacs/ui build:desktop",
+    "frontendDist": "../../../ui/dist/desktop"
   },
   "app": {
     "macOSPrivateApi": true,

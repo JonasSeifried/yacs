@@ -2,19 +2,31 @@ import { resolve } from "node:path";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-// One page per window. Tauri loads them from the dev server in `tauri dev`
-// and from dist/ in release builds.
-export default defineConfig({
-  plugins: [react()],
-  clearScreen: false,
-  server: { port: 1420, strictPort: true },
-  build: {
-    target: "es2022",
-    rollupOptions: {
-      input: {
-        spotlight: resolve(import.meta.dirname, "spotlight.html"),
-        settings: resolve(import.meta.dirname, "settings.html"),
+const page = (name: string) => resolve(import.meta.dirname, `${name}.html`);
+
+// Two builds from one codebase:
+// - `--mode desktop`: the Tauri windows, loaded by the desktop app (dist/desktop).
+// - `--mode web`: the PWA the relay serves at `/` (dist/web), with `public/`
+//   (manifest, service worker, icons).
+// `vite` (dev) serves every page and proxies the API to a local relay.
+export default defineConfig(({ mode }) => {
+  const web = mode === "web";
+  return {
+    plugins: [react()],
+    clearScreen: false,
+    publicDir: mode === "desktop" ? false : "public",
+    server: {
+      port: 1420,
+      strictPort: true,
+      proxy: { "/api": process.env.YACS_DEV_RELAY ?? "http://127.0.0.1:8080" },
+    },
+    build: {
+      target: "es2022",
+      outDir: web ? "dist/web" : "dist/desktop",
+      emptyOutDir: true,
+      rollupOptions: {
+        input: web ? { index: page("index") } : { spotlight: page("spotlight"), settings: page("settings") },
       },
     },
-  },
+  };
 });

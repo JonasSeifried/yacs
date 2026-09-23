@@ -1,0 +1,21 @@
+[package]
+name = "yacs-wasm"
+description = "yacs-core for the browser (PWA), via wasm-bindgen"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# Not used directly: selects the browser's crypto.getRandomValues for yacs-core.
+getrandom = { version = "0.4", features = ["wasm_js"] }
+serde-wasm-bindgen = "0.6.5"
+wasm-bindgen = "0.2.128"
+yacs-core = { path = "../yacs-core" }
+
+[dev-dependencies]
+js-sys = "0.3.105"
+wasm-bindgen-test = "0.3"

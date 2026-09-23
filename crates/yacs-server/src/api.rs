@@ -49,6 +49,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .nest("/api/v1", api)
         .route("/healthz", get(|| async { "ok" }))
+        .merge(crate::web::routes())
         .with_state(state)
         .layer(
             // Log the route pattern, not the URI: the URI contains the channel id.

@@ -165,3 +165,21 @@ button.danger {
   border-radius: 50%;
   background: var(--ok);
 }
+
+.phone {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 4px 0 8px;
+}
+
+.qr {
+  width: 220px;
+  height: 220px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid var(--border);
+  /* Crisp modules when scaled. */
+  image-rendering: pixelated;
+}

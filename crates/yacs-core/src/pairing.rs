@@ -148,7 +148,37 @@ impl Pairing {
             key: ChannelKey(key),
         })
     }
+
+    /// The derived pairing as one string, `v1.<channel id>.<key>` (base64url),
+    /// for pairing links: a device given this skips the phrase and Argon2id.
+    /// As secret as the phrase itself.
+    pub fn to_secret(&self) -> String {
+        format!(
+            "{SECRET_PREFIX}{}.{}",
+            self.channel_id,
+            URL_SAFE_NO_PAD.encode(self.key.0)
+        )
+    }
+
+    pub fn from_secret(secret: &str) -> Result<Self> {
+        let rest = secret
+            .strip_prefix(SECRET_PREFIX)
+            .ok_or(Error::InvalidSecret)?;
+        let (channel_id, key) = rest.split_once('.').ok_or(Error::InvalidSecret)?;
+        let channel_id = channel_id.parse().map_err(|_| Error::InvalidSecret)?;
+        let mut bytes = URL_SAFE_NO_PAD
+            .decode(key)
+            .map_err(|_| Error::InvalidSecret)?;
+        let key = <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| Error::InvalidSecret);
+        bytes.zeroize();
+        Ok(Self {
+            channel_id,
+            key: ChannelKey(key?),
+        })
+    }
 }
+
+const SECRET_PREFIX: &str = "v1.";
 
 #[cfg(test)]
 mod tests {
@@ -185,6 +215,35 @@ mod tests {
             Err(Error::InvalidChannelId)
         );
         assert_eq!("AAAA".parse::<ChannelId>(), Err(Error::InvalidChannelId));
+    }
+
+    #[test]
+    fn secret_round_trips_and_rejects_garbage() {
+        let pairing = Pairing {
+            channel_id: ChannelId::from_bytes([7; 32]),
+            key: ChannelKey::from_bytes([9; 32]),
+        };
+        let secret = pairing.to_secret();
+        assert_eq!(secret.len(), 3 + 43 + 1 + 43);
+        assert_eq!(Pairing::from_secret(&secret), Ok(pairing));
+
+        let (channel, key) = secret[3..].split_once('.').unwrap();
+        for bad in [
+            "",
+            "v1.",
+            &secret[3..],
+            &format!("v2.{channel}.{key}"),
+            &format!("v1.{channel}"),
+            &format!("v1.{channel}.{}", &key[..40]),
+            &format!("v1.{}.{key}", &channel[..40]),
+            &format!("v1.{channel}.{key}.extra"),
+        ] {
+            assert_eq!(
+                Pairing::from_secret(bad),
+                Err(Error::InvalidSecret),
+                "{bad}"
+            );
+        }
     }
 
     #[test]

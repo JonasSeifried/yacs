@@ -71,6 +71,14 @@ impl Client {
         })
     }
 
+    pub fn pairing(&self) -> &Pairing {
+        &self.pairing
+    }
+
+    pub fn token(&self) -> Option<&str> {
+        self.token.as_deref()
+    }
+
     pub async fn config(&self) -> Result<ServerConfig> {
         let res = self.send(self.http.get(self.config_url.clone())).await?;
         res.json().await.map_err(|_| Error::BadResponse)
