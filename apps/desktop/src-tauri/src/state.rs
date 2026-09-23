@@ -24,7 +24,7 @@ impl AppState {
     pub fn load(config_dir: &Path, keychain_service: &str) -> Self {
         let settings_file = SettingsFile::new(config_dir);
         let settings = settings_file.load();
-        let secrets = Secrets::new(keychain_service);
+        let secrets = Secrets::for_build(keychain_service, config_dir);
 
         let client = match (&settings.server_url, secrets.load()) {
             (Some(url), Ok(Some(stored))) => match Client::new(url, stored.token, stored.pairing) {

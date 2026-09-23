@@ -62,7 +62,7 @@ root   ── HKDF-SHA256(info="yacs/v1/channel")                  → channel_i
 root   ── HKDF-SHA256(info="yacs/v1/key")                      → enc_key (32 B)
 ```
 - The salt is fixed on purpose: both devices must derive the same values without talking to each other.
-- The key is derived once at pairing time and stored: macOS Keychain / Windows Credential Manager via the `keyring` crate, IndexedDB on the PWA. The Argon2 cost is paid only once.
+- The key is derived once at pairing time and stored: macOS Keychain / Windows Credential Manager via the `keyring` crate, `localStorage` in the PWA. The Argon2 cost is paid only once. Debug builds of the desktop app use `dev-pairing.json` (mode 0600) in the app's config dir instead, because every rebuild of an unsigned binary makes the keychain ask again.
 - Parameters are versioned (`v1`). Every client must use exactly the same parameters, so they are enforced by shared test vectors.
 - The default phrase is generated (6 words from the EFF wordlist, about 77 bits). Users can still type their own.
 
