@@ -31,7 +31,58 @@ export function Settings() {
         <h2>Preferences</h2>
         <PreferencesForm status={status} serverConfig={serverConfig} />
       </section>
+      <section className="card">
+        <h2>Updates</h2>
+        <Updates status={status} />
+      </section>
     </main>
+  );
+}
+
+function Updates({ status }: { status: Status }) {
+  const [state, setState] = useState<"idle" | "checking" | "current" | "installing">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  const check = async () => {
+    setState("checking");
+    setError(null);
+    try {
+      setState((await platform.checkUpdate()) ? "idle" : "current");
+    } catch (e) {
+      setError(String(e));
+      setState("idle");
+    }
+  };
+  const install = async () => {
+    setState("installing");
+    setError(null);
+    try {
+      await platform.installUpdate(); // restarts on success
+    } catch (e) {
+      setError(String(e));
+      setState("idle");
+    }
+  };
+
+  return (
+    <>
+      <p className="hint">
+        YACS {status.version}
+        {state === "current" && " is up to date."}
+      </p>
+      {error && <p className="error">{error}</p>}
+      <div className="actions">
+        {status.update ? (
+          <button className="primary" onClick={install} disabled={state === "installing"}>
+            {state === "installing" ? "Installing…" : `Update to ${status.update} and restart`}
+          </button>
+        ) : (
+          <button onClick={check} disabled={state === "checking"}>
+            {state === "checking" ? "Checking…" : "Check for updates"}
+          </button>
+        )}
+      </div>
+    </>
   );
 }
 

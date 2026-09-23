@@ -12,6 +12,7 @@ mod state;
 #[cfg(test)]
 mod test_support;
 mod tray;
+mod update;
 mod windows;
 
 use tauri::{Manager, RunEvent};
@@ -52,6 +53,7 @@ pub fn run() {
                 })
                 .build(),
         )
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             None,
@@ -65,6 +67,7 @@ pub fn run() {
             let hotkey = state.settings().hotkey.clone();
             let paired = state.client().is_some();
             app.manage(state);
+            app.manage(update::Updates::default());
 
             windows::create(app.handle())?;
             tray::create(app.handle())?;
@@ -78,6 +81,7 @@ pub fn run() {
             if !paired {
                 windows::show_settings(app.handle());
             }
+            update::spawn_checks(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -95,6 +99,8 @@ pub fn run() {
             commands::delete_clip,
             commands::set_default_ttl,
             commands::phone_pairing,
+            commands::check_update,
+            commands::install_update,
             commands::hide_spotlight,
             commands::open_settings,
         ])

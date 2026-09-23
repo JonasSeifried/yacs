@@ -25,6 +25,10 @@ export interface Platform {
   setDefaultTtl(ttlSecs: number): Promise<void>;
   /** Contains the channel key: only fetch it when the user asks to see it. */
   phonePairing(): Promise<PhonePairing>;
+  /** Resolves to the new version, if there is one. */
+  checkUpdate(): Promise<string | null>;
+  /** Restarts the app when it succeeds. */
+  installUpdate(): Promise<void>;
   hideSpotlight(): Promise<void>;
   openSettings(): Promise<void>;
   /** Returns an unsubscribe function. */

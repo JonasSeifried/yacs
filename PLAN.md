@@ -129,9 +129,9 @@ GET    /*                                             embedded PWA (rust-embed)
   | `YACS_MAX_CLIPS_PER_CHANNEL` | `50` |
   | `YACS_MAX_DISK` | `2GB` |
   | `YACS_ACCESS_TOKEN` | unset (open) |
-- **TLS:** terminate at a reverse proxy (Caddy example in `deploy/`).
+- **TLS:** terminate at a reverse proxy. `deploy/compose.yaml` runs the relay behind Caddy, which gets the certificate; its Caddyfile keeps the access log off because paths contain channel ids.
 - **No CORS needed.** The PWA is served from the same origin, and desktop makes its requests from Rust.
-- **Container:** multi-stage Docker build producing a static musl binary on a distroless or scratch base.
+- **Container:** `deploy/Dockerfile`: WASM (wasm-pack) → PWA (Vite) → static musl relay with the PWA embedded → `distroless/static:nonroot`, about 14 MB.
 
 ## 5. Desktop (Tauri v2, macOS + Windows)
 
@@ -172,7 +172,9 @@ GET    /*                                             embedded PWA (rust-embed)
 
 **Tray & lifecycle:** menu bar/tray icon with Open, Settings and Quit. Closing windows never quits. A second launch opens Settings, and `yacs-desktop --toggle` toggles Spotlight in the running instance, so Linux/Wayland users can bind that command to a desktop shortcut.
 
-**Distribution:** GitHub Actions + `tauri-action`. macOS universal build, signed and notarized (Apple account available). Windows MSI/NSIS, signed via Azure Trusted Signing, otherwise users see SmartScreen warnings.
+**Distribution:** `.github/workflows/release.yml` runs on a `v*` tag: `tauri-action` builds a macOS universal app and Windows MSI/NSIS into a *draft* release, and the relay image goes to `ghcr.io/jonasseifried/yacs` (amd64 + arm64). macOS is signed and notarized, and Windows is signed via Azure Trusted Signing, when those secrets exist; otherwise the builds are unsigned (Gatekeeper / SmartScreen warn).
+
+**Updates:** `tauri-plugin-updater` against `releases/latest/download/latest.json`. Updates must be signed with the release key (`plugins.updater.pubkey`), and `requireSignedVersion` blocks downgrades to older signed releases. Release builds check 30 s after launch and every 12 h. An available update shows in the tray menu and in Settings, and installs only when the user clicks it. Updater artifacts are enabled only in CI, where the private key is.
 
 ## 6. Mobile
 
@@ -208,7 +210,7 @@ This reorders the original roadmap: crypto and the protocol come first, so the U
 | **1: Server + CLI** ✅ | `yacs-server`, `yacs-client`, `yacs-cli` | Routes, per-clip TTL + clamping, history + per-channel cap, disk store, reaper, limits, token, config; `yacs send --ttl 1h` / `yacs list` / `yacs recv [id]` for text + images | Two terminals sync clips end-to-end through a local server; expiry and eviction covered by integration tests |
 | **2: Desktop shell** ✅ | Tauri | Tray, hidden Spotlight window, global hotkey, single instance, autostart, pairing + settings UI (incl. 6-word EFF phrase generator in `yacs-core`), keyring | Hotkey opens/closes Spotlight reliably on macOS + Windows |
 | **3: Desktop clipboard** ✅ (verified Mac ↔ PC) | Core UX | `clipboard-rs` multi-format read/write, history list + keyboard navigation, Ctrl+C / Ctrl+V / Del, TTL dropdown, sanitized preview | Rich text from Word/browser and screenshots round-trip between Mac and PC |
-| **4: PWA + release (v1.0)** | Mobile + ship | `yacs-wasm`, mobile UI, embedded PWA, QR pairing, Dockerfile + compose/Caddy, signed desktop builds, updater | A phone can pair via QR and copy/send; `docker compose up` works on a VPS |
+| **4: PWA + release (v1.0)** 🚧 (built; waiting on the release key and a phone test over HTTPS) | Mobile + ship | `yacs-wasm`, mobile UI, embedded PWA, QR pairing, Dockerfile + compose/Caddy, signed desktop builds, updater | A phone can pair via QR and copy/send; `docker compose up` works on a VPS |
 | **5: v1.x** | Breadth | Linux (X11 + CLI fallback for Wayland), SSE live updates (history refreshes while Spotlight is open) | |
 | **6: v2.0** | Native + big files | Tauri mobile with native clipboard plugins + share extensions; P2P large-file transfer | |
 

@@ -48,6 +48,9 @@ export interface Status {
   defaultTtlSecs: number;
   autostart: boolean;
   os: Os;
+  version: string;
+  /** A newer release that's ready to install. */
+  update: string | null;
 }
 
 /** The desktop's "Pair a phone" QR code. */

@@ -1,0 +1,144 @@
+name: Release
+
+# Push a tag like v1.0.0 (matching the version in tauri.conf.json and
+# Cargo.toml). Builds the desktop apps into a draft GitHub release and pushes
+# the relay image to ghcr.io. Review the draft, then publish it: the desktop
+# updater only sees published releases.
+#
+# Secrets (Settings → Secrets and variables → Actions):
+#   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD  required: signs updates
+#   APPLE_CERTIFICATE (base64 .p12), APPLE_CERTIFICATE_PASSWORD,
+#   APPLE_SIGNING_IDENTITY, APPLE_ID, APPLE_PASSWORD (app-specific), APPLE_TEAM_ID
+#                                                                   macOS signing + notarization
+#   AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID,
+#   AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT, AZURE_SIGNING_PROFILE
+#                                                                   Windows signing (Azure Trusted Signing)
+# Without the Apple or Azure secrets the apps are built unsigned, which works
+# but makes macOS Gatekeeper and Windows SmartScreen warn on first launch.
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  desktop:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --target universal-apple-darwin
+          - os: windows-latest
+            args: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
+
+      - name: Release-only config
+        shell: bash
+        env:
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+        run: |
+          # Updater artifacts need the private key, which only CI has, so
+          # they're enabled here rather than in tauri.conf.json.
+          if [ "$RUNNER_OS" = Windows ] && [ -n "$AZURE_SIGNING_ENDPOINT" ]; then
+            cargo install trusted-signing-cli --locked
+            sign="trusted-signing-cli -e $AZURE_SIGNING_ENDPOINT -a $AZURE_SIGNING_ACCOUNT -c $AZURE_SIGNING_PROFILE -d YACS %1"
+            jq -n --arg sign "$sign" '{bundle: {createUpdaterArtifacts: true, windows: {signCommand: $sign}}}' > apps/desktop/src-tauri/tauri.release.json
+          else
+            echo '{"bundle": {"createUpdaterArtifacts": true}}' > apps/desktop/src-tauri/tauri.release.json
+          fi
+          cat apps/desktop/src-tauri/tauri.release.json
+
+      # Only secrets that are set: an empty APPLE_CERTIFICATE would make the
+      # build try to sign with it and fail, instead of building unsigned.
+      - name: Signing secrets
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          if grep -q REPLACE_WITH_UPDATER_PUBLIC_KEY apps/desktop/src-tauri/tauri.conf.json; then
+            echo "::error::Put the updater public key into plugins.updater.pubkey in tauri.conf.json."
+            exit 1
+          fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set; updates can't be signed."
+            exit 1
+          fi
+          for name in TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
+            APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID \
+            AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID; do
+            value="${!name}"
+            if [ -n "$value" ]; then
+              { echo "$name<<__YACS_EOF__"; echo "$value"; echo "__YACS_EOF__"; } >> "$GITHUB_ENV"
+            fi
+          done
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: YACS ${{ github.ref_name }}
+          releaseBody: See the assets below. The relay image is ghcr.io/jonasseifried/yacs (tags: the version, and latest).
+          releaseDraft: true
+          includeUpdaterJson: true
+          args: ${{ matrix.args }} --config src-tauri/tauri.release.json
+
+  relay-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

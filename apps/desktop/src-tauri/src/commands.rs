@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Response;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 use yacs_client::Client;
 use yacs_core::DEFAULT_PHRASE_WORDS;
@@ -14,6 +14,7 @@ use yacs_core::api::{ClipMeta, ServerConfig};
 
 use crate::clips::{self, ClipView, Entry};
 use crate::state::AppState;
+use crate::update::{self, Updates};
 use crate::{clipboard, hotkey, pairing, windows};
 
 type CmdResult<T> = Result<T, String>;
@@ -30,6 +31,9 @@ pub struct Status {
     autostart: bool,
     /// `macos`, `windows`, `linux`: lets the UI show ⌘ vs Ctrl.
     os: &'static str,
+    version: String,
+    /// A newer release that's ready to install.
+    update: Option<String>,
 }
 
 #[tauri::command]
@@ -44,6 +48,8 @@ pub fn status(app: AppHandle, state: State<'_, AppState>) -> Status {
         default_ttl_secs: settings.default_ttl_secs,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         os: std::env::consts::OS,
+        version: app.package_info().version.to_string(),
+        update: app.state::<Updates>().available(),
     }
 }
 
@@ -283,6 +289,18 @@ pub fn phone_pairing(state: State<'_, AppState>) -> CmdResult<PhonePairing> {
         qr,
         warning: link.warning,
     })
+}
+
+/// Returns the new version, if there is one.
+#[tauri::command]
+pub async fn check_update(app: AppHandle) -> CmdResult<Option<String>> {
+    update::check(&app).await
+}
+
+/// Restarts the app on success, so it only ever returns an error.
+#[tauri::command]
+pub async fn install_update(app: AppHandle) -> CmdResult<()> {
+    update::install(&app).await
 }
 
 #[tauri::command]
