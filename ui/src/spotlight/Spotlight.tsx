@@ -12,9 +12,8 @@ type Notice = { kind: "ok" | "error"; text: string };
 /** Clips up to this size are decrypted right away so their rows show a title; bigger ones when selected. */
 const EAGER_BYTES = 256 * 1024;
 const EAGER_CONCURRENCY = 4;
-/** How long "Sent" / "Copied" stay up before Spotlight gets out of the way. */
-const SENT_HIDE_MS = 900;
-const COPIED_HIDE_MS = 5000;
+/** How long "Sent" stays up before Spotlight gets out of the way. */
+const SENT_HIDE_MS = 5000;
 
 export function Spotlight() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -25,8 +24,8 @@ export function Spotlight() {
   const [ttl, setTtl] = useState(15 * 60);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
-  /** Just copied: ⌘V now means "go back and paste", not "send it right back". */
-  const [copied, setCopied] = useState(false);
+  /** Just sent: another ⌘V would send the same clipboard again, so it closes instead. */
+  const [sent, setSent] = useState(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [now, setNow] = useState(Date.now());
   const requested = useRef(new Set<string>());
@@ -38,7 +37,7 @@ export function Spotlight() {
   }, []);
   const cancelHide = useCallback(() => {
     clearTimeout(hideTimer.current);
-    setCopied(false);
+    setSent(false);
   }, []);
 
   const clips = list.state === "ok" ? list.clips : [];
@@ -110,15 +109,13 @@ export function Spotlight() {
     setBusy(true);
     try {
       await platform.copyClip(selected.id);
-      setCopied(true);
-      setNotice({ kind: "ok", text: "Copied. Press esc to go back and paste it." });
-      hideAfter(COPIED_HIDE_MS);
+      platform.hideSpotlight(); // paste right away in the app that was in front
     } catch (e) {
       setNotice({ kind: "error", text: String(e) });
     } finally {
       setBusy(false);
     }
-  }, [selected, busy, hideAfter]);
+  }, [selected, busy]);
 
   const send = useCallback(async () => {
     if (busy) return;
@@ -132,6 +129,7 @@ export function Spotlight() {
       setList((l) => ({ state: "ok", clips: [clip.meta, ...(l.state === "ok" ? l.clips : [])] }));
       setSelectedId(id);
       setNotice({ kind: "ok", text: `Sent · expires in ${formatDuration(ttl * 1000)}` });
+      setSent(true);
       hideAfter(SENT_HIDE_MS);
     } catch (e) {
       setNotice({ kind: "error", text: String(e) });
@@ -159,7 +157,7 @@ export function Spotlight() {
       const key = e.key.toLowerCase();
       const handled = () => e.preventDefault();
 
-      if (e.key === "Escape" || (copied && mod && key === "v")) {
+      if (e.key === "Escape" || (sent && mod && key === "v")) {
         handled();
         platform.hideSpotlight();
         return;
@@ -199,7 +197,7 @@ export function Spotlight() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [os, status, clips, selected, choices, ttl, copied, copy, send, remove, changeTtl, cancelHide]);
+  }, [os, status, clips, selected, choices, ttl, sent, copy, send, remove, changeTtl, cancelHide]);
 
   // A click into the HTML preview moves focus into its iframe, where our keys
   // don't arrive. Take it straight back.
