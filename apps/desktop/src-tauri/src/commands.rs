@@ -191,16 +191,13 @@ pub async fn clip_image(state: State<'_, AppState>, id: String) -> CmdResult<Res
     Ok(Response::new(image.data.clone()))
 }
 
-/// Put every format of the clip on the clipboard, then get out of the way so
-/// it can be pasted into the app that was in front.
+/// Put every format of the clip on the clipboard.
 #[tauri::command]
-pub async fn copy_clip(app: AppHandle, state: State<'_, AppState>, id: String) -> CmdResult<()> {
+pub async fn copy_clip(state: State<'_, AppState>, id: String) -> CmdResult<()> {
     let entry = load(&state, &id).await?;
     tauri::async_runtime::spawn_blocking(move || clipboard::write(&entry.clip.items))
         .await
-        .map_err(|e| e.to_string())??;
-    windows::hide_spotlight(&app);
-    Ok(())
+        .map_err(|e| e.to_string())?
 }
 
 /// Encrypt and upload what's on the clipboard right now.

@@ -4,8 +4,11 @@
 //!
 //! Both are blocking calls: run them off the async runtime.
 
+use std::path::Path;
+
 use clipboard_rs::common::{RustImage, RustImageData};
 use clipboard_rs::{Clipboard, ClipboardContent, ClipboardContext, ContentFormat};
+use image::ImageFormat;
 use yacs_core::{ClipItem, Image};
 
 const PNG_MIME: &str = "image/png";
@@ -19,10 +22,22 @@ const NATIVE_PNG: &str = "PNG";
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const NATIVE_PNG: &str = "image/png";
 
+/// Image files larger than this aren't read in; the relay's limit is usually far lower.
+const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+
 pub fn read() -> Result<Vec<ClipItem>, String> {
     let ctx = context()?;
+    // A file copied in Finder or Explorer. Its clipboard entry also carries
+    // the file name as text and the file icon as an image, which are useless
+    // to the receiver: an image file is sent as that image, nothing else is.
     if ctx.has(ContentFormat::Files) {
-        return Err("Copied files can't be sent yet, only text, rich text and images.".into());
+        let files = ctx
+            .get_files()
+            .map_err(|e| format!("can't read the copied files: {e}"))?;
+        return match files.as_slice() {
+            [path] => read_image_file(Path::new(path), MAX_FILE_BYTES).map(|i| vec![ClipItem::Image(i)]),
+            _ => Err("Several files are copied. YACS can send one image file at a time; other files aren't supported yet.".into()),
+        };
     }
 
     let mut items = Vec::new();
@@ -69,6 +84,46 @@ fn read_image(ctx: &ClipboardContext) -> Option<Image> {
             tracing::warn!(error = %e, "can't read the clipboard image");
             None
         }
+    }
+}
+
+/// Formats every receiver can show (browsers included) are sent as they are;
+/// BMP and TIFF are converted to PNG.
+fn read_image_file(path: &Path, max_bytes: u64) -> Result<Image, String> {
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let metadata = std::fs::metadata(path).map_err(|e| format!("can't read {name}: {e}"))?;
+    if metadata.is_dir() {
+        return Err(format!(
+            "{name} is a folder. YACS can send image files, other files aren't supported yet."
+        ));
+    }
+    if metadata.len() > max_bytes {
+        return Err(format!(
+            "{name} is too large to send ({} MB max).",
+            max_bytes / 1_000_000
+        ));
+    }
+    let data = std::fs::read(path).map_err(|e| format!("can't read {name}: {e}"))?;
+    match image::guess_format(&data) {
+        Ok(
+            format @ (ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP),
+        ) => Ok(Image {
+            mime: format.to_mime_type().into(),
+            data,
+        }),
+        Ok(ImageFormat::Bmp | ImageFormat::Tiff) => {
+            let mut png = std::io::Cursor::new(Vec::new());
+            image::load_from_memory(&data)
+                .and_then(|decoded| decoded.write_to(&mut png, ImageFormat::Png))
+                .map_err(|e| format!("can't convert {name}: {e}"))?;
+            Ok(self::png(png.into_inner()))
+        }
+        _ => Err(format!(
+            "{name} isn't an image YACS can send (PNG, JPEG, GIF, WebP, BMP or TIFF). Other files aren't supported yet."
+        )),
     }
 }
 
@@ -147,7 +202,7 @@ mod tests {
 
     #[test]
     fn png_passes_through_and_other_formats_are_converted() {
-        let png = encoded(image::ImageFormat::Png);
+        let png = encoded(ImageFormat::Png);
         let as_is = to_png(&Image {
             mime: PNG_MIME.into(),
             data: png.clone(),
@@ -156,7 +211,7 @@ mod tests {
 
         let converted = to_png(&Image {
             mime: "image/jpeg".into(),
-            data: encoded(image::ImageFormat::Jpeg),
+            data: encoded(ImageFormat::Jpeg),
         })
         .unwrap();
         assert!(converted.starts_with(PNG_MAGIC));
@@ -171,6 +226,39 @@ mod tests {
         assert!(err.contains("image/heic"), "{err}");
     }
 
+    #[test]
+    fn image_files_are_sent_as_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str, data: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, data).unwrap();
+            path
+        };
+
+        let png = encoded(ImageFormat::Png);
+        let image = read_image_file(&file("shot.png", &png), MAX_FILE_BYTES).unwrap();
+        assert_eq!((image.mime.as_str(), &image.data), (PNG_MIME, &png));
+
+        // Content decides, not the extension.
+        let jpeg = encoded(ImageFormat::Jpeg);
+        let image = read_image_file(&file("photo.png", &jpeg), MAX_FILE_BYTES).unwrap();
+        assert_eq!((image.mime.as_str(), &image.data), ("image/jpeg", &jpeg));
+
+        let image =
+            read_image_file(&file("old.bmp", &encoded(ImageFormat::Bmp)), MAX_FILE_BYTES).unwrap();
+        assert_eq!(image.mime, PNG_MIME);
+        assert!(image.data.starts_with(PNG_MAGIC));
+
+        let err = read_image_file(&file("notes.txt", b"hello"), MAX_FILE_BYTES).unwrap_err();
+        assert!(err.starts_with("notes.txt isn't an image"), "{err}");
+        let err = read_image_file(&file("big.png", &png), 10).unwrap_err();
+        assert!(err.contains("too large"), "{err}");
+        let err = read_image_file(dir.path(), MAX_FILE_BYTES).unwrap_err();
+        assert!(err.contains("is a folder"), "{err}");
+        let err = read_image_file(&dir.path().join("gone.png"), MAX_FILE_BYTES).unwrap_err();
+        assert!(err.starts_with("can't read gone.png"), "{err}");
+    }
+
     /// Replaces whatever is on the clipboard, so it only runs on request:
     /// `cargo test -p yacs-desktop -- --ignored clipboard`
     #[test]
@@ -180,7 +268,7 @@ mod tests {
             ClipItem::Text("hello from yacs".into()),
             ClipItem::Html("<b>hello</b> from yacs".into()),
             ClipItem::Rtf(r"{\rtf1\ansi {\b hello} from yacs}".into()),
-            ClipItem::Image(png(encoded(image::ImageFormat::Png))),
+            ClipItem::Image(png(encoded(ImageFormat::Png))),
         ];
         write(&items).unwrap();
         let back = read().unwrap();

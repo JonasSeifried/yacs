@@ -12,8 +12,9 @@ type Notice = { kind: "ok" | "error"; text: string };
 /** Clips up to this size are decrypted right away so their rows show a title; bigger ones when selected. */
 const EAGER_BYTES = 256 * 1024;
 const EAGER_CONCURRENCY = 4;
-/** How long "Sent" stays up before Spotlight gets out of the way. */
+/** How long "Sent" / "Copied" stay up before Spotlight gets out of the way. */
 const SENT_HIDE_MS = 900;
+const COPIED_HIDE_MS = 5000;
 
 export function Spotlight() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -24,9 +25,21 @@ export function Spotlight() {
   const [ttl, setTtl] = useState(15 * 60);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Just copied: ⌘V now means "go back and paste", not "send it right back". */
+  const [copied, setCopied] = useState(false);
+  const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [now, setNow] = useState(Date.now());
   const requested = useRef(new Set<string>());
   const os = status?.os ?? guessOs();
+
+  const hideAfter = useCallback((ms: number) => {
+    clearTimeout(hideTimer.current);
+    hideTimer.current = setTimeout(() => platform.hideSpotlight(), ms);
+  }, []);
+  const cancelHide = useCallback(() => {
+    clearTimeout(hideTimer.current);
+    setCopied(false);
+  }, []);
 
   const clips = list.state === "ok" ? list.clips : [];
   const selected = clips.find((c) => c.id === selectedId) ?? clips[0] ?? null;
@@ -72,6 +85,7 @@ export function Spotlight() {
   useEffect(() => {
     refresh();
     const onShown = () => {
+      cancelHide();
       setSelectedId(null); // back to the newest
       setNotice(null);
       setBusy(false);
@@ -79,7 +93,7 @@ export function Spotlight() {
     };
     const subscriptions = [platform.onSpotlightShown(onShown), platform.onStatusChanged(refresh)];
     return () => subscriptions.forEach((s) => s.then((unsubscribe) => unsubscribe()));
-  }, [refresh]);
+  }, [refresh, cancelHide]);
 
   useEffect(() => {
     if (selected) load(selected.id);
@@ -95,13 +109,16 @@ export function Spotlight() {
     if (!selected || busy) return;
     setBusy(true);
     try {
-      await platform.copyClip(selected.id); // hides Spotlight
+      await platform.copyClip(selected.id);
+      setCopied(true);
+      setNotice({ kind: "ok", text: "Copied. Press esc to go back and paste it." });
+      hideAfter(COPIED_HIDE_MS);
     } catch (e) {
       setNotice({ kind: "error", text: String(e) });
     } finally {
       setBusy(false);
     }
-  }, [selected, busy]);
+  }, [selected, busy, hideAfter]);
 
   const send = useCallback(async () => {
     if (busy) return;
@@ -115,12 +132,12 @@ export function Spotlight() {
       setList((l) => ({ state: "ok", clips: [clip.meta, ...(l.state === "ok" ? l.clips : [])] }));
       setSelectedId(id);
       setNotice({ kind: "ok", text: `Sent · expires in ${formatDuration(ttl * 1000)}` });
-      setTimeout(() => platform.hideSpotlight(), SENT_HIDE_MS);
+      hideAfter(SENT_HIDE_MS);
     } catch (e) {
       setNotice({ kind: "error", text: String(e) });
       setBusy(false);
     }
-  }, [busy, ttl]);
+  }, [busy, ttl, hideAfter]);
 
   const remove = useCallback(async () => {
     if (!selected || busy) return;
@@ -142,10 +159,15 @@ export function Spotlight() {
       const key = e.key.toLowerCase();
       const handled = () => e.preventDefault();
 
-      if (e.key === "Escape") {
+      if (e.key === "Escape" || (copied && mod && key === "v")) {
         handled();
         platform.hideSpotlight();
-      } else if (mod && key === ",") {
+        return;
+      }
+      // Doing anything else keeps Spotlight open.
+      if (!["Shift", "Meta", "Control", "Alt"].includes(e.key)) cancelHide();
+
+      if (mod && key === ",") {
         handled();
         platform.openSettings();
       } else if (!status?.paired) {
@@ -177,7 +199,7 @@ export function Spotlight() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [os, status, clips, selected, choices, ttl, copy, send, remove, changeTtl]);
+  }, [os, status, clips, selected, choices, ttl, copied, copy, send, remove, changeTtl, cancelHide]);
 
   // A click into the HTML preview moves focus into its iframe, where our keys
   // don't arrive. Take it straight back.
