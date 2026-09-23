@@ -206,25 +206,39 @@ impl Store {
     }
 
     /// Delete every expired clip and every emptied channel dir. Returns the number of clips removed.
+    ///
+    /// Also re-counts the disk usage from what's left, so the quota heals if
+    /// files changed behind the store's back (deleted by hand, or a second
+    /// server wrongly pointed at the same data dir).
     pub async fn reap(&self, now_ms: u64) -> io::Result<usize> {
         let _guard = self.lock.lock().await;
         let mut removed = 0;
+        let mut kept = 0;
         for dir in channel_dirs(&self.root).await? {
             for entry in entries(&dir).await? {
                 if entry.expires_at_ms <= now_ms {
                     self.remove(&entry).await?;
                     removed += 1;
+                } else {
+                    kept += entry.size;
                 }
             }
             remove_dir_if_empty(&dir).await?;
         }
+        self.used.store(kept, Ordering::SeqCst);
         Ok(removed)
     }
 
     async fn remove(&self, entry: &Entry) -> io::Result<()> {
         match fs::remove_file(&entry.path).await {
             Ok(()) => {
-                self.used.fetch_sub(entry.size, Ordering::SeqCst);
+                // Saturating: a file this store didn't count (see `reap`)
+                // must not wrap the counter around to "disk full".
+                let _ = self
+                    .used
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                        Some(used.saturating_sub(entry.size))
+                    });
                 Ok(())
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -327,5 +341,28 @@ mod tests {
         assert_eq!(parse_name(&format!("{id}.bin")), None);
         assert_eq!(parse_name("notaulid.5000.bin"), None);
         assert_eq!(parse_name(".DS_Store"), None);
+    }
+
+    /// Two servers on one data dir: each one's count misses the other's files.
+    #[tokio::test]
+    async fn usage_never_wraps_and_reap_recounts_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = ChannelId::from_bytes([1; 32]);
+        let late = Store::open(dir.path(), 50, 1000).await.unwrap();
+        let early = Store::open(dir.path(), 50, 1000).await.unwrap();
+
+        early.put(&channel, &[0; 100], 1_000, 2_000).await.unwrap();
+        assert_eq!(late.used_bytes(), 0);
+        // `late` removes a file it never counted.
+        assert_eq!(late.reap(5_000).await.unwrap(), 1);
+        assert_eq!(late.used_bytes(), 0);
+        late.put(&channel, &[0; 30], 6_000, 60_000).await.unwrap();
+        assert_eq!(late.used_bytes(), 30);
+
+        // `early` still counts its reaped clip and misses `late`'s: 150, but 80 are on disk.
+        early.put(&channel, &[0; 50], 7_000, 60_000).await.unwrap();
+        assert_eq!(early.used_bytes(), 150);
+        early.reap(8_000).await.unwrap();
+        assert_eq!(early.used_bytes(), 80);
     }
 }
