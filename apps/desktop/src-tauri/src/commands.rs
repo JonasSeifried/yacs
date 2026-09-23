@@ -1,15 +1,20 @@
 //! Everything the webviews can ask the Rust side to do. Errors are plain
 //! strings because they're shown to the user as-is.
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
+use tauri::ipc::Response;
 use tauri::{AppHandle, Emitter, State};
 use tauri_plugin_autostart::ManagerExt;
 use yacs_client::Client;
 use yacs_core::DEFAULT_PHRASE_WORDS;
 use yacs_core::api::{ClipMeta, ServerConfig};
 
+use crate::clips::{self, ClipView, Entry};
 use crate::state::AppState;
-use crate::{hotkey, pairing, windows};
+use crate::{clipboard, hotkey, pairing, windows};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -142,7 +147,7 @@ pub fn save_preferences(
     Ok(())
 }
 
-fn client(state: &AppState) -> CmdResult<std::sync::Arc<Client>> {
+fn client(state: &AppState) -> CmdResult<Arc<Client>> {
     state
         .client()
         .ok_or_else(|| "this device isn't paired yet".into())
@@ -153,9 +158,96 @@ pub async fn server_config(state: State<'_, AppState>) -> CmdResult<ServerConfig
     client(&state)?.config().await.map_err(|e| e.to_string())
 }
 
+/// Newest first. Also forgets cached clips that expired or were deleted.
 #[tauri::command]
 pub async fn list_clips(state: State<'_, AppState>) -> CmdResult<Vec<ClipMeta>> {
-    client(&state)?.list().await.map_err(|e| e.to_string())
+    let listed = client(&state)?.list().await.map_err(|e| e.to_string())?;
+    state
+        .clips
+        .lock()
+        .expect("clip cache lock poisoned")
+        .retain_listed(&listed);
+    Ok(listed)
+}
+
+async fn load(state: &AppState, id: &str) -> CmdResult<Arc<Entry>> {
+    clips::load(&*client(state)?, &state.clips, id)
+        .await?
+        .ok_or_else(|| "this clip expired or was deleted".into())
+}
+
+/// Decrypted, for the preview. `None` if it's gone from the relay.
+#[tauri::command]
+pub async fn get_clip(state: State<'_, AppState>, id: String) -> CmdResult<Option<ClipView>> {
+    let entry = clips::load(&*client(&state)?, &state.clips, &id).await?;
+    Ok(entry.as_deref().map(ClipView::from))
+}
+
+/// The clip's image as raw bytes, which reach the webview as an `ArrayBuffer`.
+#[tauri::command]
+pub async fn clip_image(state: State<'_, AppState>, id: String) -> CmdResult<Response> {
+    let entry = load(&state, &id).await?;
+    let image = entry.image().ok_or("this clip has no image")?;
+    Ok(Response::new(image.data.clone()))
+}
+
+/// Put every format of the clip on the clipboard, then get out of the way so
+/// it can be pasted into the app that was in front.
+#[tauri::command]
+pub async fn copy_clip(app: AppHandle, state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    let entry = load(&state, &id).await?;
+    tauri::async_runtime::spawn_blocking(move || clipboard::write(&entry.clip.items))
+        .await
+        .map_err(|e| e.to_string())??;
+    windows::hide_spotlight(&app);
+    Ok(())
+}
+
+/// Encrypt and upload what's on the clipboard right now.
+#[tauri::command]
+pub async fn send_clipboard(state: State<'_, AppState>, ttl_secs: u64) -> CmdResult<ClipView> {
+    let client = client(&state)?;
+    let items = tauri::async_runtime::spawn_blocking(clipboard::read)
+        .await
+        .map_err(|e| e.to_string())??;
+    let device_name = state.settings().device_name.clone();
+    let ttl = Duration::from_secs(ttl_secs.max(1));
+    let entry = clips::send(&client, &state.clips, device_name, items, ttl).await?;
+    Ok(ClipView::from(&*entry))
+}
+
+/// Deletes the clip on the relay, for every device.
+#[tauri::command]
+pub async fn delete_clip(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    client(&state)?
+        .delete(&id)
+        .await
+        .map_err(|e| e.to_string())?;
+    state
+        .clips
+        .lock()
+        .expect("clip cache lock poisoned")
+        .remove(&id);
+    Ok(())
+}
+
+/// Spotlight's expiry dropdown: the last choice becomes the default.
+#[tauri::command]
+pub fn set_default_ttl(app: AppHandle, state: State<'_, AppState>, ttl_secs: u64) -> CmdResult<()> {
+    if ttl_secs == 0 {
+        return Err("expiry must be greater than zero".into());
+    }
+    {
+        let mut settings = state.settings();
+        settings.default_ttl_secs = ttl_secs;
+        state
+            .settings_file
+            .save(&settings)
+            .map_err(|e| e.to_string())?;
+    }
+    // Only Settings needs to know; Spotlight made the change.
+    let _ = app.emit_to(windows::SETTINGS, windows::EVENT_STATUS_CHANGED, ());
+    Ok(())
 }
 
 #[tauri::command]

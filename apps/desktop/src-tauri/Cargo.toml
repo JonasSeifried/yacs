@@ -14,8 +14,10 @@ crate-type = ["rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+clipboard-rs = "0.3.5"
 gethostname = "1.1.0"
 hex = "0.4.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 keyring = { version = "3", features = ["apple-native", "windows-native"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

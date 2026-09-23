@@ -1,4 +1,4 @@
-import type { ClipMeta, Preferences, ServerConfig, Status } from "../shared/types";
+import type { ClipMeta, ClipView, Preferences, ServerConfig, Status } from "../shared/types";
 import { tauriPlatform } from "./tauri";
 
 /**
@@ -14,6 +14,15 @@ export interface Platform {
   savePreferences(preferences: Preferences): Promise<void>;
   serverConfig(): Promise<ServerConfig>;
   listClips(): Promise<ClipMeta[]>;
+  /** Decrypted; null if the clip expired or was deleted. */
+  getClip(id: string): Promise<ClipView | null>;
+  clipImage(id: string): Promise<Blob>;
+  /** Puts every format of the clip on the clipboard. The desktop then hides Spotlight. */
+  copyClip(id: string): Promise<void>;
+  /** Encrypts and sends what's on the clipboard right now. */
+  sendClipboard(ttlSecs: number): Promise<ClipView>;
+  deleteClip(id: string): Promise<void>;
+  setDefaultTtl(ttlSecs: number): Promise<void>;
   hideSpotlight(): Promise<void>;
   openSettings(): Promise<void>;
   /** Returns an unsubscribe function. */

@@ -144,25 +144,29 @@ GET    /*                                             embedded PWA (rust-embed)
 
 **Spotlight layout**
 ```
-┌──────────────────────────────────────────────────────┐
-│ ▸ "Meeting notes for Thursday…"   MacBook · 2m ago   │  ← selected
-│   [image 1280×720]                PC · 11m ago       │
-│   "https://github.com/…"          iPhone · 1h ago    │
-├──────────────────────────────────────────────────────┤
-│  preview of the selected clip                        │
-├──────────────────────────────────────────────────────┤
-│ Ctrl+C copy · Ctrl+V send · Del delete   TTL [15m ▾] │
-└──────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│ YACS  clip.example.com                                 ⚙  │
+├──────────────────────┬────────────────────────────────────┤
+│▸ Meeting notes for…  │  preview of the selected clip      │
+│  MacBook · 2 min ago │  (sanitized HTML, text or image)   │
+│  Image · 1280×720    │                                    │
+│  PC · 11 min ago     │                                    │
+│  https://github.com… │  expires in 13 min · 2.1 KB · text │
+├──────────────────────┴────────────────────────────────────┤
+│ ↵ copy · ⌘⌫ delete · ⌘V send clipboard   expires in [15m] │
+└───────────────────────────────────────────────────────────┘
 ```
 
 **Flow**
-1. Hotkey pressed: show the window and at the same time `list_clips` + fetch the newest clip (ETag cache means repeat fetches are cheap), then decrypt and render the preview. Older clips are fetched when you select them and cached in memory by ID (clips never change).
-2. `↑/↓`: select a clip. `Ctrl+C`: Rust writes all formats of the selected clip to the clipboard, then the window hides.
-3. `Ctrl+V`: the keydown is intercepted. Rust reads the native clipboard (all formats), encrypts, POSTs with the TTL from the dropdown, shows a "Sent" confirmation, then the window hides.
-4. `Del`: removes the selected clip from the server for every device.
-5. The preview is sanitized: HTML goes through DOMPurify and is rendered in a sandboxed iframe, and images are shown as blob URLs.
+1. Hotkey pressed: show the window and at the same time `list_clips`. The newest clip, every clip up to 256 KB, and whichever clip you select are fetched and decrypted, so rows show a title and device. Rust caches decrypted clips in memory by ID (clips never change); entries go when the relay stops listing them, and the oldest go once the cache holds 256 MB.
+2. `↑/↓`: select a clip. `Enter` or `Ctrl+C`: Rust writes all formats of the selected clip to the clipboard, then the window hides and focus returns to the previous app. Double-click does the same.
+3. `Ctrl+V`: the keydown is intercepted. Rust reads the native clipboard (text, HTML, RTF, image; PNG is passed through untouched), encrypts, POSTs with the TTL from the dropdown, shows "Sent", then the window hides. Copied files are refused with a clear message until P2P in v2.
+4. `Del` (macOS: `⌘⌫`, like Finder, so a stray Backspace can't delete): removes the selected clip from the server for every device.
+5. The preview is sanitized: HTML goes through DOMPurify (never rendered if DOMPurify reports it can't run) into an `<iframe sandbox srcdoc>` whose own CSP blocks every network request, so remote images can't signal that a clip was viewed. Images arrive as binary IPC and are shown as blob URLs. Text previews are capped at 20k characters and HTML at 512 KB; copy always writes the full clip.
 
-**TTL dropdown:** `5m · 15m (default) · 1h · 8h · 24h · 7d`. Options above the server's `max_ttl` (from `/api/v1/config`) are hidden. The last choice is remembered per device, and `Tab` cycles through the options so you never need the mouse.
+**Windows clipboard detail:** `clipboard-rs` empties the clipboard when it sets an image, so an image on its own goes through its image path (PNG plus a bitmap for Paint and older apps), and an image next to text is added as raw `PNG` data, which rich-text apps read.
+
+**TTL dropdown:** `5m · 15m (default) · 1h · 8h · 24h · 7d`. Options above the server's `max_ttl` (from `/api/v1/config`) are hidden. The last choice becomes the device's default expiry (the same setting as in Settings), and `Tab` / `Shift+Tab` cycle through the options so you never need the mouse.
 
 **Pairing / settings:** first run opens Settings: relay URL, optional access token, and the phrase (a **Generate** button fills in 6 EFF words; on other devices you type it). Pairing derives the key, checks the relay and token, and only then stores anything. Settings also hold device name, hotkey (recorded by pressing it), default expiry and launch at login. The QR code for phones comes with the PWA in Phase 4.
 

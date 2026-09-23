@@ -19,14 +19,14 @@ body,
 
 html[data-os="macos"] .panel {
   border-radius: 14px;
+  overflow: hidden;
 }
 
 .panel-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px 18px;
+  gap: 10px;
+  padding: 10px 12px 10px 18px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -47,23 +47,47 @@ html[data-os="macos"] .panel {
   white-space: nowrap;
 }
 
+.icon-button {
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.icon-button:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
 .panel-body {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
+}
+
+.split {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 250px 1fr;
 }
 
 .clips {
   list-style: none;
   margin: 0;
   padding: 6px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
 }
 
 .clip {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 9px 12px;
+  padding: 8px 10px;
   border-radius: 8px;
 }
 
@@ -73,11 +97,107 @@ html[data-os="macos"] .panel {
 
 .clip-title {
   font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .clip-meta {
   font-size: 12px;
   color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.muted {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.preview {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.preview-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+}
+
+.preview-text {
+  margin: 0;
+  padding: 14px 16px;
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text;
+}
+
+/* Always a white page: pasted HTML usually hardcodes dark text. */
+.preview-html {
+  flex: 1;
+  border: 0;
+  margin: 10px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.preview-image {
+  margin: auto;
+  max-width: calc(100% - 24px);
+  max-height: calc(100% - 24px);
+  object-fit: contain;
+  border-radius: 6px;
+  /* Checkerboard behind transparent images. */
+  background: repeating-conic-gradient(var(--surface-2) 0 25%, var(--surface) 0 50%) 0 0 / 16px 16px;
+}
+
+.preview-note {
+  margin: auto;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+  max-width: 360px;
+  overflow-wrap: anywhere;
+}
+
+.preview-note.error,
+.notice.error {
+  color: var(--danger);
+}
+
+.preview-footer {
+  padding: 6px 16px 8px;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.notice {
+  padding: 7px 18px;
+  font-size: 12.5px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+
+.notice.ok {
+  color: var(--ok);
+}
+
+.notice.error {
+  background: var(--danger-soft);
 }
 
 .empty {
@@ -130,13 +250,25 @@ button.primary kbd {
 .panel-footer {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 10px 18px;
+  gap: 14px;
+  padding: 8px 12px 8px 18px;
   border-top: 1px solid var(--border);
   font-size: 12px;
   color: var(--muted);
+  white-space: nowrap;
 }
 
-.panel-footer .hotkey {
+.ttl {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ttl select {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 4px;
+  background: var(--surface-2);
+  font-size: 12px;
 }

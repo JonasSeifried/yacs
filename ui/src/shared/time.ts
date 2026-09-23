@@ -14,6 +14,20 @@ export function ttlOptions(maxTtlSecs = 24 * 60 * 60) {
   return TTL_OPTIONS.filter((o) => o.secs <= maxTtlSecs);
 }
 
+/**
+ * Options for an expiry dropdown. A saved value that isn't a preset (or is
+ * above the server's max, which the server clamps) is kept as its own entry
+ * rather than silently changed.
+ */
+export function ttlChoices(current: number, maxTtlSecs?: number) {
+  const options = ttlOptions(maxTtlSecs);
+  if (!options.some((o) => o.secs === current)) {
+    options.push({ secs: current, label: formatDuration(current * 1000) });
+    options.sort((a, b) => a.secs - b.secs);
+  }
+  return options;
+}
+
 export function formatDuration(ms: number): string {
   const secs = Math.max(0, Math.round(ms / 1000));
   if (secs < 60) return `${secs} s`;

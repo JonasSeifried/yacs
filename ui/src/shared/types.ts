@@ -8,6 +8,26 @@ export interface ClipMeta {
   size: number;
 }
 
+/** A decrypted clip, as the desktop's `ClipView` (Rust) shows it. */
+export interface ClipView {
+  meta: ClipMeta;
+  deviceName: string;
+  /** Capped for the preview; `textTruncated` says whether it was cut. */
+  text: string | null;
+  textTruncated: boolean;
+  /** Raw, unsanitized HTML from the sender; null when absent or too large to preview. */
+  html: string | null;
+  rtf: boolean;
+  image: ImageInfo | null;
+}
+
+export interface ImageInfo {
+  mime: string;
+  size: number;
+  width: number | null;
+  height: number | null;
+}
+
 /** `yacs_core::api::ServerConfig`. */
 export interface ServerConfig {
   default_ttl_secs: number;

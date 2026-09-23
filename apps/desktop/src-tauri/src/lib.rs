@@ -1,12 +1,16 @@
 //! YACS desktop: a tray app with a global hotkey that opens a Spotlight-style
 //! panel for sending and receiving clips.
 
+mod clipboard;
+mod clips;
 mod commands;
 mod hotkey;
 mod pairing;
 mod secrets;
 mod settings;
 mod state;
+#[cfg(test)]
+mod test_support;
 mod tray;
 mod windows;
 
@@ -84,6 +88,12 @@ pub fn run() {
             commands::save_preferences,
             commands::server_config,
             commands::list_clips,
+            commands::get_clip,
+            commands::clip_image,
+            commands::copy_clip,
+            commands::send_clipboard,
+            commands::delete_clip,
+            commands::set_default_ttl,
             commands::hide_spotlight,
             commands::open_settings,
         ])

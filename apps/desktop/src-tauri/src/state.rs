@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use yacs_client::Client;
 
+use crate::clips::{CACHE_BYTES, ClipCache};
 use crate::secrets::Secrets;
 use crate::settings::{Settings, SettingsFile};
 
@@ -11,6 +12,8 @@ pub struct AppState {
     pub secrets: Secrets,
     settings: Mutex<Settings>,
     client: Mutex<Option<Arc<Client>>>,
+    /// Decrypted clips of the current pairing.
+    pub clips: Mutex<ClipCache>,
     /// Why the saved hotkey couldn't be registered, shown in Settings.
     pub hotkey_error: Mutex<Option<String>>,
 }
@@ -43,6 +46,7 @@ impl AppState {
             secrets,
             settings: Mutex::new(settings),
             client: Mutex::new(client),
+            clips: Mutex::new(ClipCache::new(CACHE_BYTES)),
             hotkey_error: Mutex::new(None),
         }
     }
@@ -55,7 +59,9 @@ impl AppState {
         self.client.lock().expect("client lock poisoned").clone()
     }
 
+    /// Switching pairings also forgets the old channel's clips.
     pub fn set_client(&self, client: Option<Client>) {
         *self.client.lock().expect("client lock poisoned") = client.map(Arc::new);
+        self.clips.lock().expect("clip cache lock poisoned").clear();
     }
 }

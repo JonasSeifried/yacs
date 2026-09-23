@@ -1,7 +1,7 @@
 import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useState } from "react";
 import { platform } from "../platform";
 import { acceleratorFromEvent, formatAccelerator } from "../shared/hotkey";
-import { ttlOptions } from "../shared/time";
+import { ttlChoices } from "../shared/time";
 import type { Os, Preferences, ServerConfig, Status } from "../shared/types";
 
 export function Settings() {
@@ -153,6 +153,11 @@ function PreferencesForm({ status, serverConfig }: { status: Status; serverConfi
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Spotlight's dropdown also changes the default expiry.
+  useEffect(() => {
+    setPrefs((p) => ({ ...p, defaultTtlSecs: status.defaultTtlSecs }));
+  }, [status.defaultTtlSecs]);
+
   const set = <K extends keyof Preferences>(key: K, value: Preferences[K]) => {
     setPrefs((p) => ({ ...p, [key]: value }));
     setSaved(false);
@@ -168,10 +173,7 @@ function PreferencesForm({ status, serverConfig }: { status: Status; serverConfi
     }
   };
 
-  const options = ttlOptions(serverConfig?.max_ttl_secs);
-  if (!options.some((o) => o.secs === prefs.defaultTtlSecs)) {
-    options.push({ secs: prefs.defaultTtlSecs, label: `${Math.round(prefs.defaultTtlSecs / 60)} minutes` });
-  }
+  const options = ttlChoices(prefs.defaultTtlSecs, serverConfig?.max_ttl_secs);
 
   return (
     <form onSubmit={submit}>
