@@ -1,0 +1,85 @@
+{
+  "envelopes": [
+    {
+      "channel_id": "sD92fYor09GumXgF4Jf80RRCMM5QTU78Ko0ipESaWYo",
+      "envelope": "0192b66beae11b6a3189a322a0bcb16dcd4e5c6542c964e4a17eddfd23726436869409f77b1c94e9c0e55a654fd081437d17d46c1bb4159fefd14dde91977764cb4a359c3a5f873183bb3d94a1d1ff80549944aa2d77d8373663a5fed252c2cb5b8aed087b33ff835869f9344a574c3a550f1308213223ab3b3309892fefecaa4ee98445a474dd1ca2f99f7fa799ec0ad690dba45c8dc27830ed8a0936cba3b9014c1d413db5c23ac4fe63b9b1",
+      "key": "42b889c18c87629dd1b8c73347800946d95000101c807155a05c5fd4f5be99fc",
+      "payload": {
+        "Clip": {
+          "created_at_ms": 1758600000000,
+          "device_name": "MacBook",
+          "items": [
+            {
+              "Text": "Meeting notes for Thursday"
+            },
+            {
+              "Html": "<p><b>Meeting</b> notes for Thursday</p>"
+            },
+            {
+              "Rtf": "{\\rtf1\\ansi {\\b Meeting} notes for Thursday}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "channel_id": "sD92fYor09GumXgF4Jf80RRCMM5QTU78Ko0ipESaWYo",
+      "envelope": "01601bcf35909becd741ae2fbb5e6633dca87234a80453f6fbac6ada8febc73d9040f95d5fb33ec33ed34b7d954b161d5c2cb5449300e7ec4d98108f55821cfdb0963c8a23d2fd6a87a2aec9aafc7c9cb9f63a61",
+      "key": "42b889c18c87629dd1b8c73347800946d95000101c807155a05c5fd4f5be99fc",
+      "payload": {
+        "Clip": {
+          "created_at_ms": 1758600060000,
+          "device_name": "PC 🖥️",
+          "items": [
+            {
+              "Image": {
+                "data": [
+                  137,
+                  80,
+                  78,
+                  71,
+                  13,
+                  10,
+                  26,
+                  10,
+                  0,
+                  1,
+                  2,
+                  255
+                ],
+                "mime": "image/png"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "kdf": [
+    {
+      "channel_id": "FyuU7iWg6igRbFa042KMeIt1AJESKspYhPnptMJimPU",
+      "key": "0fd454354d0a0dc62231515656e806e588e7fdc159e79dd1b0af7f82c9443f88",
+      "normalized": "correct horse battery staple",
+      "phrase": "correct horse battery staple"
+    },
+    {
+      "channel_id": "FyuU7iWg6igRbFa042KMeIt1AJESKspYhPnptMJimPU",
+      "key": "0fd454354d0a0dc62231515656e806e588e7fdc159e79dd1b0af7f82c9443f88",
+      "normalized": "correct horse battery staple",
+      "phrase": "  Correct   HORSE\tbattery\nstaple "
+    },
+    {
+      "channel_id": "yLY-KMzN6zpy-gOZyHvUHAUvZFbvjY8JorBOHjU8bP4",
+      "key": "2974fbf1b78bba580d5797d74c35b71c53afba6fd0936fd09b1a404ae0334452",
+      "normalized": "café file naïve",
+      "phrase": "Ｃafé ﬁle naïve"
+    },
+    {
+      "channel_id": "sD92fYor09GumXgF4Jf80RRCMM5QTU78Ko0ipESaWYo",
+      "key": "42b889c18c87629dd1b8c73347800946d95000101c807155a05c5fd4f5be99fc",
+      "normalized": "tundra velvet anchor pickle orbit meadow",
+      "phrase": "tundra velvet anchor pickle orbit meadow"
+    }
+  ],
+  "version": 1
+}
