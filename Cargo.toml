@@ -10,5 +10,3 @@ rust-version = "1.85"
 # Argon2 is unusably slow without optimizations; keep tests and dev builds fast.
 [profile.dev.package.argon2]
 opt-level = 3
-[profile.dev.package.blake2]
-opt-level = 3

@@ -96,10 +96,10 @@ struct Envelope { version: u8, nonce: [u8; 24], ciphertext: Vec<u8> }
 ## 4. Relay server (`yacs-server`)
 
 ```
-GET    /api/v1/config                                 → { default_ttl, max_ttl, max_size, max_clips }
+GET    /api/v1/config                                 → { default_ttl_secs, max_ttl_secs, max_size_bytes, max_clips }
 POST   /api/v1/channels/{channel_id}/clips?ttl=900    body: octet-stream Envelope
-                                                      → 201 { id, created_at, expires_at }  (ttl clamped to max_ttl)
-GET    /api/v1/channels/{channel_id}/clips            → [{ id, created_at, expires_at, size }]  newest first
+                                                      → 201 { id, created_at_ms, expires_at_ms, size }  (ttl clamped to max_ttl)
+GET    /api/v1/channels/{channel_id}/clips            → [{ id, created_at_ms, expires_at_ms, size }]  newest first
 GET    /api/v1/channels/{channel_id}/clips/latest     → 200 Envelope | 404   (ETag = clip id, supports 304)
 GET    /api/v1/channels/{channel_id}/clips/{id}       → 200 Envelope | 404   (immutable, cacheable)
 DELETE /api/v1/channels/{channel_id}/clips/{id}
@@ -111,10 +111,12 @@ GET    /*                                             embedded PWA (rust-embed)
 
 - **Clip IDs** are ULIDs assigned by the server. They sort by time, so "newest first" is just a reverse sort of the directory listing.
 - **History = everything not yet expired.** A per-channel cap (`max_clips`) evicts the oldest clip first, so a busy channel can't grow without limit.
-- **Storage:** `data/{channel_id}/{ulid}.{expires_unix}.bin`. Because the expiry is in the filename, the reaper never has to open a file. Writes go to a temp file first and are then renamed, so a clip is never half-written. The reaper runs on a `tokio::time::interval` (60 s) and deletes expired files and empty channel dirs.
+- **Envelope responses** carry the metadata in `x-yacs-clip-id`, `x-yacs-created-at` and `x-yacs-expires-at` headers.
+- **Storage:** `data/{hex channel_id}/{ulid}.{expires_at_ms}.bin`. Hex, not base64url, so two ids can't collide on case-insensitive filesystems (macOS, Windows). Because the expiry is in the filename, the reaper never has to open a file. Writes go to a temp file first and are then renamed, so a clip is never half-written. The reaper runs on a `tokio::time::interval` (60 s) and deletes expired files and empty channel dirs.
 - **The server sees** each clip's size, creation time and expiry. Contents, formats and device names stay encrypted.
-- **Limits:** `DefaultBodyLimit`, per-IP rate limiting (`tower_governor`), `max_clips` per channel, total disk quota.
-- **Optional access token:** set `YACS_ACCESS_TOKEN` and clients must send `Authorization: Bearer …`. This keeps strangers from filling your disk when the server is reachable from the internet.
+- **Limits:** `DefaultBodyLimit`, `max_clips` per channel, total disk quota. No rate limiting: the access token keeps strangers out, the quotas bound disk use, and behind a reverse proxy per-IP limits would lump all clients together. If wanted, rate-limit in Caddy/Traefik. Expired-but-not-yet-reaped clips don't hold a history slot.
+- **Logging** shows the route pattern (`/api/v1/channels/{channel}/clips`), never the URI, because the URI contains the channel id.
+- **Optional access token:** set `YACS_ACCESS_TOKEN` and clients must send `Authorization: Bearer …`. This keeps strangers from filling your disk when the server is reachable from the internet. The server logs a warning at startup when it's unset.
 - **Config:** env vars / `clap` flags. Durations are parsed with `humantime` (`15m`, `24h`, `7d`).
 
   | Setting | Default |
@@ -125,6 +127,7 @@ GET    /*                                             embedded PWA (rust-embed)
   | `YACS_MAX_TTL` | `24h` |
   | `YACS_MAX_SIZE` | `20MB` |
   | `YACS_MAX_CLIPS_PER_CHANNEL` | `50` |
+  | `YACS_MAX_DISK` | `2GB` |
   | `YACS_ACCESS_TOKEN` | unset (open) |
 - **TLS:** terminate at a reverse proxy (Caddy example in `deploy/`).
 - **No CORS needed.** The PWA is served from the same origin, and desktop makes its requests from Rust.
@@ -192,7 +195,7 @@ This reorders the original roadmap: crypto and the protocol come first, so the U
 | Phase | Focus | Deliverables | Done when |
 | --- | --- | --- | --- |
 | **0: Core** ✅ | `yacs-core` | Workspace, KDF, envelope, cipher, postcard serialization, test vectors, CI job checking the `wasm32` build | Round-trip + vector tests pass on native and wasm |
-| **1: Server + CLI** | `yacs-server`, `yacs-client`, `yacs-cli` | Routes, per-clip TTL + clamping, history + per-channel cap, disk store, reaper, limits, token, config; `yacs send --ttl 1h` / `yacs list` / `yacs recv [id]` for text + images | Two terminals sync clips end-to-end through a local server; expiry and eviction covered by integration tests |
+| **1: Server + CLI** ✅ | `yacs-server`, `yacs-client`, `yacs-cli` | Routes, per-clip TTL + clamping, history + per-channel cap, disk store, reaper, limits, token, config; `yacs send --ttl 1h` / `yacs list` / `yacs recv [id]` for text + images | Two terminals sync clips end-to-end through a local server; expiry and eviction covered by integration tests |
 | **2: Desktop shell** | Tauri | Tray, hidden Spotlight window, global hotkey, single instance, autostart, pairing + settings UI (incl. 6-word EFF phrase generator in `yacs-core`), keyring | Hotkey opens/closes Spotlight reliably on macOS + Windows |
 | **3: Desktop clipboard** | Core UX | `clipboard-rs` multi-format read/write, history list + keyboard navigation, Ctrl+C / Ctrl+V / Del, TTL dropdown, sanitized preview | Rich text from Word/browser and screenshots round-trip between Mac and PC |
 | **4: PWA + release (v1.0)** | Mobile + ship | `yacs-wasm`, mobile UI, embedded PWA, QR pairing, Dockerfile + compose/Caddy, signed desktop builds, updater | A phone can pair via QR and copy/send; `docker compose up` works on a VPS |

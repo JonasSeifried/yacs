@@ -42,7 +42,9 @@ pub fn normalize_phrase(phrase: &str) -> String {
     normalized.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Public identifier of a channel. Safe to send to the server and to log.
+/// Public identifier of a channel. Not secret from the server, but anyone who
+/// knows it can list, fetch (still encrypted) and delete the channel's clips,
+/// so don't publish it.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChannelId([u8; 32]);
 

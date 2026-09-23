@@ -2,6 +2,7 @@
 //! end-to-end encrypted envelope. Shared by the server, desktop, CLI and (via
 //! WASM) the PWA, so it has no OS, clock or async dependencies.
 
+pub mod api;
 mod envelope;
 mod error;
 mod pairing;

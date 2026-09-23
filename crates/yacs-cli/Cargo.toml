@@ -1,0 +1,27 @@
+[package]
+name = "yacs-cli"
+description = "Command-line client for YACS"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+gethostname = "1.1.0"
+humantime = "2.4.0"
+rpassword = "7.5.4"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+yacs-client = { version = "0.1.0", path = "../yacs-client" }
+yacs-core = { version = "0.1.0", path = "../yacs-core" }
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+clap = "4.6.7"
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["full"] }
+yacs-server = { path = "../yacs-server" }
+
+[[bin]]
+name = "yacs"
+path = "src/main.rs"
