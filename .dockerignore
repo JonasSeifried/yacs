@@ -1,0 +1,8 @@
+.git
+.claude
+**/target
+**/node_modules
+ui/dist
+ui/src/wasm
+apps/desktop/src-tauri/gen
+deploy/.env

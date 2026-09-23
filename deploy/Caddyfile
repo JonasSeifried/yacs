@@ -1,0 +1,8 @@
+# HTTPS for the relay. Caddy gets a certificate for $YACS_DOMAIN by itself.
+#
+# No access log on purpose: request paths contain channel ids. The relay
+# logs only route patterns.
+{$YACS_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy yacs:8080
+}

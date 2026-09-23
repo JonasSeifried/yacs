@@ -13,6 +13,8 @@ async fn main() -> ExitCode {
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| EnvFilter::new("yacs_server=info,tower_http=info")),
         )
+        // Plain text for `docker logs` and journald, colors in a terminal.
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .init();
 
     let config = match Config::parse().validate() {
