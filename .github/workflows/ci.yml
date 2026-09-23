@@ -9,6 +9,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Core, server, client and CLI. The desktop app needs a GUI toolkit, so it
+  # gets its own job on the platforms it ships for.
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -18,11 +20,51 @@ jobs:
           components: rustfmt, clippy
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --exclude yacs-desktop --all-targets -- -D warnings
+      - run: cargo test --workspace --exclude yacs-desktop
+      - name: Install wasm-bindgen-cli matching Cargo.lock
+        run: |
+          version=$(cargo metadata --format-version 1 --locked | jq -r '.packages[] | select(.name == "wasm-bindgen") | .version')
+          echo "WASM_BINDGEN_VERSION=$version" >> "$GITHUB_ENV"
       - uses: taiki-e/install-action@v2
         with:
-          tool: wasm-bindgen-cli@0.2.101
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+          tool: wasm-bindgen-cli@${{ env.WASM_BINDGEN_VERSION }}
       - name: Test vectors under WASM
         run: cargo test -p yacs-core --target wasm32-unknown-unknown --test vectors
+
+  ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm ui:check
+      - run: pnpm ui:test
+      - run: pnpm --filter @yacs/ui build
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @yacs/ui build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy -p yacs-desktop --all-targets -- -D warnings
+      - run: cargo test -p yacs-desktop

@@ -9,7 +9,7 @@ Self-hostable, end-to-end encrypted clipboard sync. Rust monorepo: Axum relay, T
 | Desktop v1 | macOS + Windows. Linux in v1.x (X11 first; Wayland gets a CLI/tray fallback because global hotkeys are blocked there). |
 | Mobile | v1: PWA served by the relay. v2: Tauri mobile app with native clipboard plugins and share extensions. Both share one UI codebase. |
 | Pairing | Shared phrase, focus on self-hosting. Low-cost hardening: the app generates the phrase by default, and Argon2id is used for key derivation. Accounts only if a public hosted version happens later. |
-| Hotkey UX | `Ctrl+Shift+Space` opens Spotlight with a preview of the latest remote clip. `Ctrl+C` copies the preview to the local clipboard. `Ctrl+V` sends the local clipboard. `Esc` or losing focus closes it. |
+| Hotkey UX | `CommandOrControl+Shift+Space` (⌘⇧Space on macOS, Ctrl+Shift+Space on Windows) opens Spotlight with a preview of the latest remote clip. `Ctrl+C` copies the preview to the local clipboard. `Ctrl+V` sends the local clipboard. `Esc` or losing focus closes it. |
 | Server model | Short history: each channel keeps every clip until its TTL expires (capped per channel). Reading doesn't delete, so 3+ devices work. |
 | TTL | Chosen per clip by the sender from a UI dropdown, default **15 min**. The server clamps it to a configurable maximum (default **24 h**). |
 | Frontend | React + TypeScript + Vite. |
@@ -164,7 +164,9 @@ GET    /*                                             embedded PWA (rust-embed)
 
 **TTL dropdown:** `5m · 15m (default) · 1h · 8h · 24h · 7d`. Options above the server's `max_ttl` (from `/api/v1/config`) are hidden. The last choice is remembered per device, and `Tab` cycles through the options so you never need the mouse.
 
-**Pairing / settings:** first run offers "Create pairing" (generates a phrase, shows it + a QR code) or "Join" (type the phrase). Settings: server URL, access token, hotkey, device name.
+**Pairing / settings:** first run opens Settings: relay URL, optional access token, and the phrase (a **Generate** button fills in 6 EFF words; on other devices you type it). Pairing derives the key, checks the relay and token, and only then stores anything. Settings also hold device name, hotkey (recorded by pressing it), default expiry and launch at login. The QR code for phones comes with the PWA in Phase 4.
+
+**Tray & lifecycle:** menu bar/tray icon with Open, Settings and Quit. Closing windows never quits. A second launch opens Settings, and `yacs-desktop --toggle` toggles Spotlight in the running instance, so Linux/Wayland users can bind that command to a desktop shortcut.
 
 **Distribution:** GitHub Actions + `tauri-action`. macOS universal build, signed and notarized (Apple account available). Windows MSI/NSIS, signed via Azure Trusted Signing, otherwise users see SmartScreen warnings.
 
@@ -196,7 +198,7 @@ This reorders the original roadmap: crypto and the protocol come first, so the U
 | --- | --- | --- | --- |
 | **0: Core** ✅ | `yacs-core` | Workspace, KDF, envelope, cipher, postcard serialization, test vectors, CI job checking the `wasm32` build | Round-trip + vector tests pass on native and wasm |
 | **1: Server + CLI** ✅ | `yacs-server`, `yacs-client`, `yacs-cli` | Routes, per-clip TTL + clamping, history + per-channel cap, disk store, reaper, limits, token, config; `yacs send --ttl 1h` / `yacs list` / `yacs recv [id]` for text + images | Two terminals sync clips end-to-end through a local server; expiry and eviction covered by integration tests |
-| **2: Desktop shell** | Tauri | Tray, hidden Spotlight window, global hotkey, single instance, autostart, pairing + settings UI (incl. 6-word EFF phrase generator in `yacs-core`), keyring | Hotkey opens/closes Spotlight reliably on macOS + Windows |
+| **2: Desktop shell** ✅ (verified on macOS; Windows: CI build only so far) | Tauri | Tray, hidden Spotlight window, global hotkey, single instance, autostart, pairing + settings UI (incl. 6-word EFF phrase generator in `yacs-core`), keyring | Hotkey opens/closes Spotlight reliably on macOS + Windows |
 | **3: Desktop clipboard** | Core UX | `clipboard-rs` multi-format read/write, history list + keyboard navigation, Ctrl+C / Ctrl+V / Del, TTL dropdown, sanitized preview | Rich text from Word/browser and screenshots round-trip between Mac and PC |
 | **4: PWA + release (v1.0)** | Mobile + ship | `yacs-wasm`, mobile UI, embedded PWA, QR pairing, Dockerfile + compose/Caddy, signed desktop builds, updater | A phone can pair via QR and copy/send; `docker compose up` works on a VPS |
 | **5: v1.x** | Breadth | Linux (X11 + CLI fallback for Wayland), SSE live updates (history refreshes while Spotlight is open) | |

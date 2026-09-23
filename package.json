@@ -1,0 +1,11 @@
+{
+  "name": "yacs",
+  "private": true,
+  "packageManager": "pnpm@10.16.1",
+  "scripts": {
+    "desktop": "pnpm --filter @yacs/desktop tauri dev",
+    "desktop:build": "pnpm --filter @yacs/desktop tauri build",
+    "ui:check": "pnpm --filter @yacs/ui check",
+    "ui:test": "pnpm --filter @yacs/ui test"
+  }
+}
