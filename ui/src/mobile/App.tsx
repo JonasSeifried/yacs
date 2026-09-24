@@ -131,7 +131,7 @@ function PairForm({ onPaired, onLink }: { onPaired: (s: StoredPairing) => void; 
       <form className="card pair" onSubmit={submit}>
         <h1>Pair with your devices</h1>
         <p className="muted">
-          Scan the QR code in YACS on your computer (Settings → Pair a phone), or type the pairing phrase.
+          Scan the QR code in YACS on your computer (Settings → Pair another device), or type the pairing phrase.
         </p>
         <IosHomeScreenHint />
         {canScan() && (
@@ -219,7 +219,7 @@ function Scanner({ onLink, onCancel }: { onLink: (l: PairLink) => void; onCancel
     <Screen>
       <div className="card pair">
         <h1>Scan the QR code</h1>
-        <p className="muted">On your computer: YACS → Settings → Pair a phone.</p>
+        <p className="muted">On your computer: YACS → Settings → Pair another device.</p>
         {error ? (
           <p className="error">{error}</p>
         ) : (

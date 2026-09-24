@@ -1,5 +1,5 @@
 // Pairing links: `https://relay/#pair=v1.<channel>.<key>&token=…`, made by the
-// desktop's "Pair a phone" QR code. The fragment never reaches the relay
+// desktop's "Pair another device" QR code. The fragment never reaches the relay
 // (browsers don't send it), so neither the key nor the token shows up in logs.
 
 export interface PairLink {

@@ -1,6 +1,7 @@
 import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useState } from "react";
 import { platform } from "../platform";
 import { acceleratorFromEvent, formatAccelerator } from "../shared/hotkey";
+import { readPairLink } from "../shared/pairlink";
 import { ttlChoices } from "../shared/time";
 import type { Os, PhonePairing, Preferences, ServerConfig, Status } from "../shared/types";
 import { relayBehind } from "../shared/version";
@@ -121,7 +122,7 @@ function Paired({ status }: { status: Status }) {
         <span className="dot" /> Paired through <strong>{status.serverUrl}</strong>
       </p>
       {error && <p className="error">{error}</p>}
-      <PairPhone />
+      <PairDevice />
       <div className="actions">
         <button className="danger" onClick={unpair}>
           Unpair this device
@@ -131,7 +132,7 @@ function Paired({ status }: { status: Status }) {
   );
 }
 
-function PairPhone() {
+function PairDevice() {
   const [pairing, setPairing] = useState<PhonePairing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -154,19 +155,22 @@ function PairPhone() {
 
   if (!pairing) {
     return (
-      <div className="phone">
-        <p className="hint">Scan a QR code with your phone's camera to open YACS there, already paired.</p>
+      <div className="pair-device">
+        <p className="hint">
+          Shows a QR code for a phone's camera, and a link to paste on another computer or into <code>yacs pair</code>{" "}
+          on a server.
+        </p>
         {error && <p className="error">{error}</p>}
-        <button onClick={show}>Pair a phone…</button>
+        <button onClick={show}>Pair another device…</button>
       </div>
     );
   }
   return (
-    <div className="phone">
+    <div className="pair-device">
       <img className="qr" src={pairing.qr} alt="Pairing QR code" />
       {pairing.warning && <p className="error">{pairing.warning}</p>}
       <p className="hint">
-        Anyone who scans this code can read and send your clips. Only show it to your own devices.
+        Anyone with this code or link can read and send your clips. Only use it on your own devices.
       </p>
       <div className="actions">
         <button
@@ -188,6 +192,8 @@ function PairForm() {
   const [serverUrl, setServerUrl] = useState("");
   const [token, setToken] = useState("");
   const [phrase, setPhrase] = useState("");
+  // From a pasted pairing link: replaces the phrase.
+  const [linkSecret, setLinkSecret] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -200,12 +206,22 @@ function PairForm() {
     await navigator.clipboard.writeText(phrase);
     setCopied(true);
   };
+  /** A pairing link pasted into any field fills in the whole form. */
+  const takeLink = (text: string) => {
+    const link = readPairLink(text);
+    if (!link) return false;
+    setServerUrl(link.serverUrl);
+    if (link.token) setToken(link.token);
+    setLinkSecret(link.secret);
+    setPhrase("");
+    return true;
+  };
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await platform.pair(serverUrl, token || null, phrase);
+      await platform.pair(serverUrl, token || null, linkSecret ?? phrase);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -222,40 +238,53 @@ function PairForm() {
           required
           placeholder="https://clip.example.com"
           value={serverUrl}
-          onChange={(e) => setServerUrl(e.target.value)}
+          onChange={(e) => takeLink(e.target.value) || setServerUrl(e.target.value)}
         />
+        <span className="hint">
+          Or paste a pairing link here (on a paired computer: Settings → Pair another device… → Copy link).
+        </span>
       </label>
       <label>
         Access token <span className="optional">if your relay requires one</span>
         <input type="password" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" />
       </label>
-      <label>
-        Pairing phrase
-        <div className="row">
-          <input
-            required
-            value={phrase}
-            onChange={(e) => {
-              setPhrase(e.target.value);
-              setCopied(false);
-            }}
-            placeholder="six words from your other device"
-            autoComplete="off"
-            spellCheck={false}
-            className="mono"
-          />
-          <button type="button" onClick={generate}>
-            Generate
+      {linkSecret ? (
+        <p className="hint">
+          Pairing from the link.{" "}
+          <button type="button" onClick={() => setLinkSecret(null)}>
+            Use a phrase instead
           </button>
-          <button type="button" onClick={copy} disabled={!phrase}>
-            {copied ? "Copied" : "Copy"}
-          </button>
-        </div>
-        <span className="hint">
-          Every device uses the same phrase. Generate one on your first device, then type it on the others. It never
-          leaves your devices.
-        </span>
-      </label>
+        </p>
+      ) : (
+        <label>
+          Pairing phrase
+          <div className="row">
+            <input
+              required
+              value={phrase}
+              onChange={(e) => {
+                if (takeLink(e.target.value)) return;
+                setPhrase(e.target.value);
+                setCopied(false);
+              }}
+              placeholder="six words from your other device"
+              autoComplete="off"
+              spellCheck={false}
+              className="mono"
+            />
+            <button type="button" onClick={generate}>
+              Generate
+            </button>
+            <button type="button" onClick={copy} disabled={!phrase}>
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          <span className="hint">
+            Every device uses the same phrase. Generate one on your first device, then type it on the others. It never
+            leaves your devices.
+          </span>
+        </label>
+      )}
       {error && <p className="error">{error}</p>}
       <div className="actions">
         <button className="primary" type="submit" disabled={busy}>

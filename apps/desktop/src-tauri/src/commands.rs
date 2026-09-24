@@ -264,7 +264,7 @@ pub struct PhonePairing {
     warning: Option<String>,
 }
 
-/// For the "Pair a phone" QR code. Only shown on request: it's the key.
+/// For "Pair another device" (QR code and link). Only shown on request: it's the key.
 #[tauri::command]
 pub fn phone_pairing(state: State<'_, AppState>) -> CmdResult<PhonePairing> {
     let client = client(&state)?;

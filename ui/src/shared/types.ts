@@ -62,7 +62,7 @@ export interface Status {
   update: string | null;
 }
 
-/** The desktop's "Pair a phone" QR code. */
+/** The desktop's "Pair another device" QR code and link. */
 export interface PhonePairing {
   url: string;
   /** `data:image/svg+xml` URL. */

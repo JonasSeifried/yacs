@@ -12,8 +12,9 @@ pub struct Connected {
     pub stored: Stored,
 }
 
-/// Derive the pairing from the phrase and prove the relay is reachable and
-/// accepts the token. Nothing is persisted here, so a failure leaves no trace.
+/// Derive the pairing from the phrase (or take the secret from a pairing
+/// link) and prove the relay is reachable and accepts the token. Nothing is
+/// persisted here, so a failure leaves no trace.
 pub async fn connect(
     server_url: &str,
     token: Option<&str>,
@@ -25,11 +26,14 @@ pub async fn connect(
         .filter(|t| !t.is_empty())
         .map(str::to_owned);
 
-    // Argon2id is deliberately slow; keep it off the async runtime.
-    let pairing = tauri::async_runtime::spawn_blocking(move || Pairing::from_phrase(&phrase))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())?;
+    let pairing = match Pairing::from_secret(phrase.trim()) {
+        Ok(pairing) => pairing,
+        // Argon2id is deliberately slow; keep it off the async runtime.
+        Err(_) => tauri::async_runtime::spawn_blocking(move || Pairing::from_phrase(&phrase))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?,
+    };
 
     let client =
         Client::new(&server_url, token.clone(), pairing.clone()).map_err(|e| e.to_string())?;
@@ -45,11 +49,12 @@ pub async fn connect(
     })
 }
 
-/// What the "Pair a phone" QR code encodes: the relay's web app with the
-/// pairing in the fragment, which browsers never send to the server.
+/// What "Pair another device" shows as a QR code and link: the relay's web
+/// app with the pairing in the fragment, which browsers never send to the
+/// server. Phones open it; computers and `yacs pair` take it pasted.
 pub struct PhoneLink {
     pub url: String,
-    /// Why the phone might not get far with this link, if there's a reason.
+    /// Why other devices might not get far with this link, if there's a reason.
     pub warning: Option<String>,
 }
 
@@ -72,10 +77,10 @@ pub fn phone_link(server_url: &str, pairing: &Pairing, token: Option<&str>) -> P
     let local = matches!(host, "localhost" | "[::1]") || host.starts_with("127.");
     let warning = if local {
         Some(format!(
-            "Your phone can't reach {host}: it's this computer. Pair this computer with the relay's network address (its IP or domain) to pair a phone."
+            "Other devices can't reach {host}: it's this computer. Pair this computer with the relay's network address (its IP or domain) to pair other devices."
         ))
     } else if parsed.is_some_and(|u| u.scheme() == "http") {
-        Some("The relay uses http://, so the phone's browser won't allow Copy and Paste or installing the app. Put it behind HTTPS (see deploy/ in the repo).".into())
+        Some("The relay uses http://, so a phone's browser won't allow Copy and Paste or installing the app. Put it behind HTTPS (see deploy/ in the repo).".into())
     } else {
         None
     };
@@ -132,6 +137,16 @@ mod tests {
             connected.stored.pairing,
             Pairing::from_phrase(PHRASE).unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn takes_the_secret_from_a_pairing_link() {
+        let (url, _data) = relay(&[]).await;
+        let pairing = Pairing::from_phrase(PHRASE).unwrap();
+        let connected = connect(&url, None, format!(" {} ", pairing.to_secret()))
+            .await
+            .unwrap();
+        assert_eq!(connected.stored.pairing, pairing);
     }
 
     #[tokio::test]

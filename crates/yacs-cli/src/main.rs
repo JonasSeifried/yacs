@@ -10,6 +10,7 @@ use yacs_core::{Clip, ClipItem, Pairing, Payload};
 
 mod config;
 mod content;
+mod update;
 
 const EXAMPLES: &str = "\
 Examples:
@@ -17,7 +18,8 @@ Examples:
   yacs send ~/.ssh/id_ed25519.pub    a text file arrives as text, an image as an image
   cat notes.txt | yacs send
   yacs send --text \"hello\"
-  yacs recv > clip.txt";
+  yacs recv > clip.txt
+  yacs update                        get the newest version";
 
 /// Share your clipboard through a self-hosted YACS relay.
 #[derive(Parser)]
@@ -48,8 +50,8 @@ struct Cli {
 enum Command {
     /// Pair this machine once, so other commands need no flags.
     ///
-    /// Asks for the pairing link (on a paired computer: Settings → Pair a
-    /// phone… → Copy link) or the phrase, checks it with the relay and saves
+    /// Asks for the pairing link (on a paired computer: Settings → Pair
+    /// another device… → Copy link) or the phrase, checks it with the relay and saves
     /// it, readable only by you.
     Pair,
     /// Forget the saved pairing. Clips on the relay stay.
@@ -81,6 +83,12 @@ enum Command {
     Clear,
     /// Show the relay and its limits.
     Info,
+    /// Update yacs to the latest release (checked against the release signature).
+    Update {
+        /// Only say whether there's a newer version.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[tokio::main]
@@ -97,6 +105,7 @@ async fn main() -> std::process::ExitCode {
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Pair => return pair(&cli).await,
+        Command::Update { check } => return update::run(check).await,
         Command::Unpair => {
             let path = config::path()?;
             if config::remove(&path)? {
@@ -111,7 +120,7 @@ async fn run(cli: Cli) -> Result<()> {
     let (server, client) = connect(&cli)?;
 
     match cli.command {
-        Command::Pair | Command::Unpair => unreachable!("handled above"),
+        Command::Pair | Command::Unpair | Command::Update { .. } => unreachable!("handled above"),
         Command::Send { file, text, ttl } => {
             let (item, what) = match (text, file) {
                 (Some(text), _) => content::from_text(text),
@@ -204,7 +213,7 @@ async fn pair(cli: &Cli) -> Result<()> {
         None => {
             if std::io::stdin().is_terminal() {
                 eprintln!(
-                    "Paste the pairing link (on a paired computer: Settings → Pair a phone… → Copy link),\nor type the pairing phrase. Neither is shown."
+                    "Paste the pairing link (on a paired computer: Settings → Pair another device… → Copy link),\nor type the pairing phrase. Neither is shown."
                 );
             }
             let input = prompt_secret("Link or phrase: ")?;
@@ -269,7 +278,7 @@ impl PairLink {
             }
         }
         let Some(secret) = secret else {
-            bail!("that link has no pairing in it; copy it from Settings → Pair a phone…");
+            bail!("that link has no pairing in it; copy it from Settings → Pair another device…");
         };
         let pairing =
             Pairing::from_secret(&secret).context("the pairing in that link is damaged")?;

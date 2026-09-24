@@ -48,8 +48,12 @@ Without Docker: `cargo build --release -p yacs-server` (after building the web a
 ## Pairing
 
 1. On the first computer: open YACS → Settings, enter your relay's URL and token, press **Generate** for a new phrase, then **Pair**.
-2. On other computers: same, but type that phrase.
-3. On a phone: on a paired computer, Settings → **Pair a phone…** and scan the code with the camera. Or open your relay's URL on the phone and type the phrase.
+2. Everything else: on a paired computer, Settings → **Pair another device…** shows a QR code and a link.
+   - Phone: scan the code with the camera (on iPhone, see the tips below).
+   - Another computer: **Copy link** and paste it into that computer's Relay URL field.
+   - Server: paste the link into `yacs pair` (see [Command line](#command-line)).
+
+   Typing the phrase works everywhere too.
 
 ### Phone tips
 
@@ -65,7 +69,7 @@ Without Docker: `cargo build --release -p yacs-server` (after building the web a
 mkdir -p ~/.local/bin
 curl -fsSLo ~/.local/bin/yacs https://github.com/JonasSeifried/yacs/releases/latest/download/yacs-cli-linux-$(uname -m)
 chmod +x ~/.local/bin/yacs
-yacs pair   # paste the link from a paired computer: Settings → Pair a phone… → Copy link
+yacs pair   # paste the link from a paired computer: Settings → Pair another device… → Copy link
 ```
 
 `yacs-cli-macos` and `yacs-cli-windows-x86_64.exe` are on the [releases page](https://github.com/JonasSeifried/yacs/releases). Once paired:
@@ -75,13 +79,14 @@ yacs send ~/.ssh/id_ed25519.pub   # text files arrive as text, images as images
 some-command | yacs send          # or send stdin; the final newline is dropped
 yacs send --text "hello"
 yacs recv > clip.txt              # the newest clip; `yacs list` shows the others
+yacs update                       # the newest version, checked against the release signature
 ```
 
 The pairing is saved in `~/.config/yacs/cli.json`, readable only by you. Scripts can skip it and set `YACS_SERVER`, `YACS_TOKEN` and `YACS_PHRASE` instead.
 
 ## Updating
 
-The desktop apps update themselves; for `yacs`, run the `curl` line again. The relay is a Docker image: in `deploy/`, run
+The desktop apps update themselves, and `yacs update` updates the command line (from 0.2.1, run the `curl` line once more). The relay is a Docker image: in `deploy/`, run
 
 ```sh
 docker compose pull && docker compose up -d
