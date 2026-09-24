@@ -6,7 +6,7 @@ Self-hostable, end-to-end encrypted clipboard sync. Rust monorepo: Axum relay, T
 
 | Topic | Decision |
 | --- | --- |
-| Desktop v1 | macOS + Windows. Linux in v1.x (X11 first; Wayland gets a CLI/tray fallback because global hotkeys are blocked there). |
+| Desktop v1 | macOS + Windows. Linux since 0.2.3 (AppImage, .deb, .rpm; on Wayland, bind `yacs-desktop --toggle` since global hotkeys are blocked there). |
 | Mobile | v1: PWA served by the relay. v2: Tauri mobile app with native clipboard plugins and share extensions. Both share one UI codebase. |
 | Pairing | Shared phrase, focus on self-hosting. Low-cost hardening: the app generates the phrase by default, and Argon2id is used for key derivation. Accounts only if a public hosted version happens later. |
 | Hotkey UX | `CommandOrControl+Shift+Space` (⌘⇧Space on macOS, Ctrl+Shift+Space on Windows) opens Spotlight with a preview of the latest remote clip. `Ctrl+C` copies the preview to the local clipboard. `Ctrl+V` sends the local clipboard. `Esc` or losing focus closes it. |
@@ -213,7 +213,7 @@ This reorders the original roadmap: crypto and the protocol come first, so the U
 | **2: Desktop shell** ✅ | Tauri | Tray, hidden Spotlight window, global hotkey, single instance, autostart, pairing + settings UI (incl. 6-word EFF phrase generator in `yacs-core`), keyring | Hotkey opens/closes Spotlight reliably on macOS + Windows |
 | **3: Desktop clipboard** ✅ (verified Mac ↔ PC) | Core UX | `clipboard-rs` multi-format read/write, history list + keyboard navigation, Ctrl+C / Ctrl+V / Del, TTL dropdown, sanitized preview | Rich text from Word/browser and screenshots round-trip between Mac and PC |
 | **4: PWA + release (v1.0)** ✅ (v0.1.1: phones pair via QR over HTTPS, relay on a VPS behind nginx, desktop self-update verified) | Mobile + ship | `yacs-wasm`, mobile UI, embedded PWA, QR pairing, Dockerfile + compose (Caddy or nginx), signed desktop builds, updater | A phone can pair via QR and copy/send; `docker compose up` works on a VPS |
-| **5: v1.x** | Breadth | ✅ SSE live updates (0.2.0) and the relay version in desktop Settings; ✅ CLI for servers: `yacs pair` saves the pairing (from the desktop's link or the phrase), `yacs send FILE`, static release binaries, `yacs update` (signed), `yacs relay update` (Docker compose); the desktop apps bundle `yacs` and put it on the PATH on request; Linux (X11 + CLI fallback for Wayland) later | |
+| **5: v1.x** | Breadth | ✅ SSE live updates (0.2.0) and the relay version in desktop Settings; ✅ CLI for servers: `yacs pair` saves the pairing (from the desktop's link or the phrase), `yacs send FILE`, static release binaries, `yacs update` (signed), `yacs relay update` (Docker compose); the desktop apps bundle `yacs` and put it on the PATH on request (macOS, Windows); ✅ Linux desktop (0.2.3) | |
 | **6: v2.0** | Native + big files | Tauri mobile with native clipboard plugins + share extensions; P2P large-file transfer | |
 
 ### Note on v2 P2P

@@ -2,7 +2,7 @@
 
 **Yet Another Clipboard Service**: copy on one device, paste on another. End-to-end encrypted, self-hosted, no accounts.
 
-- **Desktop** (macOS, Windows): press `⌘⇧Space` / `Ctrl+Shift+Space` for a Spotlight-style panel. `⌘V` sends your clipboard; `↵` copies a clip back, with every format it had (text, HTML, RTF, images).
+- **Desktop** (macOS, Windows, Linux): press `⌘⇧Space` / `Ctrl+Shift+Space` for a Spotlight-style panel. `⌘V` sends your clipboard; `↵` copies a clip back, with every format it had (text, HTML, RTF, images).
 - **Phone**: a web app served by your relay. Scan a QR code from the desktop and it's paired; add it to the home screen to use it like an app.
 - **Relay**: one small server that stores encrypted clips until they expire (15 minutes by default). It can't read them.
 
@@ -61,6 +61,14 @@ Without Docker: `cargo build --release -p yacs-server` (after building the web a
 - **Android:** Chrome is recommended (menu → **Install app**).
 - The clipboard buttons need HTTPS, which both setups above give you.
 
+### Linux tips
+
+- Take the `.AppImage` (`chmod +x` it, then run it) or the `.deb` / `.rpm`. All three update themselves; the packages ask for your password to install an update.
+- The pairing is kept in your desktop's keyring (GNOME Keyring or KWallet, over the Secret Service), which most desktops run.
+- The tray icon needs AppIndicator support. Ubuntu has it; on other GNOME desktops, add the "AppIndicator and KStatusNotifierItem Support" extension.
+- On Wayland, apps usually can't have global shortcuts. Bind `yacs-desktop --toggle` (with the AppImage: its path, then `--toggle`) to a shortcut in your desktop's keyboard settings instead.
+- The command line isn't bundled on Linux; install it as below.
+
 ## Command line
 
 `yacs` sends and receives clips from a terminal, e.g. on a server with no clipboard of its own. On Linux:
@@ -101,7 +109,7 @@ Desktop Settings shows a hint when the relay is older than the apps. To update i
 
 ## Development
 
-Needs Rust (stable), Node 22+, pnpm, and [`wasm-pack`](https://rustwasm.github.io/wasm-pack/) for the web app.
+Needs Rust (stable), Node 22+, pnpm, and [`wasm-pack`](https://rustwasm.github.io/wasm-pack/) for the web app. The desktop app on Linux also needs [Tauri's system libraries](https://v2.tauri.app/start/prerequisites/#linux) and `libdbus-1-dev`.
 
 ```sh
 pnpm install
@@ -114,3 +122,7 @@ cargo test --workspace && pnpm ui:test
 ```
 
 The design, protocol and roadmap are in [PLAN.md](PLAN.md).
+
+## License
+
+[AGPL-3.0](LICENSE). Use it and self-host it freely, for yourself or your company. If you change YACS and let others use your version, including as a hosted relay, you have to publish your changes under the same license.

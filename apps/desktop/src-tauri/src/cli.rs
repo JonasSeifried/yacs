@@ -19,7 +19,11 @@ pub struct CliStatus {
     location: Option<String>,
 }
 
+/// Linux builds don't bundle it: the standalone `yacs` updates itself there.
 fn bundled() -> Option<PathBuf> {
+    if !cfg!(any(target_os = "macos", windows)) {
+        return None;
+    }
     let exe = std::env::current_exe().ok()?;
     let cli = exe.with_file_name(if cfg!(windows) { "yacs.exe" } else { "yacs" });
     cli.is_file().then_some(cli)
@@ -282,7 +286,7 @@ mod os {
     }
 }
 
-/// No desktop app bundle for other systems yet.
+/// Never reached: `bundled` is `None` here.
 #[cfg(not(any(target_os = "macos", windows)))]
 mod os {
     use std::path::Path;

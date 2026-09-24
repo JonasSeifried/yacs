@@ -34,9 +34,17 @@ jobs:
             args: --target universal-apple-darwin
           - os: windows-latest
             args: ""
+          # AppImage, .deb and .rpm. 22.04's older glibc runs on more distros.
+          - os: ubuntu-22.04
+            args: ""
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      # Tauri's system libraries, plus D-Bus for the keychain (Secret Service).
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libdbus-1-dev patchelf
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -58,8 +66,12 @@ jobs:
           # Updater artifacts need the private key, which only CI has, so
           # they're enabled here rather than in tauri.conf.json. The bundled
           # `yacs` command (built below) is release-only too, so dev builds
-          # don't need it.
-          config='{bundle: {createUpdaterArtifacts: true, externalBin: ["binaries/yacs"]}}'
+          # don't need it. Linux gets none: the standalone one updates itself.
+          if [ "$RUNNER_OS" = Linux ]; then
+            config='{bundle: {createUpdaterArtifacts: true}}'
+          else
+            config='{bundle: {createUpdaterArtifacts: true, externalBin: ["binaries/yacs"]}}'
+          fi
           if [ "$RUNNER_OS" = Windows ] && [ -n "$AZURE_SIGNING_ENDPOINT" ]; then
             cargo install trusted-signing-cli --locked
             sign="trusted-signing-cli -e $AZURE_SIGNING_ENDPOINT -a $AZURE_SIGNING_ACCOUNT -c $AZURE_SIGNING_PROFILE -d YACS %1"
@@ -72,6 +84,7 @@ jobs:
       # Settings → Command line puts this on the PATH. Tauri wants it named
       # for the target; a universal build looks up each architecture too.
       - name: Bundled yacs command
+        if: runner.os != 'Linux'
         shell: bash
         run: |
           bin=apps/desktop/src-tauri/binaries
@@ -134,9 +147,10 @@ jobs:
           releaseName: YACS ${{ github.ref_name }}
           # GitHub lists assets in one flat list, so this sorts them by what you want.
           releaseBody: |
-            **Desktop app** (installed apps update themselves; Settings → Command line installs `yacs` too)
+            **Desktop app** (installed apps update themselves; on macOS and Windows, Settings → Command line installs `yacs` too)
             - macOS: `YACS_${{ steps.version.outputs.version }}_universal.dmg`
             - Windows: `YACS_${{ steps.version.outputs.version }}_x64-setup.exe` (or the `.msi`)
+            - Linux: `YACS_${{ steps.version.outputs.version }}_amd64.AppImage`, or the `.deb` / `.rpm`
 
             **Command line** (`yacs`, for servers and scripts; see the [README](https://github.com/${{ github.repository }}#command-line))
             - Linux: `yacs-cli-linux-x86_64`, `yacs-cli-linux-aarch64`
@@ -318,7 +332,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          (cd cli && sha256sum yacs-cli-* > ../sha256.txt && mv ../sha256.txt yacs-cli-sha256.txt)
+          (cd cli && sha256sum $(ls yacs-cli-* | grep -v '\.sig$') > yacs-cli-sha256.txt)
           gh release upload "$TAG" cli/* --clobber
           if [[ "$TAG" == *-* ]]; then
             gh release edit "$TAG" --draft=false --prerelease

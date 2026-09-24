@@ -1,6 +1,7 @@
 //! The pairing (channel id + key) and the relay's access token, stored as one
-//! keychain entry: macOS Keychain or Windows Credential Manager. One entry
-//! means at most one keychain prompt.
+//! keychain entry: macOS Keychain, Windows Credential Manager, or on Linux the
+//! Secret Service (GNOME Keyring, KWallet). One entry means at most one
+//! keychain prompt.
 //!
 //! Debug builds use a plain file instead. Each rebuild changes an unsigned
 //! binary's identity, so the keychain would ask again every time, and
@@ -15,9 +16,16 @@ use yacs_core::{ChannelKey, Pairing};
 
 const ACCOUNT: &str = "pairing";
 
+/// Linux desktops don't all run a keyring.
+const KEYRING_HINT: &str = if cfg!(target_os = "linux") {
+    " (YACS keeps the pairing in your desktop's keyring: is GNOME Keyring or KWallet running?)"
+} else {
+    ""
+};
+
 #[derive(Debug, thiserror::Error)]
 pub enum SecretsError {
-    #[error("keychain error: {0}")]
+    #[error("keychain error: {0}{KEYRING_HINT}")]
     Keyring(#[from] keyring::Error),
     #[error("can't access the dev pairing file: {0}")]
     File(#[from] std::io::Error),
@@ -190,6 +198,28 @@ mod tests {
 
         fs::write(&path, "garbage").unwrap();
         assert!(matches!(secrets.load(), Err(SecretsError::Corrupt)));
+        secrets.delete().unwrap();
+        assert!(secrets.load().unwrap().is_none());
+    }
+
+    /// Uses the real keychain: `cargo test -p yacs-desktop -- --ignored keychain`.
+    #[test]
+    #[ignore]
+    fn keychain_round_trips() {
+        let secrets = Secrets::Keychain {
+            service: "com.jonasseifried.yacs.test".into(),
+        };
+        let stored = Stored {
+            pairing: Pairing {
+                channel_id: ChannelId::from_bytes([5; 32]),
+                key: ChannelKey::from_bytes([6; 32]),
+            },
+            token: Some("s3cret".into()),
+        };
+        secrets.save(&stored).unwrap();
+        let loaded = secrets.load().unwrap().unwrap();
+        assert_eq!(loaded.pairing, stored.pairing);
+        assert_eq!(loaded.token, stored.token);
         secrets.delete().unwrap();
         assert!(secrets.load().unwrap().is_none());
     }
