@@ -145,6 +145,14 @@ button.icon {
   line-height: 1.45;
 }
 
+.scanner {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 12px;
+  background: #000;
+}
+
 .top {
   display: flex;
   align-items: center;

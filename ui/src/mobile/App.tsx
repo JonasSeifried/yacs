@@ -14,7 +14,8 @@ import { clipTitle, previewDocument, previewKind } from "../shared/clip";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
 import type { ClipItem, ClipMeta, ServerConfig } from "../shared/types";
 import { copyClip, imageItem, pick, readClipboard, shareImage } from "./clipboard";
-import { type PairLink, forgetPairLink, guessDeviceName, parsePairLink } from "./link";
+import { type PairLink, forgetPairLink, guessDeviceName, isIosBrowserTab, pairLinkFromCode, parsePairLink } from "./link";
+import { canScan, qrDecoder } from "./qr";
 
 const TTL_KEY = "yacs.ttl";
 /** While the app is open, look for new clips this often. */
@@ -52,7 +53,7 @@ export function App() {
       />
     );
   }
-  if (!stored) return <PairForm onPaired={setStored} />;
+  if (!stored) return <PairForm onPaired={setStored} onLink={setLink} />;
   return <Home key={stored.secret} stored={stored} onChange={setStored} />;
 }
 
@@ -83,6 +84,7 @@ function PairFromLink(props: { link: PairLink; replacing: boolean; onDone: (s: S
           Clips will sync through <b>{location.host}</b>, end-to-end encrypted.
           {props.replacing && " This replaces the pairing this device has now."}
         </p>
+        <IosHomeScreenHint />
         <label>
           <span>Device name <span className="muted">shown to your other devices</span></span>
           <input value={deviceName} onChange={(e) => setDeviceName(e.target.value)} required />
@@ -99,7 +101,8 @@ function PairFromLink(props: { link: PairLink; replacing: boolean; onDone: (s: S
   );
 }
 
-function PairForm({ onPaired }: { onPaired: (s: StoredPairing) => void }) {
+function PairForm({ onPaired, onLink }: { onPaired: (s: StoredPairing) => void; onLink: (l: PairLink) => void }) {
+  const [scanning, setScanning] = useState(false);
   const [phrase, setPhrase] = useState("");
   const [token, setToken] = useState("");
   const [deviceName, setDeviceName] = useState(guessDeviceName);
@@ -118,6 +121,8 @@ function PairForm({ onPaired }: { onPaired: (s: StoredPairing) => void }) {
     }
   };
 
+  if (scanning) return <Scanner onLink={onLink} onCancel={() => setScanning(false)} />;
+
   return (
     <Screen>
       <form className="card pair" onSubmit={submit}>
@@ -125,6 +130,12 @@ function PairForm({ onPaired }: { onPaired: (s: StoredPairing) => void }) {
         <p className="muted">
           Scan the QR code in YACS on your computer (Settings → Pair a phone), or type the pairing phrase.
         </p>
+        <IosHomeScreenHint />
+        {canScan() && (
+          <button type="button" className="primary" onClick={() => setScanning(true)}>
+            Scan QR code
+          </button>
+        )}
         <label>
           Pairing phrase
           <textarea
@@ -156,6 +167,85 @@ function PairForm({ onPaired }: { onPaired: (s: StoredPairing) => void }) {
         </button>
       </form>
     </Screen>
+  );
+}
+
+function Scanner({ onLink, onCancel }: { onLink: (l: PairLink) => void; onCancel: () => void }) {
+  const video = useRef<HTMLVideoElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const onLinkRef = useRef(onLink);
+  onLinkRef.current = onLink;
+
+  useEffect(() => {
+    let stopped = false;
+    let stream: MediaStream | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    (async () => {
+      try {
+        const decode = await qrDecoder();
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+        const el = video.current;
+        if (stopped || !el) return;
+        el.srcObject = stream;
+        await el.play();
+        const tick = async () => {
+          if (stopped) return;
+          const code = await decode(el).catch(() => null);
+          if (stopped) return;
+          if (code) {
+            const link = pairLinkFromCode(code);
+            if (!("error" in link)) return onLinkRef.current(link);
+            setProblem(link.error);
+          }
+          timer = setTimeout(tick, 150);
+        };
+        tick();
+      } catch (e) {
+        if (!stopped) setError(cameraError(e));
+      }
+    })();
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      for (const track of stream?.getTracks() ?? []) track.stop();
+    };
+  }, []);
+
+  return (
+    <Screen>
+      <div className="card pair">
+        <h1>Scan the QR code</h1>
+        <p className="muted">On your computer: YACS → Settings → Pair a phone.</p>
+        {error ? (
+          <p className="error">{error}</p>
+        ) : (
+          <video ref={video} className="scanner" playsInline muted autoPlay />
+        )}
+        {problem && !error && <p className="error">{problem}</p>}
+        <button type="button" className="ghost" onClick={onCancel}>
+          {error ? "Back" : "Cancel"}
+        </button>
+      </div>
+    </Screen>
+  );
+}
+
+function cameraError(e: unknown): string {
+  const name = e instanceof DOMException ? e.name : "";
+  if (name === "NotAllowedError") return "YACS isn't allowed to use the camera. Allow it in your browser's settings, or type the phrase instead.";
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "No camera found. Type the phrase instead.";
+  return errorText(e);
+}
+
+/** Pairing in an iPhone browser tab doesn't carry over to the home screen app. */
+function IosHomeScreenHint() {
+  if (!isIosBrowserTab()) return null;
+  return (
+    <p className="muted small">
+      Want YACS on your home screen? Add it there first (Share → Add to Home Screen), then pair from inside it: the
+      home screen app doesn't share anything with the browser.
+    </p>
   );
 }
 
