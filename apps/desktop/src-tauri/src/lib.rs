@@ -5,6 +5,7 @@ mod clipboard;
 mod clips;
 mod commands;
 mod hotkey;
+mod live;
 mod pairing;
 mod secrets;
 mod settings;
@@ -68,6 +69,8 @@ pub fn run() {
             let paired = state.client().is_some();
             app.manage(state);
             app.manage(update::Updates::default());
+            app.manage(live::Live::default());
+            live::restart(app.handle());
 
             windows::create(app.handle())?;
             tray::create(app.handle())?;

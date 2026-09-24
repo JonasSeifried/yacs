@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   type Decrypted,
+  LiveUnsupported,
   type StoredPairing,
   WebClient,
   generatePhrase,
@@ -18,8 +19,10 @@ import { type PairLink, forgetPairLink, guessDeviceName, isIosBrowserTab, pairLi
 import { canScan, qrDecoder } from "./qr";
 
 const TTL_KEY = "yacs.ttl";
-/** While the app is open, look for new clips this often. */
+/** While the app is open without a live connection, look for new clips this often. */
 const POLL_MS = 10_000;
+const LIVE_RETRY_MIN_MS = 1_000;
+const LIVE_RETRY_MAX_MS = 60_000;
 
 // Read once at startup, then removed from the address bar.
 const initialLink = parsePairLink(location.hash);
@@ -249,6 +252,74 @@ function IosHomeScreenHint() {
   );
 }
 
+/**
+ * Keeps a live connection to the relay while the app is on screen, calling
+ * `onChange` when the history changes. Phones suspend background pages
+ * anyway, so it disconnects when hidden. The returned ref says whether it's
+ * connected; polling covers the rest.
+ */
+function useLiveUpdates(client: WebClient, onChange: () => void) {
+  const connected = useRef(false);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  useEffect(() => {
+    let stopped = false;
+    let controller: AbortController | null = null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let retry = LIVE_RETRY_MIN_MS;
+
+    const connect = async () => {
+      clearTimeout(timer);
+      if (stopped || controller || document.visibilityState !== "visible") return;
+      const current = new AbortController();
+      controller = current;
+      const started = Date.now();
+      let unsupported = false;
+      try {
+        await client.listen(
+          current.signal,
+          () => {
+            connected.current = true;
+            onChangeRef.current();
+          },
+          () => onChangeRef.current(),
+        );
+      } catch (e) {
+        unsupported = e instanceof LiveUnsupported;
+      } finally {
+        connected.current = false;
+        if (controller === current) controller = null;
+      }
+      // Old relays get polled; the next time the app is shown, it asks again.
+      if (stopped || unsupported || current.signal.aborted) return;
+      if (Date.now() - started > LIVE_RETRY_MAX_MS) retry = LIVE_RETRY_MIN_MS;
+      timer = setTimeout(connect, retry);
+      retry = Math.min(retry * 2, LIVE_RETRY_MAX_MS);
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        retry = LIVE_RETRY_MIN_MS;
+        connect();
+      } else {
+        clearTimeout(timer);
+        controller?.abort();
+      }
+    };
+
+    connect();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      controller?.abort();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [client]);
+
+  return connected;
+}
+
 // ── Home: send + history ─────────────────────────────────────────────────
 
 type List = { state: "loading" } | { state: "ok"; clips: ClipMeta[] } | { state: "error"; message: string };
@@ -311,16 +382,18 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
     }
   }, [client, load]);
 
+  const live = useLiveUpdates(client, refresh);
+
   useEffect(() => {
     refresh();
     const onVisible = () => document.visibilityState === "visible" && refresh();
     document.addEventListener("visibilitychange", onVisible);
-    const poll = setInterval(() => document.visibilityState === "visible" && refresh(), POLL_MS);
+    const poll = setInterval(() => document.visibilityState === "visible" && !live.current && refresh(), POLL_MS);
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
       clearInterval(poll);
     };
-  }, [refresh]);
+  }, [refresh, live]);
 
   const clips = list.state === "ok" ? list.clips : [];
   const open = clips.find((c) => c.id === openId) ?? clips[0] ?? null;

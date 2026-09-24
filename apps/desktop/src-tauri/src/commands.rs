@@ -15,7 +15,7 @@ use yacs_core::api::{ClipMeta, ServerConfig};
 use crate::clips::{self, ClipView, Entry};
 use crate::state::AppState;
 use crate::update::{self, Updates};
-use crate::{clipboard, hotkey, pairing, windows};
+use crate::{clipboard, hotkey, live, pairing, windows};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -82,6 +82,7 @@ pub async fn pair(
             .map_err(|e| e.to_string())?;
     }
     state.set_client(Some(connected.client));
+    live::restart(&app);
     let _ = app.emit(windows::EVENT_STATUS_CHANGED, ());
     Ok(())
 }
@@ -90,6 +91,7 @@ pub async fn pair(
 pub fn unpair(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
     state.secrets.delete().map_err(|e| e.to_string())?;
     state.set_client(None);
+    live::restart(&app);
     {
         let mut settings = state.settings();
         settings.server_url = None;

@@ -96,7 +96,7 @@ struct Envelope { version: u8, nonce: [u8; 24], ciphertext: Vec<u8> }
 ## 4. Relay server (`yacs-server`)
 
 ```
-GET    /api/v1/config                                 → { default_ttl_secs, max_ttl_secs, max_size_bytes, max_clips }
+GET    /api/v1/config                                 → { default_ttl_secs, max_ttl_secs, max_size_bytes, max_clips, version }
 POST   /api/v1/channels/{channel_id}/clips?ttl=900    body: octet-stream Envelope
                                                       → 201 { id, created_at_ms, expires_at_ms, size }  (ttl clamped to max_ttl)
 GET    /api/v1/channels/{channel_id}/clips            → [{ id, created_at_ms, expires_at_ms, size }]  newest first
@@ -104,7 +104,7 @@ GET    /api/v1/channels/{channel_id}/clips/latest     → 200 Envelope | 404   (
 GET    /api/v1/channels/{channel_id}/clips/{id}       → 200 Envelope | 404   (immutable, cacheable)
 DELETE /api/v1/channels/{channel_id}/clips/{id}
 DELETE /api/v1/channels/{channel_id}/clips            clear the whole history
-GET    /api/v1/channels/{channel_id}/events           SSE "new clip" ping (v1.x)
+GET    /api/v1/channels/{channel_id}/events           SSE: { type: added | deleted | cleared, … } as clips change
 GET    /healthz
 GET    /*                                             embedded PWA (rust-embed)
 ```
@@ -115,6 +115,8 @@ GET    /*                                             embedded PWA (rust-embed)
 - **Storage:** `data/{hex channel_id}/{ulid}.{expires_at_ms}.bin`. Hex, not base64url, so two ids can't collide on case-insensitive filesystems (macOS, Windows). Because the expiry is in the filename, the reaper never has to open a file. Writes go to a temp file first and are then renamed, so a clip is never half-written. The reaper runs on a `tokio::time::interval` (60 s) and deletes expired files and empty channel dirs.
 - **The server sees** each clip's size, creation time and expiry. Contents, formats and device names stay encrypted.
 - **Limits:** `DefaultBodyLimit`, `max_clips` per channel, total disk quota. No rate limiting: the access token keeps strangers out, the quotas bound disk use, and behind a reverse proxy per-IP limits would lump all clients together. If wanted, rate-limit in Caddy/Traefik. Expired-but-not-yet-reaped clips don't hold a history slot.
+- **Live updates:** `/events` is a server-sent event stream per channel (a `tokio::sync::broadcast` per listened-to channel, pruned by the reaper). Events carry only what the relay already knows (clip metadata, deleted ids); clients re-list after (re)connecting, since events sent while they were away are gone. A keep-alive comment every 20 s keeps proxies (nginx drops quiet upstreams after 60 s) from cutting the stream, and lets clients spot a dead connection after 60 s of silence; `X-Accel-Buffering: no` stops nginx from buffering it. Streams end on shutdown, so a restart doesn't wait on them. The desktop listens in the background while paired and prefetches new clips up to 4 MB, so Spotlight opens with them decrypted; the PWA listens while it's on screen and polls every 10 s only without a connection (e.g. relays before 0.2.0, which answer 404).
+- **Version:** `/config` reports the relay's version. The desktop, which updates itself, shows it in Settings with a hint when the relay is older than the newest release.
 - **Logging** shows the route pattern (`/api/v1/channels/{channel}/clips`), never the URI, because the URI contains the channel id.
 - **Optional access token:** set `YACS_ACCESS_TOKEN` and clients must send `Authorization: Bearer …`. This keeps strangers from filling your disk when the server is reachable from the internet. The server logs a warning at startup when it's unset.
 - **Config:** env vars / `clap` flags. Durations are parsed with `humantime` (`15m`, `24h`, `7d`).
@@ -211,7 +213,7 @@ This reorders the original roadmap: crypto and the protocol come first, so the U
 | **2: Desktop shell** ✅ | Tauri | Tray, hidden Spotlight window, global hotkey, single instance, autostart, pairing + settings UI (incl. 6-word EFF phrase generator in `yacs-core`), keyring | Hotkey opens/closes Spotlight reliably on macOS + Windows |
 | **3: Desktop clipboard** ✅ (verified Mac ↔ PC) | Core UX | `clipboard-rs` multi-format read/write, history list + keyboard navigation, Ctrl+C / Ctrl+V / Del, TTL dropdown, sanitized preview | Rich text from Word/browser and screenshots round-trip between Mac and PC |
 | **4: PWA + release (v1.0)** ✅ (v0.1.1: phones pair via QR over HTTPS, relay on a VPS behind nginx, desktop self-update verified) | Mobile + ship | `yacs-wasm`, mobile UI, embedded PWA, QR pairing, Dockerfile + compose (Caddy or nginx), signed desktop builds, updater | A phone can pair via QR and copy/send; `docker compose up` works on a VPS |
-| **5: v1.x** | Breadth | Linux (X11 + CLI fallback for Wayland), SSE live updates (history refreshes while Spotlight is open) | |
+| **5: v1.x** | Breadth | ✅ SSE live updates (0.2.0) and the relay version in desktop Settings; Linux (X11 + CLI fallback for Wayland) later | |
 | **6: v2.0** | Native + big files | Tauri mobile with native clipboard plugins + share extensions; P2P large-file transfer | |
 
 ### Note on v2 P2P

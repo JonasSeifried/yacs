@@ -1,12 +1,15 @@
 //! Talks to a YACS relay on behalf of one paired channel. Encrypts before
 //! sending and decrypts after receiving, so callers only see plaintext clips.
 
+mod sse;
+
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use reqwest::header::{self, HeaderMap};
 use reqwest::{RequestBuilder, Response, StatusCode, Url};
 use yacs_core::api::{
-    ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody, HEADER_CLIP_ID, HEADER_CREATED_AT,
+    ChannelEvent, ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody, HEADER_CLIP_ID, HEADER_CREATED_AT,
     HEADER_EXPIRES_AT, ServerConfig,
 };
 use yacs_core::{Envelope, Pairing, Payload};
@@ -29,14 +32,23 @@ pub enum Error {
     Server { status: u16, message: String },
     #[error("the server sent a malformed response")]
     BadResponse,
+    #[error("the live update connection went quiet")]
+    Stalled,
     #[error(transparent)]
     Protocol(#[from] yacs_core::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// A live event stream sends a keep-alive every 20 s; this much silence means
+/// the connection is dead (e.g. after the computer slept).
+const EVENTS_IDLE: Duration = Duration::from_secs(60);
+
 pub struct Client {
     http: reqwest::Client,
+    /// Without the overall timeout, which would cut off the event stream.
+    stream_http: reqwest::Client,
+    events_url: Url,
     clips_url: Url,
     config_url: Url,
     token: Option<String>,
@@ -57,13 +69,15 @@ impl Client {
             Url::parse(&format!("{base}/api/v1/{path}"))
                 .map_err(|e| Error::InvalidUrl(e.to_string()))
         };
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("yacs/", env!("CARGO_PKG_VERSION")))
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(120))
-            .build()?;
+        let builder = || {
+            reqwest::Client::builder()
+                .user_agent(concat!("yacs/", env!("CARGO_PKG_VERSION")))
+                .connect_timeout(Duration::from_secs(10))
+        };
         Ok(Self {
-            http,
+            http: builder().timeout(Duration::from_secs(120)).build()?,
+            stream_http: builder().build()?,
+            events_url: api(&format!("channels/{}/events", pairing.channel_id))?,
             clips_url: api(&format!("channels/{}/clips", pairing.channel_id))?,
             config_url: api("config")?,
             token: token.filter(|t| !t.is_empty()),
@@ -127,6 +141,21 @@ impl Client {
         Ok(())
     }
 
+    /// Subscribe to changes. Once this returns, nothing is missed until the
+    /// stream ends, so list after calling it, not before. Relays before 0.2.0
+    /// answer 404.
+    pub async fn events(&self) -> Result<Events> {
+        let req = self
+            .stream_http
+            .get(self.events_url.clone())
+            .header(header::ACCEPT, "text/event-stream");
+        Ok(Events {
+            res: self.send(req).await?,
+            parser: sse::Parser::default(),
+            ready: VecDeque::new(),
+        })
+    }
+
     fn clip_url(&self, id: &str) -> Url {
         let mut url = self.clips_url.clone();
         url.path_segments_mut()
@@ -174,6 +203,34 @@ impl Client {
                 }
             }
         })
+    }
+}
+
+/// See [`Client::events`].
+pub struct Events {
+    res: Response,
+    parser: sse::Parser,
+    ready: VecDeque<String>,
+}
+
+impl Events {
+    /// The next change; `Ok(None)` once the relay ended the stream (it's
+    /// shutting down, or this client fell behind). Reconnect after either.
+    pub async fn next(&mut self) -> Result<Option<ChannelEvent>> {
+        loop {
+            if let Some(data) = self.ready.pop_front() {
+                return serde_json::from_str(&data)
+                    .map(Some)
+                    .map_err(|_| Error::BadResponse);
+            }
+            let chunk = tokio::time::timeout(EVENTS_IDLE, self.res.chunk())
+                .await
+                .map_err(|_| Error::Stalled)??;
+            match chunk {
+                Some(bytes) => self.ready.extend(self.parser.feed(&bytes)),
+                None => return Ok(None),
+            }
+        }
     }
 }
 

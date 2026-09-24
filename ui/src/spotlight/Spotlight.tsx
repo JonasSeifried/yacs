@@ -56,13 +56,8 @@ export function Spotlight() {
     setLoaded((l) => ({ ...l, [id]: result }));
   }, []);
 
-  const refresh = useCallback(async () => {
+  const reloadList = useCallback(async () => {
     setNow(Date.now());
-    const s = await platform.status();
-    setStatus(s);
-    setTtl(s.defaultTtlSecs);
-    if (!s.paired) return;
-    platform.serverConfig().then(setConfig, () => {});
     try {
       const listed = await platform.listClips();
       setList({ state: "ok", clips: listed });
@@ -79,6 +74,15 @@ export function Spotlight() {
     }
   }, [load]);
 
+  const refresh = useCallback(async () => {
+    const s = await platform.status();
+    setStatus(s);
+    setTtl(s.defaultTtlSecs);
+    if (!s.paired) return;
+    platform.serverConfig().then(setConfig, () => {});
+    await reloadList();
+  }, [reloadList]);
+
   useEffect(() => {
     refresh();
     const onShown = () => {
@@ -88,9 +92,14 @@ export function Spotlight() {
       setBusy(false);
       refresh();
     };
-    const subscriptions = [platform.onSpotlightShown(onShown), platform.onStatusChanged(refresh)];
+    const subscriptions = [
+      platform.onSpotlightShown(onShown),
+      platform.onStatusChanged(refresh),
+      // Live updates from the relay: keeps the chosen expiry and selection.
+      platform.onClipsChanged(reloadList),
+    ];
     return () => subscriptions.forEach((s) => s.then((unsubscribe) => unsubscribe()));
-  }, [refresh, cancelHide]);
+  }, [refresh, reloadList, cancelHide]);
 
   useEffect(() => {
     if (selected) load(selected.id);

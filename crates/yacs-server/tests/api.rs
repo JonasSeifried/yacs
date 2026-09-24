@@ -8,9 +8,9 @@ use clap::Parser;
 use http_body_util::BodyExt;
 use tempfile::TempDir;
 use tower::ServiceExt;
-use yacs_core::api::{ClipMeta, HEADER_CLIP_ID, ServerConfig};
+use yacs_core::api::{ChannelEvent, ClipMeta, HEADER_CLIP_ID, ServerConfig};
 use yacs_core::{ChannelId, ChannelKey, Clip, ClipItem, Envelope, Pairing, Payload};
-use yacs_server::{AppState, Config, ManualClock, Store, router};
+use yacs_server::{AppState, Config, Events, ManualClock, Store, router};
 
 const START_MS: u64 = 1_758_600_000_000;
 const MINUTE: Duration = Duration::from_secs(60);
@@ -19,6 +19,7 @@ struct TestApp {
     router: Router,
     clock: Arc<ManualClock>,
     store: Arc<Store>,
+    events: Arc<Events>,
     dir: TempDir,
 }
 
@@ -52,15 +53,18 @@ async fn app(args: &[&str]) -> TestApp {
         .unwrap(),
     );
     let clock = Arc::new(ManualClock::new(START_MS));
+    let events = Arc::new(Events::default());
     let router = router(AppState {
         store: store.clone(),
         config: Arc::new(config),
         clock: clock.clone(),
+        events: events.clone(),
     });
     TestApp {
         router,
         clock,
         store,
+        events,
         dir,
     }
 }
@@ -126,8 +130,61 @@ impl TestApp {
         res.json()
     }
 
+    /// Opens a channel's event stream; the relay is subscribed once this returns.
+    async fn listen(&self, channel: &str, headers: &[(&str, &str)]) -> Listener {
+        let mut req = Request::get(format!("/api/v1/channels/{channel}/events"));
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        let res = self
+            .router
+            .clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        Listener {
+            status: res.status(),
+            headers: res.headers().clone(),
+            body: res.into_body(),
+            buf: String::new(),
+        }
+    }
+
     fn files(&self) -> usize {
         walk(self.dir.path())
+    }
+}
+
+struct Listener {
+    status: StatusCode,
+    headers: axum::http::HeaderMap,
+    body: Body,
+    buf: String,
+}
+
+impl Listener {
+    /// The next event, skipping keep-alive comments. `None` once the stream ended.
+    async fn next(&mut self) -> Option<ChannelEvent> {
+        loop {
+            if let Some(end) = self.buf.find("\n\n") {
+                let message: String = self.buf.drain(..end + 2).collect();
+                let data: String = message
+                    .lines()
+                    .filter_map(|l| l.strip_prefix("data: "))
+                    .collect();
+                if data.is_empty() {
+                    continue;
+                }
+                return Some(serde_json::from_str(&data).unwrap());
+            }
+            let frame = tokio::time::timeout(Duration::from_secs(5), self.body.frame())
+                .await
+                .expect("no event within 5 s")?
+                .unwrap();
+            if let Ok(data) = frame.into_data() {
+                self.buf.push_str(std::str::from_utf8(&data).unwrap());
+            }
+        }
     }
 }
 
@@ -171,6 +228,7 @@ async fn reports_config() {
             max_ttl_secs: 7 * 24 * 3600,
             max_size_bytes: 20_000_000,
             max_clips: 50,
+            version: Some(env!("CARGO_PKG_VERSION").into()),
         }
     );
 }
@@ -476,4 +534,42 @@ async fn serves_the_web_app_without_a_token() {
         app.get("/api/v1/config").await.status,
         StatusCode::UNAUTHORIZED
     );
+}
+
+#[tokio::test]
+async fn streams_changes_to_listeners_of_the_channel() {
+    let app = app(&[]).await;
+    let (ch, other) = (channel(1), channel(2));
+    let mut listener = app.listen(&ch, &[]).await;
+    assert_eq!(listener.status, StatusCode::OK);
+    assert_eq!(listener.headers[header::CONTENT_TYPE], "text/event-stream");
+    assert_eq!(listener.headers["x-accel-buffering"], "no");
+
+    app.create(&other, None).await;
+    let clip = app.create(&ch, None).await;
+    assert_eq!(
+        listener.next().await,
+        Some(ChannelEvent::Added { clip: clip.clone() })
+    );
+
+    app.delete(&format!("{}/{}", clips(&ch), clip.id)).await;
+    assert_eq!(
+        listener.next().await,
+        Some(ChannelEvent::Deleted { id: clip.id })
+    );
+
+    app.delete(&clips(&ch)).await;
+    assert_eq!(listener.next().await, Some(ChannelEvent::Cleared));
+}
+
+#[tokio::test]
+async fn event_streams_need_the_token_and_end_on_shutdown() {
+    let app = app(&["--access-token", "s3cret"]).await;
+    let ch = channel(1);
+    assert_eq!(app.listen(&ch, &[]).await.status, StatusCode::UNAUTHORIZED);
+
+    let mut listener = app.listen(&ch, &[("authorization", "Bearer s3cret")]).await;
+    assert_eq!(listener.status, StatusCode::OK);
+    app.events.close();
+    assert_eq!(listener.next().await, None);
 }

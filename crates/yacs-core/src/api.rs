@@ -30,6 +30,29 @@ pub struct ServerConfig {
     pub max_ttl_secs: u64,
     pub max_size_bytes: u64,
     pub max_clips: usize,
+    /// The relay's version, e.g. `0.2.0`. Missing from relays before 0.2.0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+/// `GET /api/v1/channels/{channel}/events` is a server-sent event stream with
+/// one of these as JSON in each message's `data`. It says what changed; clips
+/// are fetched as usual. Clients should re-list after (re)connecting, since
+/// events sent while they were away are gone.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ChannelEvent {
+    /// A new clip. Older ones may have been evicted to make room.
+    Added {
+        clip: ClipMeta,
+    },
+    Deleted {
+        id: String,
+    },
+    Cleared,
+    /// A type from a newer relay. Treat it as "the history changed".
+    #[serde(other)]
+    Other,
 }
 
 /// Body of every non-2xx JSON response.

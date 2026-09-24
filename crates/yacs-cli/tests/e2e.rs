@@ -170,3 +170,25 @@ fn missing_server_is_a_clear_error() {
     cmd.env_clear().env("YACS_PHRASE", PHRASE).args(["list"]);
     assert!(stderr_of_failure(&mut cmd).contains("no relay configured"));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn client_hears_about_new_clips_right_away() {
+    use yacs_core::api::ChannelEvent;
+    use yacs_core::{ClipItem, Pairing, Payload};
+
+    let relay = relay(&[]);
+    let pairing = Pairing::from_phrase(PHRASE).unwrap();
+    let client = yacs_client::Client::new(&relay.url, None, pairing).unwrap();
+    let mut events = client.events().await.unwrap();
+
+    let mut send = yacs(&relay, &["send", "live"]);
+    tokio::task::spawn_blocking(move || send.assert().success())
+        .await
+        .unwrap();
+
+    let Some(ChannelEvent::Added { clip }) = events.next().await.unwrap() else {
+        panic!("expected an added clip");
+    };
+    let (_, Payload::Clip(received)) = client.get(&clip.id).await.unwrap().unwrap();
+    assert_eq!(received.items, [ClipItem::Text("live".into())]);
+}

@@ -34,6 +34,8 @@ export interface Platform {
   /** Returns an unsubscribe function. */
   onSpotlightShown(handler: () => void): Promise<() => void>;
   onStatusChanged(handler: () => void): Promise<() => void>;
+  /** The relay reported new or deleted clips (only sent while Spotlight is open). */
+  onClipsChanged(handler: () => void): Promise<() => void>;
 }
 
 export const platform: Platform = tauriPlatform;

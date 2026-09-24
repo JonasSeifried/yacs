@@ -11,6 +11,8 @@ pub const SETTINGS: &str = "settings";
 pub const EVENT_SPOTLIGHT_SHOWN: &str = "spotlight-shown";
 /// Sent to all webviews when pairing or preferences change.
 pub const EVENT_STATUS_CHANGED: &str = "status-changed";
+/// Sent to an open Spotlight when the relay reports a change to the history.
+pub const EVENT_CLIPS_CHANGED: &str = "clips-changed";
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let spotlight =

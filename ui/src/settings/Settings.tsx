@@ -3,6 +3,7 @@ import { platform } from "../platform";
 import { acceleratorFromEvent, formatAccelerator } from "../shared/hotkey";
 import { ttlChoices } from "../shared/time";
 import type { Os, PhonePairing, Preferences, ServerConfig, Status } from "../shared/types";
+import { relayBehind } from "../shared/version";
 
 export function Settings() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -33,13 +34,28 @@ export function Settings() {
       </section>
       <section className="card">
         <h2>Updates</h2>
-        <Updates status={status} />
+        <Updates status={status} serverConfig={serverConfig} />
       </section>
     </main>
   );
 }
 
-function Updates({ status }: { status: Status }) {
+/**
+ * The relay doesn't update itself, and the desktop app does, so the relay
+ * falls behind unless someone pulls the new image. `latest` is the newest
+ * release this app knows of.
+ */
+function RelayHint({ relay, latest }: { relay: string | undefined; latest: string }) {
+  if (!relayBehind(relay, latest)) return null;
+  return (
+    <p className="hint">
+      Relay update available: {latest} (the relay runs {relay ?? "a version before 0.2.0"}). Update it on the server
+      with <span className="mono">docker compose pull && docker compose up -d</span>.
+    </p>
+  );
+}
+
+function Updates({ status, serverConfig }: { status: Status; serverConfig: ServerConfig | null }) {
   const [state, setState] = useState<"idle" | "checking" | "current" | "installing">("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -69,7 +85,9 @@ function Updates({ status }: { status: Status }) {
       <p className="hint">
         YACS {status.version}
         {state === "current" && " is up to date."}
+        {serverConfig?.version && ` · relay ${serverConfig.version}`}
       </p>
+      {serverConfig && <RelayHint relay={serverConfig.version} latest={status.update ?? status.version} />}
       {error && <p className="error">{error}</p>}
       <div className="actions">
         {status.update ? (

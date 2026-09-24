@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, MatchedPath, Path, Query, Request, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -14,13 +14,14 @@ use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::Level;
 use ulid::Ulid;
 use yacs_core::api::{
-    ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody, HEADER_CLIP_ID, HEADER_CREATED_AT,
+    ChannelEvent, ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody, HEADER_CLIP_ID, HEADER_CREATED_AT,
     HEADER_EXPIRES_AT, ServerConfig,
 };
 use yacs_core::{ChannelId, Envelope};
 
 use crate::clock::Clock;
 use crate::config::Config;
+use crate::events::Events;
 use crate::store::{PutError, Store};
 
 #[derive(Clone)]
@@ -28,6 +29,7 @@ pub struct AppState {
     pub store: Arc<Store>,
     pub config: Arc<Config>,
     pub clock: Arc<dyn Clock>,
+    pub events: Arc<Events>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -39,6 +41,7 @@ pub fn router(state: AppState) -> Router {
             get(list).post(create).delete(clear),
         )
         .route("/channels/{channel}/clips/latest", get(latest))
+        .route("/channels/{channel}/events", get(events))
         .route(
             "/channels/{channel}/clips/{id}",
             get(get_clip).delete(delete_clip),
@@ -144,6 +147,7 @@ async fn server_config(State(state): State<AppState>) -> Json<ServerConfig> {
         max_ttl_secs: c.max_ttl.as_secs(),
         max_size_bytes: c.max_size.as_u64(),
         max_clips: c.max_clips_per_channel,
+        version: Some(env!("CARGO_PKG_VERSION").into()),
     })
 }
 
@@ -173,6 +177,9 @@ async fn create(
     };
     let now = state.clock.now_ms();
     let meta = state.store.put(&channel, &body, now, now + ttl_ms).await?;
+    state
+        .events
+        .publish(&channel, ChannelEvent::Added { clip: meta.clone() });
     Ok((StatusCode::CREATED, Json(meta)))
 }
 
@@ -231,6 +238,9 @@ async fn delete_clip(
 ) -> Result<StatusCode, ApiError> {
     let (channel, id) = (parse_channel(&channel)?, parse_id(&id)?);
     if state.store.delete(&channel, id).await? {
+        state
+            .events
+            .publish(&channel, ChannelEvent::Deleted { id: id.to_string() });
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(ApiError::NotFound)
@@ -243,7 +253,18 @@ async fn clear(
 ) -> Result<StatusCode, ApiError> {
     let channel = parse_channel(&channel)?;
     state.store.clear(&channel).await?;
+    state.events.publish(&channel, ChannelEvent::Cleared);
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn events(
+    State(state): State<AppState>,
+    Path(channel): Path<String>,
+) -> Result<Response, ApiError> {
+    let channel = parse_channel(&channel)?;
+    // Tells nginx to pass each event on at once instead of buffering them.
+    let no_buffering = (HeaderName::from_static("x-accel-buffering"), "no");
+    Ok(([no_buffering], state.events.stream(&channel)).into_response())
 }
 
 fn etag(meta: &ClipMeta) -> String {

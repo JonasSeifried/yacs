@@ -4,10 +4,16 @@
 // localStorage; the page's CSP allows no third-party scripts that could read it.
 
 import init, { Pairing, generatePhrase as wasmGeneratePhrase } from "../wasm/yacs";
-import type { Clip, ClipItem, ClipMeta, ClipView, ServerConfig } from "../shared/types";
+import { SseParser } from "../shared/sse";
+import type { ChannelEvent, Clip, ClipItem, ClipMeta, ClipView, ServerConfig } from "../shared/types";
 
 const STORAGE_KEY = "yacs.pairing";
 const API = "/api/v1";
+/** The relay sends a keep-alive every 20 s; this much silence means the connection is dead. */
+const LIVE_IDLE_MS = 60_000;
+
+/** The relay predates live updates (0.2.0). */
+export class LiveUnsupported extends Error {}
 
 export interface StoredPairing {
   /** `v1.<channel id>.<key>`, see `Pairing::to_secret` in yacs-core. */
@@ -118,6 +124,39 @@ export class WebClient {
     this.cache.delete(id);
   }
 
+  /**
+   * Streams live changes until `signal` aborts or the connection drops.
+   * `onOpen` runs once connected: re-list then, since nothing is missed from
+   * that point on. Throws `LiveUnsupported` for relays before 0.2.0.
+   */
+  async listen(signal: AbortSignal, onOpen: () => void, onEvent: (event: ChannelEvent) => void): Promise<void> {
+    const url = `${API}/channels/${(await this.pairing).channelId}/events`;
+    const res = await this.request(url, { signal, headers: { accept: "text/event-stream" } }, [404]);
+    if (res.status === 404) throw new LiveUnsupported("The relay has no live updates.");
+    if (!res.body) throw new Error("The relay sent no event stream.");
+    onOpen();
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    const parser = new SseParser();
+    try {
+      for (;;) {
+        const { done, value } = await within(reader.read(), LIVE_IDLE_MS);
+        if (done) return;
+        for (const data of parser.feed(decoder.decode(value, { stream: true }))) {
+          let event: ChannelEvent = { type: "other" };
+          try {
+            event = JSON.parse(data);
+          } catch {
+            // Unknown or broken: still a sign that something changed.
+          }
+          onEvent(event);
+        }
+      }
+    } finally {
+      reader.cancel().catch(() => {});
+    }
+  }
+
   private remember(meta: ClipMeta, clip: Clip): Decrypted {
     const decrypted = { view: clipView(meta, clip), clip };
     this.cache.set(meta.id, decrypted);
@@ -155,6 +194,14 @@ export class WebClient {
     }
     throw new Error(`Relay error ${res.status}: ${message || res.statusText}`);
   }
+}
+
+function within<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("The live update connection went quiet.")), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 /** The same shape the desktop's Rust `ClipView` has, so both UIs share helpers. */

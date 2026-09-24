@@ -28,12 +28,21 @@ export interface ImageInfo {
   height: number | null;
 }
 
+/** `yacs_core::api::ChannelEvent`: one message of a channel's live event stream. */
+export type ChannelEvent =
+  | { type: "added"; clip: ClipMeta }
+  | { type: "deleted"; id: string }
+  | { type: "cleared" }
+  | { type: "other" };
+
 /** `yacs_core::api::ServerConfig`. */
 export interface ServerConfig {
   default_ttl_secs: number;
   max_ttl_secs: number;
   max_size_bytes: number;
   max_clips: number;
+  /** Missing from relays before 0.2.0. */
+  version?: string;
 }
 
 export type Os = "macos" | "windows" | "linux";

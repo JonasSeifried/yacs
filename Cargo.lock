@@ -6538,6 +6538,7 @@ dependencies = [
  "reqwest",
  "serde_json",
  "thiserror 2.0.20",
+ "tokio",
  "yacs-core",
 ]
 
@@ -6599,6 +6600,7 @@ dependencies = [
  "axum",
  "bytesize",
  "clap",
+ "futures-util",
  "hex",
  "http-body-util",
  "humantime",

@@ -26,4 +26,5 @@ export const tauriPlatform: Platform = {
   openSettings: () => invoke("open_settings"),
   onSpotlightShown: (handler) => listen("spotlight-shown", handler),
   onStatusChanged: (handler) => listen("status-changed", handler),
+  onClipsChanged: (handler) => listen("clips-changed", handler),
 };

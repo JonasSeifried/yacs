@@ -3,6 +3,8 @@
 # No access log on purpose: request paths contain channel ids. The relay
 # logs only route patterns.
 {$YACS_DOMAIN} {
-	encode zstd gzip
+	# Not the live event streams: compressing them could hold events back.
+	@compressible not path */events
+	encode @compressible zstd gzip
 	reverse_proxy yacs:8080
 }
