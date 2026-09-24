@@ -51,6 +51,24 @@ Without Docker: `cargo build --release -p yacs-server` (after building the web a
 2. On other computers: same, but type that phrase.
 3. On a phone: on a paired computer, Settings → **Pair a phone…** and scan the code with the camera. Or open your relay's URL on the phone and type the phrase.
 
+### Phone tips
+
+- **iPhone:** add YACS to the home screen *before* pairing. Open your relay's URL, tap Share → **Add to Home Screen**, open YACS from there, then tap **Scan QR code**. The home screen app doesn't share storage with the browser, so pairing in a browser tab doesn't carry over.
+- **Android:** use Chrome (menu → **Install app**). Firefox works too, but puts its logo on the home screen icon.
+- The clipboard buttons need HTTPS, which both setups above give you.
+
+## Updating
+
+The desktop apps update themselves. The relay is a Docker image: in `deploy/`, run
+
+```sh
+docker compose pull && docker compose up -d
+# nginx setup:
+docker compose -f compose.nginx.yaml pull && docker compose -f compose.nginx.yaml up -d
+```
+
+Desktop Settings shows a hint when the relay is older than the apps. To update it automatically, point a tool like Watchtower at the relay container; it follows `latest` unless you pinned `YACS_VERSION`.
+
 ## Development
 
 Needs Rust (stable), Node 22+, pnpm, and [`wasm-pack`](https://rustwasm.github.io/wasm-pack/) for the web app.
