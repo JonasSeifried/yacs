@@ -10,3 +10,12 @@ rust-version = "1.85"
 # Argon2 is unusably slow without optimizations; keep tests and dev builds fast.
 [profile.dev.package.argon2]
 opt-level = 3
+
+# Full debug info is most of target/'s size (gigabytes of object files on
+# macOS). Line tables still give file:line in panics and backtraces; switch to
+# `debug = true` locally when stepping through code in a debugger.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
