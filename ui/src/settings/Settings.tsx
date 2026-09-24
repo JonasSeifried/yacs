@@ -17,8 +17,9 @@ export function Settings() {
 
   useEffect(() => {
     refresh();
-    const subscription = platform.onStatusChanged(refresh);
-    return () => void subscription.then((unsubscribe) => unsubscribe());
+    // Settings stays loaded while hidden: re-read the relay's version etc. each time it opens.
+    const subscriptions = [platform.onStatusChanged(refresh), platform.onSettingsShown(refresh)];
+    return () => subscriptions.forEach((s) => s.then((unsubscribe) => unsubscribe()));
   }, [refresh]);
 
   if (!status) return null;

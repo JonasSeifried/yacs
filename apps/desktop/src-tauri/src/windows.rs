@@ -9,6 +9,8 @@ pub const SETTINGS: &str = "settings";
 
 /// Sent to the Spotlight webview every time it's shown, so it refreshes.
 pub const EVENT_SPOTLIGHT_SHOWN: &str = "spotlight-shown";
+/// Sent to the Settings webview every time it's shown, so it refreshes.
+pub const EVENT_SETTINGS_SHOWN: &str = "settings-shown";
 /// Sent to all webviews when pairing or preferences change.
 pub const EVENT_STATUS_CHANGED: &str = "status-changed";
 /// Sent to an open Spotlight when the relay reports a change to the history.
@@ -75,6 +77,7 @@ pub fn toggle_spotlight(app: &AppHandle) {
         let _ = w.show();
         let _ = w.set_focus();
         let _ = app.emit_to(SPOTLIGHT, EVENT_SPOTLIGHT_SHOWN, ());
+        crate::live::wake(app);
     }
 }
 
@@ -96,6 +99,7 @@ pub fn show_settings(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();
+        let _ = app.emit_to(SETTINGS, EVENT_SETTINGS_SHOWN, ());
     }
     hide_spotlight(app);
 }

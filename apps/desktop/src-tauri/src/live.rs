@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use tauri::async_runtime::JoinHandle;
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::Notify;
 use yacs_client::{Client, Error};
 use yacs_core::api::ChannelEvent;
 
@@ -16,7 +17,7 @@ use crate::windows;
 const RETRY_MIN: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 /// Relays before 0.2.0 have no event stream; look again now and then, in
-/// case the relay was updated.
+/// case the relay was updated (and whenever Spotlight opens, see `wake`).
 const OLD_RELAY_RETRY: Duration = Duration::from_secs(10 * 60);
 /// New clips up to this size are fetched right away.
 const PREFETCH_BYTES: u64 = 4 * 1024 * 1024;
@@ -24,6 +25,7 @@ const PREFETCH_BYTES: u64 = 4 * 1024 * 1024;
 #[derive(Default)]
 pub struct Live {
     task: Mutex<Option<JoinHandle<()>>>,
+    wake: Arc<Notify>,
 }
 
 /// Listen for the current pairing, replacing any earlier listener. Call it
@@ -35,11 +37,27 @@ pub fn restart(app: &AppHandle) {
         old.abort();
     }
     if let Some(client) = app.state::<AppState>().client() {
-        *task = Some(tauri::async_runtime::spawn(listen(app.clone(), client)));
+        let wake = live.wake.clone();
+        *task = Some(tauri::async_runtime::spawn(listen(
+            app.clone(),
+            client,
+            wake,
+        )));
     }
 }
 
-async fn listen(app: AppHandle, client: Arc<Client>) {
+/// Retry now if the listener is waiting to reconnect, e.g. because the relay
+/// was down or too old a moment ago. Called when Spotlight opens.
+pub fn wake(app: &AppHandle) {
+    app.state::<Live>().wake.notify_waiters();
+}
+
+/// Sleep for `duration`, or until `wake`.
+async fn pause(wake: &Notify, duration: Duration) {
+    let _ = tokio::time::timeout(duration, wake.notified()).await;
+}
+
+async fn listen(app: AppHandle, client: Arc<Client>, wake: Arc<Notify>) {
     let mut retry = RETRY_MIN;
     loop {
         match client.events().await {
@@ -65,12 +83,13 @@ async fn listen(app: AppHandle, client: Arc<Client>) {
             }
             Err(Error::Server { status: 404, .. }) => {
                 tracing::info!("relay has no live updates (older than 0.2.0)");
-                tokio::time::sleep(OLD_RELAY_RETRY).await;
+                pause(&wake, OLD_RELAY_RETRY).await;
+                retry = RETRY_MIN;
                 continue;
             }
             Err(e) => tracing::info!(error = %e, "can't connect for live updates"),
         }
-        tokio::time::sleep(retry).await;
+        pause(&wake, retry).await;
         retry = (retry * 2).min(RETRY_MAX);
     }
 }
