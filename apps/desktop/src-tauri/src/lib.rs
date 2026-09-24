@@ -1,6 +1,7 @@
 //! YACS desktop: a tray app with a global hotkey that opens a Spotlight-style
 //! panel for sending and receiving clips.
 
+mod cli;
 mod clipboard;
 mod clips;
 mod commands;
@@ -102,6 +103,8 @@ pub fn run() {
             commands::delete_clip,
             commands::set_default_ttl,
             commands::phone_pairing,
+            commands::install_cli,
+            commands::uninstall_cli,
             commands::check_update,
             commands::install_update,
             commands::hide_spotlight,

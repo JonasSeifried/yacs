@@ -35,6 +35,10 @@ url = "2.5.8"
 yacs-client = { version = "0.2.1", path = "../../../crates/yacs-client" }
 yacs-core = { version = "0.2.1", path = "../../../crates/yacs-core" }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging"] }
+winreg = "0.55.0"
+
 [dev-dependencies]
 clap = "4.6.7"
 tempfile = "3.27.0"

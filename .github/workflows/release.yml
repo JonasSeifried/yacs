@@ -56,15 +56,37 @@ jobs:
           AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
         run: |
           # Updater artifacts need the private key, which only CI has, so
-          # they're enabled here rather than in tauri.conf.json.
+          # they're enabled here rather than in tauri.conf.json. The bundled
+          # `yacs` command (built below) is release-only too, so dev builds
+          # don't need it.
+          config='{bundle: {createUpdaterArtifacts: true, externalBin: ["binaries/yacs"]}}'
           if [ "$RUNNER_OS" = Windows ] && [ -n "$AZURE_SIGNING_ENDPOINT" ]; then
             cargo install trusted-signing-cli --locked
             sign="trusted-signing-cli -e $AZURE_SIGNING_ENDPOINT -a $AZURE_SIGNING_ACCOUNT -c $AZURE_SIGNING_PROFILE -d YACS %1"
-            jq -n --arg sign "$sign" '{bundle: {createUpdaterArtifacts: true, windows: {signCommand: $sign}}}' > apps/desktop/src-tauri/tauri.release.json
+            jq -n --arg sign "$sign" "$config * {bundle: {windows: {signCommand: \$sign}}}" > apps/desktop/src-tauri/tauri.release.json
           else
-            echo '{"bundle": {"createUpdaterArtifacts": true}}' > apps/desktop/src-tauri/tauri.release.json
+            jq -n "$config" > apps/desktop/src-tauri/tauri.release.json
           fi
           cat apps/desktop/src-tauri/tauri.release.json
+
+      # Settings → Command line puts this on the PATH. Tauri wants it named
+      # for the target; a universal build looks up each architecture too.
+      - name: Bundled yacs command
+        shell: bash
+        run: |
+          bin=apps/desktop/src-tauri/binaries
+          mkdir -p "$bin"
+          if [ "$RUNNER_OS" = macOS ]; then
+            for target in aarch64-apple-darwin x86_64-apple-darwin; do
+              cargo build --release --locked -p yacs-cli --target "$target"
+              cp "target/$target/release/yacs" "$bin/yacs-$target"
+            done
+            lipo -create -output "$bin/yacs-universal-apple-darwin" "$bin"/yacs-{aarch64,x86_64}-apple-darwin
+          else
+            cargo build --release --locked -p yacs-cli
+            cp target/release/yacs.exe "$bin/yacs-x86_64-pc-windows-msvc.exe"
+          fi
+          ls -l "$bin"
 
       # Only secrets that are set: an empty APPLE_CERTIFICATE would make the
       # build try to sign with it and fail, instead of building unsigned.
@@ -112,7 +134,7 @@ jobs:
           releaseName: YACS ${{ github.ref_name }}
           # GitHub lists assets in one flat list, so this sorts them by what you want.
           releaseBody: |
-            **Desktop app** (installed apps update themselves)
+            **Desktop app** (installed apps update themselves; Settings → Command line installs `yacs` too)
             - macOS: `YACS_${{ steps.version.outputs.version }}_universal.dmg`
             - Windows: `YACS_${{ steps.version.outputs.version }}_x64-setup.exe` (or the `.msi`)
 
@@ -120,7 +142,7 @@ jobs:
             - Linux: `yacs-cli-linux-x86_64`, `yacs-cli-linux-aarch64`
             - macOS: `yacs-cli-macos` · Windows: `yacs-cli-windows-x86_64.exe`
 
-            **Relay**: `ghcr.io/jonasseifried/yacs:${{ steps.version.outputs.version }}` (and `latest`); update with `docker compose pull && docker compose up -d`.
+            **Relay**: `ghcr.io/jonasseifried/yacs:${{ steps.version.outputs.version }}` (and `latest`); update with `yacs relay update` on its machine, or `docker compose pull && docker compose up -d`.
 
             The `.tar.gz`, `.sig` and `latest.json` files are for automatic updates.
           releaseDraft: true

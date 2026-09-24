@@ -35,6 +35,10 @@ struct Release {
 }
 
 pub async fn run(check_only: bool) -> Result<()> {
+    if came_with_desktop_app() {
+        eprintln!("This yacs came with the desktop app, which keeps it up to date.");
+        return Ok(());
+    }
     let http = reqwest::Client::builder()
         .user_agent(concat!("yacs-cli/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(300))
@@ -52,6 +56,12 @@ pub async fn run(check_only: bool) -> Result<()> {
         .await
         .context("couldn't look up the latest release")?;
     let latest = release.tag_name.trim_start_matches('v');
+    let updated = update(&http, &release.tag_name, latest, check_only).await;
+    relay_hint(latest);
+    updated
+}
+
+async fn update(http: &reqwest::Client, tag: &str, latest: &str, check_only: bool) -> Result<()> {
     if !is_newer(latest, CURRENT) {
         eprintln!("yacs {CURRENT} is up to date.");
         return Ok(());
@@ -65,14 +75,11 @@ pub async fn run(check_only: bool) -> Result<()> {
     };
 
     eprintln!("Downloading yacs {latest}…");
-    let url = format!(
-        "https://github.com/{REPO}/releases/download/{}/{asset}",
-        release.tag_name
-    );
-    let signature = download(&http, &format!("{url}.sig")).await.context(
+    let url = format!("https://github.com/{REPO}/releases/download/{tag}/{asset}");
+    let signature = download(http, &format!("{url}.sig")).await.context(
         "couldn't download the signature (releases before 0.2.2 have none; install those by hand)",
     )?;
-    let binary = download(&http, &url).await?;
+    let binary = download(http, &url).await?;
     verify(PUBKEY, &binary, &signature, asset)?;
 
     let mut file = tempfile::NamedTempFile::new().context("saving the download")?;
@@ -82,6 +89,31 @@ pub async fn run(check_only: bool) -> Result<()> {
     )?;
     eprintln!("Updated yacs {CURRENT} → {latest}.");
     Ok(())
+}
+
+/// On the relay's machine, say when the relay is behind too. Silent without
+/// Docker, or without permission to use it.
+fn relay_hint(latest: &str) {
+    for relay in crate::relay::find().unwrap_or_default() {
+        if let Some(version) = relay.version.filter(|v| is_newer(latest, v)) {
+            eprintln!(
+                "The relay running here is {version}; `yacs relay update` updates it to {latest}."
+            );
+        }
+    }
+}
+
+/// The desktop app bundles yacs and updates it along with itself. On macOS
+/// that copy is inside the app, and replacing it would break the app's code
+/// signature. (On Windows it's a plain file, and updating it is harmless.)
+fn came_with_desktop_app() -> bool {
+    cfg!(target_os = "macos")
+        && std::env::current_exe()
+            .and_then(|exe| exe.canonicalize())
+            .is_ok_and(|exe| {
+                exe.parent()
+                    .is_some_and(|dir| dir.ends_with("Contents/MacOS"))
+            })
 }
 
 async fn download(http: &reqwest::Client, url: &str) -> Result<Vec<u8>> {

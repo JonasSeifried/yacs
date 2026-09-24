@@ -15,7 +15,7 @@ use yacs_core::api::{ClipMeta, ServerConfig};
 use crate::clips::{self, ClipView, Entry};
 use crate::state::AppState;
 use crate::update::{self, Updates};
-use crate::{clipboard, hotkey, live, pairing, windows};
+use crate::{cli, clipboard, hotkey, live, pairing, windows};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -34,6 +34,7 @@ pub struct Status {
     version: String,
     /// A newer release that's ready to install.
     update: Option<String>,
+    cli: cli::CliStatus,
 }
 
 #[tauri::command]
@@ -50,6 +51,7 @@ pub fn status(app: AppHandle, state: State<'_, AppState>) -> Status {
         os: std::env::consts::OS,
         version: app.package_info().version.to_string(),
         update: app.state::<Updates>().available(),
+        cli: cli::status(),
     }
 }
 
@@ -267,13 +269,7 @@ pub struct PhonePairing {
 /// For "Pair another device" (QR code and link). Only shown on request: it's the key.
 #[tauri::command]
 pub fn phone_pairing(state: State<'_, AppState>) -> CmdResult<PhonePairing> {
-    let client = client(&state)?;
-    let server_url = state
-        .settings()
-        .server_url
-        .clone()
-        .ok_or("this device isn't paired yet")?;
-    let link = pairing::phone_link(&server_url, client.pairing(), client.token());
+    let link = pairing_link(&state)?;
     let svg = qrcode::QrCode::new(&link.url)
         .map_err(|e| e.to_string())?
         .render::<qrcode::render::svg::Color>()
@@ -291,6 +287,41 @@ pub fn phone_pairing(state: State<'_, AppState>) -> CmdResult<PhonePairing> {
         qr,
         warning: link.warning,
     })
+}
+
+fn pairing_link(state: &AppState) -> CmdResult<pairing::PhoneLink> {
+    let client = client(state)?;
+    let server_url = state
+        .settings()
+        .server_url
+        .clone()
+        .ok_or("this device isn't paired yet")?;
+    Ok(pairing::phone_link(
+        &server_url,
+        client.pairing(),
+        client.token(),
+    ))
+}
+
+/// Puts `yacs` on the PATH and, if this computer is paired, pairs it the
+/// same way. May wait for macOS's admin password prompt.
+#[tauri::command]
+pub async fn install_cli(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    let link = pairing_link(&state).ok().map(|link| link.url);
+    let result = tauri::async_runtime::spawn_blocking(move || cli::install(link.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit(windows::EVENT_STATUS_CHANGED, ());
+    result
+}
+
+#[tauri::command]
+pub async fn uninstall_cli(app: AppHandle) -> CmdResult<()> {
+    let result = tauri::async_runtime::spawn_blocking(cli::uninstall)
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit(windows::EVENT_STATUS_CHANGED, ());
+    result
 }
 
 /// Returns the new version, if there is one.

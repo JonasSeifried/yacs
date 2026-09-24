@@ -25,6 +25,9 @@ export interface Platform {
   setDefaultTtl(ttlSecs: number): Promise<void>;
   /** Contains the channel key: only fetch it when the user asks to see it. */
   phonePairing(): Promise<PhonePairing>;
+  /** Puts the bundled `yacs` command on the PATH, paired like this computer. */
+  installCli(): Promise<void>;
+  uninstallCli(): Promise<void>;
   /** Resolves to the new version, if there is one. */
   checkUpdate(): Promise<string | null>;
   /** Restarts the app when it succeeds. */

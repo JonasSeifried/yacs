@@ -10,6 +10,7 @@ use yacs_core::{Clip, ClipItem, Pairing, Payload};
 
 mod config;
 mod content;
+mod relay;
 mod update;
 
 const EXAMPLES: &str = "\
@@ -19,7 +20,8 @@ Examples:
   cat notes.txt | yacs send
   yacs send --text \"hello\"
   yacs recv > clip.txt
-  yacs update                        get the newest version";
+  yacs update                        get the newest version
+  yacs relay update                  on the relay's machine: update the relay (Docker)";
 
 /// Share your clipboard through a self-hosted YACS relay.
 #[derive(Parser)]
@@ -89,6 +91,18 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// Manage a relay running on this machine.
+    Relay {
+        #[command(subcommand)]
+        command: RelayCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum RelayCommand {
+    /// Pull the newest relay image and restart the relay with it, using the
+    /// compose files it was started with. Run it on the relay's machine.
+    Update,
 }
 
 #[tokio::main]
@@ -106,6 +120,9 @@ async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Pair => return pair(&cli).await,
         Command::Update { check } => return update::run(check).await,
+        Command::Relay {
+            command: RelayCommand::Update,
+        } => return relay::update(),
         Command::Unpair => {
             let path = config::path()?;
             if config::remove(&path)? {
@@ -120,7 +137,9 @@ async fn run(cli: Cli) -> Result<()> {
     let (server, client) = connect(&cli)?;
 
     match cli.command {
-        Command::Pair | Command::Unpair | Command::Update { .. } => unreachable!("handled above"),
+        Command::Pair | Command::Unpair | Command::Update { .. } | Command::Relay { .. } => {
+            unreachable!("handled above")
+        }
         Command::Send { file, text, ttl } => {
             let (item, what) = match (text, file) {
                 (Some(text), _) => content::from_text(text),

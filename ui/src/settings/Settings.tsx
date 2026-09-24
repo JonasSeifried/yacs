@@ -34,6 +34,12 @@ export function Settings() {
         <h2>Preferences</h2>
         <PreferencesForm status={status} serverConfig={serverConfig} />
       </section>
+      {status.cli.available && (
+        <section className="card">
+          <h2>Command line</h2>
+          <CommandLine status={status} />
+        </section>
+      )}
       <section className="card">
         <h2>Updates</h2>
         <Updates status={status} serverConfig={serverConfig} />
@@ -52,7 +58,8 @@ function RelayHint({ relay, latest }: { relay: string | undefined; latest: strin
   return (
     <p className="hint">
       Relay update available: {latest} (the relay runs {relay ?? "a version before 0.2.0"}). Update it on the server
-      with <span className="mono">docker compose pull && docker compose up -d</span>.
+      with <span className="mono">yacs relay update</span>, or{" "}
+      <span className="mono">docker compose pull && docker compose up -d</span>.
     </p>
   );
 }
@@ -99,6 +106,64 @@ function Updates({ status, serverConfig }: { status: Status; serverConfig: Serve
         ) : (
           <button onClick={check} disabled={state === "checking"}>
             {state === "checking" ? "Checking…" : "Check for updates"}
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
+/** The `yacs` command that comes with the app, on the PATH only if the user wants it. */
+function CommandLine({ status }: { status: Status }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { installed, location } = status.cli;
+
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      {installed ? (
+        <p className="hint">
+          {status.os === "windows" ? (
+            <>
+              <code>yacs</code> is on your PATH (from {location}). Open a new terminal to use it.
+            </>
+          ) : (
+            <>
+              <code>yacs</code> is installed at {location}.
+            </>
+          )}{" "}
+          Try <code>yacs send notes.txt</code> or <code>yacs recv</code>. It updates along with the app.
+        </p>
+      ) : (
+        <p className="hint">
+          Adds the <code>yacs</code> command for terminals and scripts
+          {status.paired && ", paired like this computer"}.{" "}
+          {status.os === "macos"
+            ? `It goes to ${location}; macOS may ask for your password.`
+            : "It updates along with the app."}
+        </p>
+      )}
+      {error && <p className="error">{error}</p>}
+      <div className="actions">
+        {installed ? (
+          <button onClick={() => run(platform.uninstallCli)} disabled={busy}>
+            {busy ? "Removing…" : "Remove command"}
+          </button>
+        ) : (
+          <button onClick={() => run(platform.installCli)} disabled={busy}>
+            {busy ? "Installing…" : "Install command"}
           </button>
         )}
       </div>

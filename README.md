@@ -72,7 +72,7 @@ chmod +x ~/.local/bin/yacs
 yacs pair   # paste the link from a paired computer: Settings → Pair another device… → Copy link
 ```
 
-`yacs-cli-macos` and `yacs-cli-windows-x86_64.exe` are on the [releases page](https://github.com/JonasSeifried/yacs/releases). Once paired:
+On a Mac or Windows PC with the desktop app, use Settings → Command line → **Install command** instead: it's already paired and updates along with the app. (`yacs-cli-macos` and `yacs-cli-windows-x86_64.exe` are also on the [releases page](https://github.com/JonasSeifried/yacs/releases).) Once paired:
 
 ```sh
 yacs send ~/.ssh/id_ed25519.pub   # text files arrive as text, images as images
@@ -80,13 +80,16 @@ some-command | yacs send          # or send stdin; the final newline is dropped
 yacs send --text "hello"
 yacs recv > clip.txt              # the newest clip; `yacs list` shows the others
 yacs update                       # the newest version, checked against the release signature
+yacs relay update                 # on the relay's machine: pull the new relay image and restart it
 ```
 
 The pairing is saved in `~/.config/yacs/cli.json`, readable only by you. Scripts can skip it and set `YACS_SERVER`, `YACS_TOKEN` and `YACS_PHRASE` instead.
 
 ## Updating
 
-The desktop apps update themselves, and `yacs update` updates the command line (from 0.2.1, run the `curl` line once more). The relay is a Docker image: in `deploy/`, run
+The desktop apps update themselves, and `yacs update` updates the command line (from 0.2.1, run the `curl` line once more).
+
+The relay is a Docker image. With `yacs` on the relay's machine, `yacs relay update` finds the relay container, pulls the new image and restarts it with the compose files it was started with (it needs to be allowed to use Docker, so maybe `sudo`). `yacs update` mentions it when the relay is behind. By hand, in `deploy/`:
 
 ```sh
 docker compose pull && docker compose up -d

@@ -60,6 +60,16 @@ export interface Status {
   version: string;
   /** A newer release that's ready to install. */
   update: string | null;
+  cli: CliStatus;
+}
+
+/** The `yacs` command bundled with the desktop app. */
+export interface CliStatus {
+  /** Release builds bundle it; dev builds may not. */
+  available: boolean;
+  installed: boolean;
+  /** macOS: `/usr/local/bin/yacs`. Windows: the app's folder, which goes on the PATH. */
+  location: string | null;
 }
 
 /** The desktop's "Pair another device" QR code and link. */
