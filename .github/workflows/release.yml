@@ -98,7 +98,7 @@ jobs:
             fi
           done
 
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -107,7 +107,7 @@ jobs:
           releaseName: YACS ${{ github.ref_name }}
           releaseBody: "Desktop apps are attached below. Relay image: ghcr.io/jonasseifried/yacs (this version, and latest)."
           releaseDraft: true
-          includeUpdaterJson: true
+          uploadUpdaterJson: true
           args: ${{ matrix.args }} --config src-tauri/tauri.release.json
 
   relay-image:
