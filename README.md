@@ -25,6 +25,12 @@ docker compose up -d
 
 Then open `https://your-domain` to check it's up.
 
+**Already running nginx?** Use `compose.nginx.yaml` instead, which starts only the relay, on `127.0.0.1:8080`, and put [`nginx.conf`](deploy/nginx.conf) in front of it (the steps are at the top of that file; `certbot --nginx` adds HTTPS):
+
+```sh
+docker compose -f compose.nginx.yaml up -d
+```
+
 | Setting | Default | |
 | --- | --- | --- |
 | `YACS_ACCESS_TOKEN` | unset | Clients must send it. Set it whenever the relay is reachable from the internet. |
@@ -34,6 +40,8 @@ Then open `https://your-domain` to check it's up.
 | `YACS_MAX_CLIPS_PER_CHANNEL` | `50` | History length; the oldest clip goes first. |
 | `YACS_MAX_DISK` | `2GB` | Total storage for all channels. |
 | `YACS_BIND` / `YACS_DATA_DIR` | `0.0.0.0:8080` / `./data` | Set by the Docker image to `/data`. |
+| `YACS_VERSION` | `latest` | Compose only: image tag to run, e.g. `0.1.0`. |
+| `YACS_PORT` | `8080` | `compose.nginx.yaml` only: the localhost port nginx proxies to. |
 
 Without Docker: `cargo build --release -p yacs-server` (after building the web app, see below) gives a single binary; put it behind any HTTPS reverse proxy. Keep that proxy's access log off or path-free: request paths contain channel ids.
 

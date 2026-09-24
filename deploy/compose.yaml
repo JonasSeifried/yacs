@@ -8,6 +8,8 @@
 
 services:
   yacs:
+    # The published image; built from this checkout only if it can't be pulled.
+    image: ghcr.io/jonasseifried/yacs:${YACS_VERSION:-latest}
     build:
       context: ..
       dockerfile: deploy/Dockerfile

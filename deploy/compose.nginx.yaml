@@ -1,0 +1,29 @@
+# YACS relay for a machine that already runs nginx (see nginx.conf here).
+# The relay listens on localhost only; nginx terminates HTTPS in front of it.
+#
+#   cp .env.example .env    # set YACS_ACCESS_TOKEN (YACS_DOMAIN isn't used here)
+#   docker compose -f compose.nginx.yaml up -d
+
+services:
+  yacs:
+    # The published image; built from this checkout only if it can't be pulled.
+    image: ghcr.io/jonasseifried/yacs:${YACS_VERSION:-latest}
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      YACS_ACCESS_TOKEN: ${YACS_ACCESS_TOKEN:?set YACS_ACCESS_TOKEN in deploy/.env}
+      YACS_DEFAULT_TTL: ${YACS_DEFAULT_TTL:-15m}
+      YACS_MAX_TTL: ${YACS_MAX_TTL:-24h}
+      YACS_MAX_SIZE: ${YACS_MAX_SIZE:-20MB}
+      YACS_MAX_DISK: ${YACS_MAX_DISK:-2GB}
+    # 127.0.0.1 matters: ports Docker publishes skip the host firewall (ufw),
+    # so a bare "8080:8080" would put the relay on the internet without HTTPS.
+    ports:
+      - "127.0.0.1:${YACS_PORT:-8080}:8080"
+    volumes:
+      - yacs-data:/data
+
+volumes:
+  yacs-data:
