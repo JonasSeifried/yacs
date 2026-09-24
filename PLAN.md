@@ -23,7 +23,7 @@ yacs/
 │  ├─ yacs-core/               # protocol types + crypto. No OS/tokio deps, must build for wasm32
 │  ├─ yacs-client/             # HTTP client (reqwest), used by desktop + CLI (+ Tauri mobile in v2)
 │  ├─ yacs-server/             # Axum relay, also serves the PWA
-│  ├─ yacs-cli/                # `yacs send` / `yacs recv`: test harness now, Linux/Wayland fallback later
+│  ├─ yacs-cli/                # `yacs`: servers and scripts (`yacs pair`, `yacs send FILE`), Wayland fallback later
 │  └─ yacs-wasm/               # wasm-bindgen wrapper around yacs-core for the PWA
 ├─ apps/
 │  └─ desktop/src-tauri/       # Tauri v2 Rust side (workspace member)
@@ -213,7 +213,7 @@ This reorders the original roadmap: crypto and the protocol come first, so the U
 | **2: Desktop shell** ✅ | Tauri | Tray, hidden Spotlight window, global hotkey, single instance, autostart, pairing + settings UI (incl. 6-word EFF phrase generator in `yacs-core`), keyring | Hotkey opens/closes Spotlight reliably on macOS + Windows |
 | **3: Desktop clipboard** ✅ (verified Mac ↔ PC) | Core UX | `clipboard-rs` multi-format read/write, history list + keyboard navigation, Ctrl+C / Ctrl+V / Del, TTL dropdown, sanitized preview | Rich text from Word/browser and screenshots round-trip between Mac and PC |
 | **4: PWA + release (v1.0)** ✅ (v0.1.1: phones pair via QR over HTTPS, relay on a VPS behind nginx, desktop self-update verified) | Mobile + ship | `yacs-wasm`, mobile UI, embedded PWA, QR pairing, Dockerfile + compose (Caddy or nginx), signed desktop builds, updater | A phone can pair via QR and copy/send; `docker compose up` works on a VPS |
-| **5: v1.x** | Breadth | ✅ SSE live updates (0.2.0) and the relay version in desktop Settings; Linux (X11 + CLI fallback for Wayland) later | |
+| **5: v1.x** | Breadth | ✅ SSE live updates (0.2.0) and the relay version in desktop Settings; ✅ CLI for servers: `yacs pair` saves the pairing (from the desktop's link or the phrase), `yacs send FILE`, static release binaries; Linux (X11 + CLI fallback for Wayland) later | |
 | **6: v2.0** | Native + big files | Tauri mobile with native clipboard plugins + share extensions; P2P large-file transfer | |
 
 ### Note on v2 P2P

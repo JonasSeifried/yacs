@@ -15,6 +15,8 @@ const PHRASE: &str = "tundra velvet anchor pickle orbit meadow";
 struct Relay {
     url: String,
     _data: TempDir,
+    /// Where `yacs pair` saves, so tests never touch the real config.
+    home: TempDir,
 }
 
 fn relay(extra: &[&str]) -> Relay {
@@ -42,14 +44,23 @@ fn relay(extra: &[&str]) -> Relay {
     Relay {
         url: format!("http://{}", rx.recv().unwrap()),
         _data: data,
+        home: TempDir::new().unwrap(),
     }
 }
 
+/// Configured through env vars, like a script would.
 fn yacs(relay: &Relay, args: &[&str]) -> assert_cmd::Command {
+    let mut cmd = saved(relay, args);
+    cmd.env("YACS_SERVER", &relay.url)
+        .env("YACS_PHRASE", PHRASE);
+    cmd
+}
+
+/// Only what `yacs pair` saved.
+fn saved(relay: &Relay, args: &[&str]) -> assert_cmd::Command {
     let mut cmd = cargo_bin_cmd!("yacs");
     cmd.env_clear()
-        .env("YACS_SERVER", &relay.url)
-        .env("YACS_PHRASE", PHRASE)
+        .env("YACS_CONFIG", relay.home.path().join("cli.json"))
         .env("YACS_DEVICE_NAME", "e2e")
         .args(args);
     cmd
@@ -66,23 +77,57 @@ fn stderr_of_failure(cmd: &mut assert_cmd::Command) -> String {
 #[test]
 fn text_round_trip_via_argument_and_stdin() {
     let relay = relay(&[]);
-    yacs(&relay, &["send", "hello from the cli"])
+    yacs(&relay, &["send", "--text", "hello from the cli\n"])
         .assert()
         .success();
-    assert_eq!(stdout(&mut yacs(&relay, &["recv"])), "hello from the cli");
+    assert_eq!(stdout(&mut yacs(&relay, &["recv"])), "hello from the cli\n");
 
+    // The final newline of piped input is dropped, like `$(…)` does.
     yacs(&relay, &["send"])
         .write_stdin("piped\nlines\n")
         .assert()
         .success();
-    assert_eq!(stdout(&mut yacs(&relay, &["recv"])), "piped\nlines\n");
+    assert_eq!(stdout(&mut yacs(&relay, &["recv"])), "piped\nlines");
+}
+
+#[test]
+fn sends_text_files_as_text_and_refuses_other_files() {
+    let relay = relay(&[]);
+    let dir = TempDir::new().unwrap();
+    let key = dir.path().join("id_ed25519.pub");
+    std::fs::write(&key, "ssh-ed25519 AAAAC3Nza me@server\n").unwrap();
+
+    let sent = yacs(&relay, &["send", key.to_str().unwrap()])
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    let sent = String::from_utf8(sent).unwrap();
+    assert!(
+        sent.starts_with("sent id_ed25519.pub (31 B), expires in 15m"),
+        "{sent}"
+    );
+    assert_eq!(
+        stdout(&mut yacs(&relay, &["recv"])),
+        "ssh-ed25519 AAAAC3Nza me@server"
+    );
+
+    let binary = dir.path().join("data.bin");
+    std::fs::write(&binary, [0, 159, 146, 150]).unwrap();
+    let err = stderr_of_failure(&mut yacs(&relay, &["send", binary.to_str().unwrap()]));
+    assert!(err.contains("isn't text or an image"), "{err}");
+
+    let err = stderr_of_failure(&mut yacs(&relay, &["send", "hello"]));
+    assert!(err.contains("no such file: hello"), "{err}");
+    assert!(err.contains("--text"), "{err}");
 }
 
 #[test]
 fn history_list_recv_by_id_and_delete() {
     let relay = relay(&[]);
-    yacs(&relay, &["send", "first"]).assert().success();
-    yacs(&relay, &["send", "second", "--ttl", "1h"])
+    yacs(&relay, &["send", "-t", "first"]).assert().success();
+    yacs(&relay, &["send", "-t", "second", "--ttl", "1h"])
         .assert()
         .success();
 
@@ -111,7 +156,7 @@ fn image_round_trip_needs_output_file() {
     let bytes = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 255, 7];
     std::fs::write(&png, bytes).unwrap();
 
-    yacs(&relay, &["send", "--image", png.to_str().unwrap()])
+    yacs(&relay, &["send", png.to_str().unwrap()])
         .assert()
         .success();
     assert!(stderr_of_failure(&mut yacs(&relay, &["recv"])).contains("use --output"));
@@ -126,7 +171,7 @@ fn image_round_trip_needs_output_file() {
 #[test]
 fn wrong_phrase_cannot_read_and_sees_its_own_empty_channel() {
     let relay = relay(&[]);
-    yacs(&relay, &["send", "secret"]).assert().success();
+    yacs(&relay, &["send", "-t", "secret"]).assert().success();
     let err = stderr_of_failure(yacs(&relay, &["recv"]).env("YACS_PHRASE", "some other phrase"));
     assert!(err.contains("no clip found"), "{err}");
 }
@@ -134,7 +179,7 @@ fn wrong_phrase_cannot_read_and_sees_its_own_empty_channel() {
 #[test]
 fn phrase_normalization_pairs_devices() {
     let relay = relay(&[]);
-    yacs(&relay, &["send", "typed on a phone"])
+    yacs(&relay, &["send", "-t", "typed on a phone"])
         .assert()
         .success();
     let sloppy = "  Tundra VELVET anchor  pickle orbit meadow ";
@@ -147,9 +192,9 @@ fn phrase_normalization_pairs_devices() {
 #[test]
 fn access_token_is_sent_and_enforced() {
     let relay = relay(&["--access-token", "s3cret"]);
-    let err = stderr_of_failure(&mut yacs(&relay, &["send", "x"]));
+    let err = stderr_of_failure(&mut yacs(&relay, &["send", "-t", "x"]));
     assert!(err.contains("access token"), "{err}");
-    yacs(&relay, &["send", "x"])
+    yacs(&relay, &["send", "-t", "x"])
         .env("YACS_TOKEN", "s3cret")
         .assert()
         .success();
@@ -159,16 +204,96 @@ fn access_token_is_sent_and_enforced() {
 fn info_shows_server_limits() {
     let relay = relay(&["--max-ttl", "7d"]);
     let info = stdout(&mut yacs(&relay, &["info"]));
+    assert!(
+        info.contains(&format!("relay        {} (", relay.url)),
+        "{info}"
+    );
     assert!(info.contains("default ttl  15m"), "{info}");
     assert!(info.contains("max ttl      7d"), "{info}");
     assert!(info.contains("history      50 clips"), "{info}");
 }
 
 #[test]
-fn missing_server_is_a_clear_error() {
-    let mut cmd = cargo_bin_cmd!("yacs");
-    cmd.env_clear().env("YACS_PHRASE", PHRASE).args(["list"]);
-    assert!(stderr_of_failure(&mut cmd).contains("no relay configured"));
+fn not_paired_is_a_clear_error() {
+    let relay = relay(&[]);
+    let err = stderr_of_failure(saved(&relay, &["list"]).env("YACS_PHRASE", PHRASE));
+    assert!(err.contains("not paired: run `yacs pair`"), "{err}");
+}
+
+/// What the desktop's "Copy link" gives you.
+fn pair_link(relay: &Relay, token: Option<&str>) -> String {
+    let secret = yacs_core::Pairing::from_phrase(PHRASE).unwrap().to_secret();
+    let token = token.map(|t| format!("&token={t}")).unwrap_or_default();
+    format!("{}/#pair={secret}{token}", relay.url)
+}
+
+#[test]
+fn pairs_with_a_link_and_remembers_it() {
+    let relay = relay(&["--access-token", "s3cret"]);
+    let err = stderr_of_failure(saved(&relay, &["pair"]).write_stdin(pair_link(&relay, None)));
+    assert!(err.contains("access token"), "{err}");
+    assert!(!relay.home.path().join("cli.json").exists());
+
+    let out = saved(&relay, &["pair"])
+        .write_stdin(format!("{}\n", pair_link(&relay, Some("s3cret"))))
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    assert!(
+        String::from_utf8(out)
+            .unwrap()
+            .contains(&format!("Paired with {}", relay.url))
+    );
+
+    // No flags or env from here on, and the same channel as the phrase.
+    saved(&relay, &["send", "-t", "from the server"])
+        .assert()
+        .success();
+    assert_eq!(
+        stdout(yacs(&relay, &["recv"]).env("YACS_TOKEN", "s3cret")),
+        "from the server"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(relay.home.path().join("cli.json")).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+
+    saved(&relay, &["unpair"]).assert().success();
+    let err = stderr_of_failure(&mut saved(&relay, &["list"]));
+    assert!(err.contains("not paired"), "{err}");
+}
+
+#[test]
+fn pairs_with_a_phrase() {
+    let relay = relay(&[]);
+    saved(&relay, &["pair"])
+        .env("YACS_SERVER", format!("{}/", relay.url))
+        .write_stdin(PHRASE)
+        .assert()
+        .success();
+    yacs(&relay, &["send", "-t", "hi"]).assert().success();
+    assert_eq!(stdout(&mut saved(&relay, &["recv"])), "hi");
+}
+
+#[test]
+fn saved_token_only_goes_to_its_own_relay() {
+    let relay = relay(&["--access-token", "s3cret"]);
+    saved(&relay, &["pair"])
+        .write_stdin(pair_link(&relay, Some("s3cret")))
+        .assert()
+        .success();
+    let other = self::relay(&["--access-token", "s3cret"]);
+    let err = stderr_of_failure(
+        saved(&relay, &["list"])
+            .env("YACS_SERVER", &other.url)
+            .env("YACS_PHRASE", PHRASE),
+    );
+    assert!(err.contains("access token"), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -181,7 +306,7 @@ async fn client_hears_about_new_clips_right_away() {
     let client = yacs_client::Client::new(&relay.url, None, pairing).unwrap();
     let mut events = client.events().await.unwrap();
 
-    let mut send = yacs(&relay, &["send", "live"]);
+    let mut send = yacs(&relay, &["send", "-t", "live"]);
     tokio::task::spawn_blocking(move || send.assert().success())
         .await
         .unwrap();

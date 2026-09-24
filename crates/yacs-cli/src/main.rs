@@ -1,4 +1,4 @@
-use std::io::{IsTerminal, Read, Write};
+use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -6,13 +6,24 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use yacs_client::Client;
 use yacs_core::api::ClipMeta;
-use yacs_core::{Clip, ClipItem, Image, Pairing, Payload};
+use yacs_core::{Clip, ClipItem, Pairing, Payload};
+
+mod config;
+mod content;
+
+const EXAMPLES: &str = "\
+Examples:
+  yacs pair                          pair once; paste the link from the desktop app
+  yacs send ~/.ssh/id_ed25519.pub    a text file arrives as text, an image as an image
+  cat notes.txt | yacs send
+  yacs send --text \"hello\"
+  yacs recv > clip.txt";
 
 /// Share your clipboard through a self-hosted YACS relay.
 #[derive(Parser)]
-#[command(name = "yacs", version)]
+#[command(name = "yacs", version, after_help = EXAMPLES)]
 struct Cli {
-    /// Relay URL, e.g. https://clip.example.com
+    /// Relay URL, e.g. https://clip.example.com. Not needed after `yacs pair`.
     #[arg(long, env = "YACS_SERVER", global = true)]
     server: Option<String>,
 
@@ -20,12 +31,12 @@ struct Cli {
     #[arg(long, env = "YACS_TOKEN", hide_env_values = true, global = true)]
     token: Option<String>,
 
-    /// Pairing phrase. Prompted for if not set; prefer the env var over the flag
-    /// so it doesn't end up in your shell history.
+    /// Pairing phrase, instead of the saved pairing. Prefer the env var over
+    /// the flag so it doesn't end up in your shell history.
     #[arg(long, env = "YACS_PHRASE", hide_env_values = true, global = true)]
     phrase: Option<String>,
 
-    /// Name shown to your other devices.
+    /// Name shown to your other devices. Defaults to the host name.
     #[arg(long, env = "YACS_DEVICE_NAME", global = true)]
     device_name: Option<String>,
 
@@ -35,14 +46,23 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Send text (argument or stdin) or an image.
+    /// Pair this machine once, so other commands need no flags.
+    ///
+    /// Asks for the pairing link (on a paired computer: Settings → Pair a
+    /// phone… → Copy link) or the phrase, checks it with the relay and saves
+    /// it, readable only by you.
+    Pair,
+    /// Forget the saved pairing. Clips on the relay stay.
+    Unpair,
+    /// Send a file (text or image), text, or stdin.
     Send {
-        /// Text to send. Reads stdin if neither this nor --image is given.
+        /// File to send; `-` or nothing reads stdin. Text files arrive as
+        /// text, images (png, jpg, gif, webp) as images.
+        file: Option<PathBuf>,
+        /// Send this text instead of a file.
+        #[arg(short, long, conflicts_with = "file")]
         text: Option<String>,
-        /// Send an image file instead (png, jpg, gif, webp).
-        #[arg(long, conflicts_with = "text")]
-        image: Option<PathBuf>,
-        /// How long the server keeps it, e.g. 5m, 1h, 24h. Defaults to the server's default.
+        /// How long the relay keeps it, e.g. 5m, 1h, 24h. Defaults to the relay's default.
         #[arg(long, value_parser = humantime::parse_duration)]
         ttl: Option<Duration>,
     },
@@ -59,7 +79,7 @@ enum Command {
     Delete { id: String },
     /// Delete the channel's whole history.
     Clear,
-    /// Show the relay's limits.
+    /// Show the relay and its limits.
     Info,
 }
 
@@ -75,28 +95,28 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    let Some(server) = cli.server else {
-        bail!("no relay configured: pass --server or set YACS_SERVER");
-    };
-    let phrase = match cli.phrase {
-        Some(phrase) => phrase,
-        None => rpassword::prompt_password("Pairing phrase: ").context("reading pairing phrase")?,
-    };
-    let pairing = Pairing::from_phrase(&phrase)?;
-    let client = Client::new(&server, cli.token, pairing)?;
+    match cli.command {
+        Command::Pair => return pair(&cli).await,
+        Command::Unpair => {
+            let path = config::path()?;
+            if config::remove(&path)? {
+                eprintln!("Forgot the pairing ({}).", path.display());
+            } else {
+                eprintln!("Not paired.");
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
+    let (server, client) = connect(&cli)?;
 
     match cli.command {
-        Command::Send { text, image, ttl } => {
-            let item = match (text, image) {
-                (Some(text), _) => ClipItem::Text(text),
-                (None, Some(path)) => ClipItem::Image(read_image(&path)?),
-                (None, None) => {
-                    let mut text = String::new();
-                    std::io::stdin()
-                        .read_to_string(&mut text)
-                        .context("reading stdin")?;
-                    ClipItem::Text(text)
-                }
+        Command::Pair | Command::Unpair => unreachable!("handled above"),
+        Command::Send { file, text, ttl } => {
+            let (item, what) = match (text, file) {
+                (Some(text), _) => content::from_text(text),
+                (None, Some(path)) => content::from_file(&path)?,
+                (None, None) => content::from_stdin()?,
             };
             let device_name = cli
                 .device_name
@@ -108,9 +128,8 @@ async fn run(cli: Cli) -> Result<()> {
             };
             let meta = client.push(&Payload::Clip(clip), ttl).await?;
             eprintln!(
-                "sent {} (expires in {})",
-                meta.id,
-                human_duration(meta.expires_at_ms.saturating_sub(now_ms()))
+                "sent {what}, expires in {}",
+                human_duration(meta.expires_at_ms.saturating_sub(meta.created_at_ms))
             );
         }
         Command::List => print_list(&client.list().await?),
@@ -132,6 +151,8 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Clear => client.clear().await?,
         Command::Info => {
             let c = client.config().await?;
+            let version = c.version.as_deref().unwrap_or("before 0.2.0");
+            println!("relay        {server} ({version})");
             println!("default ttl  {}", human_duration(c.default_ttl_secs * 1000));
             println!("max ttl      {}", human_duration(c.max_ttl_secs * 1000));
             println!("max size     {}", human_size(c.max_size_bytes));
@@ -141,23 +162,168 @@ async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn read_image(path: &Path) -> Result<Image> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase);
-    let mime = match ext.as_deref() {
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        _ => bail!("unsupported image type (use png, jpg, gif or webp)"),
+const NOT_PAIRED: &str = "not paired: run `yacs pair` (or set YACS_SERVER and YACS_PHRASE)";
+
+/// Flags and env vars win over the saved pairing, which is only used for its
+/// own relay: a token never goes to a relay it wasn't saved for.
+fn connect(cli: &Cli) -> Result<(String, Client)> {
+    let flag_server = cli.server.as_deref().map(normalize_server);
+    let saved = match (&flag_server, &cli.phrase) {
+        (Some(_), Some(_)) => None,
+        _ => config::load(&config::path()?)?,
+    }
+    .filter(|s| flag_server.as_ref().is_none_or(|url| *url == s.server));
+
+    let Some(server) = flag_server.or_else(|| saved.as_ref().map(|s| s.server.clone())) else {
+        bail!(NOT_PAIRED);
     };
-    let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-    Ok(Image {
-        mime: mime.into(),
-        data,
-    })
+    let token = cli
+        .token
+        .clone()
+        .or_else(|| saved.as_ref().and_then(|s| s.token.clone()));
+    let pairing = match (&cli.phrase, &saved) {
+        (Some(phrase), _) => Pairing::from_phrase(phrase)?,
+        (None, Some(saved)) => saved.pairing()?,
+        (None, None) if std::io::stdin().is_terminal() => {
+            Pairing::from_phrase(&prompt_secret("Pairing phrase: ")?)?
+        }
+        (None, None) => bail!(NOT_PAIRED),
+    };
+    let client = Client::new(&server, token, pairing)?;
+    Ok((server, client))
+}
+
+async fn pair(cli: &Cli) -> Result<()> {
+    let path = config::path()?;
+    let (server, mut token, pairing) = match &cli.phrase {
+        Some(phrase) => (
+            server_or_prompt(cli)?,
+            cli.token.clone(),
+            Pairing::from_phrase(phrase)?,
+        ),
+        None => {
+            if std::io::stdin().is_terminal() {
+                eprintln!(
+                    "Paste the pairing link (on a paired computer: Settings → Pair a phone… → Copy link),\nor type the pairing phrase. Neither is shown."
+                );
+            }
+            let input = prompt_secret("Link or phrase: ")?;
+            match PairLink::parse(&input)? {
+                Some(link) => (link.server, cli.token.clone().or(link.token), link.pairing),
+                None => (
+                    server_or_prompt(cli)?,
+                    cli.token.clone(),
+                    Pairing::from_phrase(&input)?,
+                ),
+            }
+        }
+    };
+
+    let config = loop {
+        let client = Client::new(&server, token.clone(), pairing.clone())?;
+        match client.config().await {
+            Ok(config) => break config,
+            Err(yacs_client::Error::Unauthorized)
+                if token.is_none() && std::io::stdin().is_terminal() =>
+            {
+                let entered = prompt_secret("The relay needs its access token: ")?;
+                if entered.is_empty() {
+                    bail!("the relay needs an access token");
+                }
+                token = Some(entered);
+            }
+            Err(e) => return Err(e).with_context(|| format!("couldn't pair with {server}")),
+        }
+    };
+
+    config::save(&path, &config::Saved::new(server.clone(), token, &pairing))?;
+    let version = config.version.as_deref().unwrap_or("before 0.2.0");
+    eprintln!("Paired with {server} (relay {version}).");
+    eprintln!("Saved to {}; `yacs unpair` forgets it.", path.display());
+    Ok(())
+}
+
+/// `https://relay/#pair=v1.<channel>.<key>&token=…`, from the desktop app.
+struct PairLink {
+    server: String,
+    token: Option<String>,
+    pairing: Pairing,
+}
+
+impl PairLink {
+    /// `None` if `input` isn't a link at all (so it's a phrase).
+    fn parse(input: &str) -> Result<Option<Self>> {
+        let input = input.trim();
+        if !(input.starts_with("https://") || input.starts_with("http://")) {
+            return Ok(None);
+        }
+        let mut url = url::Url::parse(input).context("that link isn't a valid URL")?;
+        let fragment = url.fragment().unwrap_or_default().to_owned();
+        let mut secret = None;
+        let mut token = None;
+        for (key, value) in url::form_urlencoded::parse(fragment.as_bytes()) {
+            match &*key {
+                "pair" => secret = Some(value.into_owned()),
+                "token" if !value.is_empty() => token = Some(value.into_owned()),
+                _ => {}
+            }
+        }
+        let Some(secret) = secret else {
+            bail!("that link has no pairing in it; copy it from Settings → Pair a phone…");
+        };
+        let pairing =
+            Pairing::from_secret(&secret).context("the pairing in that link is damaged")?;
+        url.set_fragment(None);
+        Ok(Some(Self {
+            server: normalize_server(url.as_str()),
+            token,
+            pairing,
+        }))
+    }
+}
+
+fn server_or_prompt(cli: &Cli) -> Result<String> {
+    let server = match &cli.server {
+        Some(server) => server.clone(),
+        None => prompt_line("Relay URL: ")?,
+    };
+    if server.trim().is_empty() {
+        bail!("no relay URL given");
+    }
+    Ok(normalize_server(&server))
+}
+
+fn normalize_server(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_owned()
+}
+
+/// Hidden when typed; read as a plain line when piped in.
+fn prompt_secret(label: &str) -> Result<String> {
+    let value = if std::io::stdin().is_terminal() {
+        rpassword::prompt_password(label).context("reading input")?
+    } else {
+        read_line()?
+    };
+    Ok(value.trim().to_owned())
+}
+
+fn prompt_line(label: &str) -> Result<String> {
+    eprint!("{label}");
+    std::io::stderr().flush()?;
+    Ok(read_line()?.trim().to_owned())
+}
+
+fn read_line() -> Result<String> {
+    let mut line = String::new();
+    if std::io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .context("reading input")?
+        == 0
+    {
+        bail!("no input");
+    }
+    Ok(line)
 }
 
 /// Text formats go to stdout (plain text preferred); images need `--output`.
@@ -237,5 +403,38 @@ fn human_size(bytes: u64) -> String {
         0..1000 => format!("{bytes} B"),
         1000..1_000_000 => format!("{:.1} KB", bytes as f64 / 1e3),
         _ => format!("{:.1} MB", bytes as f64 / 1e6),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_pairing_links() {
+        let pairing = Pairing {
+            channel_id: yacs_core::ChannelId::from_bytes([7; 32]),
+            key: yacs_core::ChannelKey::from_bytes([9; 32]),
+        };
+        let secret = pairing.to_secret();
+
+        let link = PairLink::parse(&format!(
+            " https://clip.example.com/#pair={secret}&token=s3cret+%26x\n"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(link.server, "https://clip.example.com");
+        assert_eq!(link.token.as_deref(), Some("s3cret &x"));
+        assert_eq!(link.pairing, pairing);
+
+        let link = PairLink::parse(&format!("http://10.0.0.2:8080/yacs/#pair={secret}"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(link.server, "http://10.0.0.2:8080/yacs");
+        assert_eq!(link.token, None);
+
+        assert!(PairLink::parse("tundra velvet anchor").unwrap().is_none());
+        assert!(PairLink::parse("https://clip.example.com/").is_err());
+        assert!(PairLink::parse("https://clip.example.com/#pair=v1.nope").is_err());
     }
 }

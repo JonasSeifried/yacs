@@ -57,9 +57,31 @@ Without Docker: `cargo build --release -p yacs-server` (after building the web a
 - **Android:** Chrome is recommended (menu → **Install app**).
 - The clipboard buttons need HTTPS, which both setups above give you.
 
+## Command line
+
+`yacs` sends and receives clips from a terminal, e.g. on a server with no clipboard of its own. On Linux:
+
+```sh
+mkdir -p ~/.local/bin
+curl -fsSLo ~/.local/bin/yacs https://github.com/JonasSeifried/yacs/releases/latest/download/yacs-linux-$(uname -m)
+chmod +x ~/.local/bin/yacs
+yacs pair   # paste the link from a paired computer: Settings → Pair a phone… → Copy link
+```
+
+`yacs-macos` and `yacs-windows-x86_64.exe` are on the [releases page](https://github.com/JonasSeifried/yacs/releases). Once paired:
+
+```sh
+yacs send ~/.ssh/id_ed25519.pub   # text files arrive as text, images as images
+some-command | yacs send          # or send stdin; the final newline is dropped
+yacs send --text "hello"
+yacs recv > clip.txt              # the newest clip; `yacs list` shows the others
+```
+
+The pairing is saved in `~/.config/yacs/cli.json`, readable only by you. Scripts can skip it and set `YACS_SERVER`, `YACS_TOKEN` and `YACS_PHRASE` instead.
+
 ## Updating
 
-The desktop apps update themselves. The relay is a Docker image: in `deploy/`, run
+The desktop apps update themselves; for `yacs`, run the `curl` line again. The relay is a Docker image: in `deploy/`, run
 
 ```sh
 docker compose pull && docker compose up -d
@@ -79,9 +101,8 @@ cargo run -p yacs-server -- --data-dir /tmp/yacs --bind 127.0.0.1:8080   # a loc
 pnpm desktop        # the desktop app (Tauri dev)
 pnpm web            # the web app on http://localhost:1420, proxying /api to the relay
 pnpm web:build      # build ui/dist/web, which yacs-server embeds in release builds
+cargo run -p yacs-cli -- send --text hi   # the command-line client
 cargo test --workspace && pnpm ui:test
 ```
-
-`yacs` (in `crates/yacs-cli`) sends and receives clips from a terminal: `YACS_SERVER=… YACS_PHRASE=… yacs send "hi"`.
 
 The design, protocol and roadmap are in [PLAN.md](PLAN.md).

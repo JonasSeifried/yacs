@@ -203,17 +203,73 @@ jobs:
             $(printf "$IMAGE@sha256:%s " *)
           docker buildx imagetools inspect "$IMAGE:$DOCKER_METADATA_OUTPUT_VERSION"
 
+  # The `yacs` command-line client. Fixed asset names, so
+  # releases/latest/download/yacs-linux-$(uname -m) always gets the newest.
+  cli:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            asset: yacs-linux-x86_64
+          - runner: ubuntu-24.04-arm
+            asset: yacs-linux-aarch64
+          - runner: macos-latest
+            asset: yacs-macos
+          - runner: windows-latest
+            asset: yacs-windows-x86_64.exe
+    runs-on: ${{ matrix.runner }}
+    env:
+      ASSET: ${{ matrix.asset }}
+    steps:
+      - uses: actions/checkout@v7
+      # Static (musl) on Alpine, like the relay image, so it runs on any Linux.
+      - if: runner.os == 'Linux'
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src rust:1-alpine sh -c \
+            'apk add --no-cache musl-dev && cargo build --release --locked -p yacs-cli'
+          mkdir dist && cp target/release/yacs "dist/$ASSET"
+      - if: runner.os != 'Linux'
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      - if: runner.os == 'macOS'
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked -p yacs-cli --target "$target"
+          done
+          mkdir dist
+          lipo -create -output "dist/$ASSET" target/{aarch64,x86_64}-apple-darwin/release/yacs
+      - if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release --locked -p yacs-cli
+          mkdir dist && cp target/release/yacs.exe "dist/$ASSET"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.asset }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1
+
   publish:
-    needs: [desktop, relay-manifest]
+    needs: [desktop, relay-manifest, cli]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: cli
+          pattern: cli-*
+          merge-multiple: true
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          (cd cli && sha256sum yacs-* > yacs-cli-sha256.txt)
+          gh release upload "$TAG" cli/* --clobber
           if [[ "$TAG" == *-* ]]; then
             gh release edit "$TAG" --draft=false --prerelease
           else
