@@ -54,7 +54,7 @@ Without Docker: `cargo build --release -p yacs-server` (after building the web a
 ### Phone tips
 
 - **iPhone:** add YACS to the home screen *before* pairing. Open your relay's URL, tap Share → **Add to Home Screen**, open YACS from there, then tap **Scan QR code**. The home screen app doesn't share storage with the browser, so pairing in a browser tab doesn't carry over.
-- **Android:** use Chrome (menu → **Install app**). Firefox works too, but puts its logo on the home screen icon.
+- **Android:** Chrome is recommended (menu → **Install app**).
 - The clipboard buttons need HTTPS, which both setups above give you.
 
 ## Updating
