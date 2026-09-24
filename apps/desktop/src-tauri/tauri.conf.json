@@ -21,6 +21,8 @@
     "active": true,
     "targets": "all",
     "category": "Utility",
+    "license": "AGPL-3.0-only",
+    "licenseFile": "../../../LICENSE",
     "shortDescription": "End-to-end encrypted clipboard sync",
     "icon": [
       "icons/32x32.png",

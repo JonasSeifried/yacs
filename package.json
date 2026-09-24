@@ -1,6 +1,7 @@
 {
   "name": "yacs",
   "private": true,
+  "license": "AGPL-3.0-only",
   "packageManager": "pnpm@10.16.1",
   "scripts": {
     "desktop": "pnpm --filter @yacs/desktop tauri dev",

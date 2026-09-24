@@ -4,6 +4,8 @@ description = "YACS desktop app"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
 
 # A lib target keeps the door open for Tauri mobile (v2), which needs one.
 [lib]
