@@ -100,6 +100,9 @@ jobs:
             fi
           done
 
+      - id: version
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -107,7 +110,19 @@ jobs:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
           releaseName: YACS ${{ github.ref_name }}
-          releaseBody: "Desktop apps are attached below. Relay image: ghcr.io/jonasseifried/yacs (this version, and latest)."
+          # GitHub lists assets in one flat list, so this sorts them by what you want.
+          releaseBody: |
+            **Desktop app** (installed apps update themselves)
+            - macOS: `YACS_${{ steps.version.outputs.version }}_universal.dmg`
+            - Windows: `YACS_${{ steps.version.outputs.version }}_x64-setup.exe` (or the `.msi`)
+
+            **Command line** (`yacs`, for servers and scripts; see the [README](https://github.com/${{ github.repository }}#command-line))
+            - Linux: `yacs-cli-linux-x86_64`, `yacs-cli-linux-aarch64`
+            - macOS: `yacs-cli-macos` · Windows: `yacs-cli-windows-x86_64.exe`
+
+            **Relay**: `ghcr.io/jonasseifried/yacs:${{ steps.version.outputs.version }}` (and `latest`); update with `docker compose pull && docker compose up -d`.
+
+            The `.tar.gz`, `.sig` and `latest.json` files are for automatic updates.
           releaseDraft: true
           uploadUpdaterJson: true
           args: ${{ matrix.args }} --config src-tauri/tauri.release.json
@@ -204,20 +219,20 @@ jobs:
           docker buildx imagetools inspect "$IMAGE:$DOCKER_METADATA_OUTPUT_VERSION"
 
   # The `yacs` command-line client. Fixed asset names, so
-  # releases/latest/download/yacs-linux-$(uname -m) always gets the newest.
+  # releases/latest/download/yacs-cli-linux-$(uname -m) always gets the newest.
   cli:
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: ubuntu-24.04
-            asset: yacs-linux-x86_64
+            asset: yacs-cli-linux-x86_64
           - runner: ubuntu-24.04-arm
-            asset: yacs-linux-aarch64
+            asset: yacs-cli-linux-aarch64
           - runner: macos-latest
-            asset: yacs-macos
+            asset: yacs-cli-macos
           - runner: windows-latest
-            asset: yacs-windows-x86_64.exe
+            asset: yacs-cli-windows-x86_64.exe
     runs-on: ${{ matrix.runner }}
     env:
       ASSET: ${{ matrix.asset }}
@@ -268,7 +283,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
-          (cd cli && sha256sum yacs-* > yacs-cli-sha256.txt)
+          (cd cli && sha256sum yacs-cli-* > ../sha256.txt && mv ../sha256.txt yacs-cli-sha256.txt)
           gh release upload "$TAG" cli/* --clobber
           if [[ "$TAG" == *-* ]]; then
             gh release edit "$TAG" --draft=false --prerelease

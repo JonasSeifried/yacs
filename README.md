@@ -63,12 +63,12 @@ Without Docker: `cargo build --release -p yacs-server` (after building the web a
 
 ```sh
 mkdir -p ~/.local/bin
-curl -fsSLo ~/.local/bin/yacs https://github.com/JonasSeifried/yacs/releases/latest/download/yacs-linux-$(uname -m)
+curl -fsSLo ~/.local/bin/yacs https://github.com/JonasSeifried/yacs/releases/latest/download/yacs-cli-linux-$(uname -m)
 chmod +x ~/.local/bin/yacs
 yacs pair   # paste the link from a paired computer: Settings → Pair a phone… → Copy link
 ```
 
-`yacs-macos` and `yacs-windows-x86_64.exe` are on the [releases page](https://github.com/JonasSeifried/yacs/releases). Once paired:
+`yacs-cli-macos` and `yacs-cli-windows-x86_64.exe` are on the [releases page](https://github.com/JonasSeifried/yacs/releases). Once paired:
 
 ```sh
 yacs send ~/.ssh/id_ed25519.pub   # text files arrive as text, images as images
