@@ -1,9 +1,11 @@
 name: Release
 
 # Push a tag like v1.0.0 (matching the version in tauri.conf.json and
-# Cargo.toml). Builds the desktop apps into a draft GitHub release and pushes
-# the relay image to ghcr.io. Review the draft, then publish it: the desktop
-# updater only sees published releases.
+# Cargo.toml). Builds the desktop apps into a draft GitHub release, pushes the
+# relay image to ghcr.io, and publishes the release once everything succeeded.
+# Until then it stays a draft, so the updater never sees a half-uploaded one.
+# Tags with a suffix (v1.1.0-beta.1) become prereleases, which the updater
+# skips: it only follows the latest full release.
 #
 # Secrets (Settings → Secrets and variables → Actions):
 #   TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD  required: signs updates
@@ -142,3 +144,20 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  publish:
+    needs: [desktop, relay-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ "$TAG" == *-* ]]; then
+            gh release edit "$TAG" --draft=false --prerelease
+          else
+            gh release edit "$TAG" --draft=false --latest
+          fi

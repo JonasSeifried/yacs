@@ -172,7 +172,7 @@ GET    /*                                             embedded PWA (rust-embed)
 
 **Tray & lifecycle:** menu bar/tray icon with Open, Settings and Quit. Closing windows never quits. A second launch opens Settings, and `yacs-desktop --toggle` toggles Spotlight in the running instance, so Linux/Wayland users can bind that command to a desktop shortcut.
 
-**Distribution:** `.github/workflows/release.yml` runs on a `v*` tag: `tauri-action` builds a macOS universal app and Windows MSI/NSIS into a *draft* release, and the relay image goes to `ghcr.io/jonasseifried/yacs` (amd64 + arm64). macOS is signed and notarized, and Windows is signed via Azure Trusted Signing, when those secrets exist; otherwise the builds are unsigned (Gatekeeper / SmartScreen warn).
+**Distribution:** `.github/workflows/release.yml` runs on a `v*` tag: `tauri-action` builds a macOS universal app and Windows MSI/NSIS into a draft release, the relay image goes to `ghcr.io/jonasseifried/yacs` (amd64 + arm64), and the release is published once all of that succeeded (tags like `v1.1.0-beta.1` become prereleases, which the updater skips). macOS is signed and notarized, and Windows is signed via Azure Trusted Signing, when those secrets exist; otherwise the builds are unsigned (Gatekeeper / SmartScreen warn).
 
 **Updates:** `tauri-plugin-updater` against `releases/latest/download/latest.json`. Updates must be signed with the release key (`plugins.updater.pubkey`), and `requireSignedVersion` blocks downgrades to older signed releases. Release builds check 30 s after launch and every 12 h. An available update shows in the tray menu and in Settings, and installs only when the user clicks it. Updater artifacts are enabled only in CI, where the private key is.
 
