@@ -105,7 +105,7 @@ jobs:
           projectPath: apps/desktop
           tagName: ${{ github.ref_name }}
           releaseName: YACS ${{ github.ref_name }}
-          releaseBody: See the assets below. The relay image is ghcr.io/jonasseifried/yacs (tags: the version, and latest).
+          releaseBody: "Desktop apps are attached below. Relay image: ghcr.io/jonasseifried/yacs (this version, and latest)."
           releaseDraft: true
           includeUpdaterJson: true
           args: ${{ matrix.args }} --config src-tauri/tauri.release.json
