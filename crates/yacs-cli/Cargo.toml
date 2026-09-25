@@ -36,7 +36,7 @@ clap = "4.6.7"
 tokio = { version = "1.53.1", features = ["full"] }
 yacs-server = { path = "../yacs-server" }
 
-[target.'cfg(unix)'.dev-dependencies]
+[target.'cfg(target_os = "macos")'.dev-dependencies]
 libc = "0.2.189"
 
 [[bin]]

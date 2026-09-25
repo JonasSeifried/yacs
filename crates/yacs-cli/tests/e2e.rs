@@ -234,9 +234,10 @@ fn access_token_is_sent_and_enforced() {
 }
 
 /// Big files go in chunks, and neither side holds them in memory.
+/// The file isn't held here as a whole either, just to keep the test light.
 #[test]
 fn big_files_stream_through_the_relay() {
-    const SIZE: usize = 200 * 1024 * 1024;
+    const BLOCKS: usize = 200;
     let relay = relay(&[]);
     // A saved pairing: with a phrase, Argon2id's 64 MiB would be the peak.
     saved(&relay, &["pair"])
@@ -245,14 +246,17 @@ fn big_files_stream_through_the_relay() {
         .success();
     let dir = TempDir::new().unwrap();
     let big = dir.path().join("disk.img");
-    // Not all the same byte, so misplaced chunks would show.
-    let block: Vec<u8> = (0..1024 * 1024).map(|i: u32| (i % 253) as u8).collect();
-    let mut data = Vec::with_capacity(SIZE);
-    for i in 0..SIZE / block.len() {
-        data.extend_from_slice(&block);
-        data[i * block.len()] = i as u8;
+    // 1 MiB blocks that differ, so misplaced chunks would show.
+    let block = |i: usize| -> Vec<u8> {
+        let mut block: Vec<u8> = (0..1024 * 1024).map(|j: u32| (j % 253) as u8).collect();
+        block[0] = i as u8;
+        block
+    };
+    let mut file = std::fs::File::create(&big).unwrap();
+    for i in 0..BLOCKS {
+        std::io::Write::write_all(&mut file, &block(i)).unwrap();
     }
-    std::fs::write(&big, &data).unwrap();
+    drop(file);
 
     let sent = measured(&relay, &["send", big.to_str().unwrap()]);
     assert!(sent.starts_with("sent disk.img (209.7 MB)"), "{sent}");
@@ -264,23 +268,30 @@ fn big_files_stream_through_the_relay() {
     std::fs::create_dir(&out).unwrap();
     let received = measured(&relay, &["recv", "-o", out.to_str().unwrap()]);
     assert!(received.contains("saved"), "{received}");
-    assert!(std::fs::read(out.join("disk.img")).unwrap() == data);
+    let mut got = std::fs::File::open(out.join("disk.img")).unwrap();
+    let mut buf = vec![0; 1024 * 1024];
+    for i in 0..BLOCKS {
+        std::io::Read::read_exact(&mut got, &mut buf).unwrap();
+        assert!(buf == block(i), "block {i} differs");
+    }
+    assert_eq!(std::io::Read::read(&mut got, &mut buf).unwrap(), 0);
     assert!(!out.join("disk.img.part").exists());
 
-    // Piped, as with small files.
-    let piped = saved(&relay, &["recv"])
-        .assert()
-        .success()
-        .get_output()
-        .stdout
-        .len();
-    assert_eq!(piped, SIZE);
+    // Piped, as with small files; counted, not kept.
+    let mut recv = std::process::Command::new(env!("CARGO_BIN_EXE_yacs"))
+        .env_clear()
+        .env("YACS_CONFIG", relay.home.path().join("cli.json"))
+        .arg("recv")
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let piped = std::io::copy(&mut recv.stdout.take().unwrap(), &mut std::io::sink()).unwrap();
+    assert!(recv.wait().unwrap().success());
+    assert_eq!(piped, (BLOCKS * 1024 * 1024) as u64);
 }
 
 /// Runs `yacs` with the saved pairing, checks it succeeded and peaked below
 /// 50 MiB of memory, and returns its stderr.
-// On Unix, `wait4` reaps the child: its rusage is the point.
-#[cfg_attr(unix, allow(clippy::zombie_processes))]
 fn measured(relay: &Relay, args: &[&str]) -> String {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_yacs"))
         .env_clear()
@@ -297,31 +308,53 @@ fn measured(relay: &Relay, args: &[&str]) -> String {
         std::io::Read::read_to_string(&mut stderr, &mut text).unwrap();
         text
     });
-
-    #[cfg(unix)]
-    {
-        let pid = child.id() as libc::pid_t;
-        let mut status = 0;
-        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
-        assert_eq!(unsafe { libc::wait4(pid, &mut status, 0, &mut usage) }, pid);
-        let stderr = reader.join().unwrap();
-        assert!(
-            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
-            "{args:?} failed: {stderr}"
-        );
-        // Bytes on macOS, KiB on Linux.
-        let peak = match cfg!(target_os = "macos") {
-            true => usage.ru_maxrss as u64,
-            false => usage.ru_maxrss as u64 * 1024,
-        };
+    let (succeeded, peak) = wait_measured(child);
+    let stderr = reader.join().unwrap();
+    assert!(succeeded, "{args:?} failed: {stderr}");
+    if let Some(peak) = peak {
         assert!(peak < 50 << 20, "{args:?} peaked at {} MiB", peak >> 20);
-        stderr
     }
-    #[cfg(not(unix))]
-    {
-        assert!(child.wait().unwrap().success());
-        reader.join().unwrap()
+    stderr
+}
+
+/// Waits for `child`: whether it succeeded, and its peak memory in bytes.
+///
+/// Not `ru_maxrss` here: Linux carries the parent's peak over into it at
+/// `exec`, and this test process runs Argon2id. `VmHWM` starts fresh with
+/// the new program; it's sampled until the child exits.
+#[cfg(target_os = "linux")]
+fn wait_measured(mut child: std::process::Child) -> (bool, Option<u64>) {
+    let path = format!("/proc/{}/status", child.id());
+    let mut peak = 0;
+    loop {
+        let hwm = std::fs::read_to_string(&path).ok().and_then(|status| {
+            let line = status.lines().find_map(|l| l.strip_prefix("VmHWM:"))?;
+            line.trim().strip_suffix("kB")?.trim().parse::<u64>().ok()
+        });
+        peak = peak.max(hwm.unwrap_or(0) * 1024);
+        if let Some(status) = child.try_wait().unwrap() {
+            return (status.success(), Some(peak));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
+}
+
+/// `wait4` reaps the child itself: its rusage is the point.
+#[cfg(target_os = "macos")]
+#[allow(clippy::zombie_processes)]
+fn wait_measured(child: std::process::Child) -> (bool, Option<u64>) {
+    let pid = child.id() as libc::pid_t;
+    let mut status = 0;
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    assert_eq!(unsafe { libc::wait4(pid, &mut status, 0, &mut usage) }, pid);
+    let succeeded = libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0;
+    // Bytes on macOS.
+    (succeeded, Some(usage.ru_maxrss as u64))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn wait_measured(mut child: std::process::Child) -> (bool, Option<u64>) {
+    (child.wait().unwrap().success(), None)
 }
 
 #[test]
