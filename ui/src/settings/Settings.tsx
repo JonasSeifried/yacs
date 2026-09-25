@@ -1,4 +1,4 @@
-import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useState } from "react";
+import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import { platform } from "../platform";
 import { acceleratorFromEvent, formatAccelerator } from "../shared/hotkey";
 import { readPairLink } from "../shared/pairlink";
@@ -338,7 +338,7 @@ function PairForm() {
       ) : (
         <label>
           Pairing phrase
-          <div className="row">
+          <div className="row phrase">
             <input
               required
               value={phrase}
@@ -375,6 +375,13 @@ function PairForm() {
   );
 }
 
+/** Typing a device name saves once this long has passed without a key. */
+const NAME_SAVE_MS = 600;
+
+/**
+ * Each change saves right away (the device name once typing pauses), so
+ * closing the window never leaves a change unsaved that looks applied.
+ */
 function PreferencesForm({ status, serverConfig }: { status: Status; serverConfig: ServerConfig | null }) {
   const fromStatus = (s: Status): Preferences => ({
     deviceName: s.deviceName,
@@ -385,25 +392,49 @@ function PreferencesForm({ status, serverConfig }: { status: Status; serverConfi
   const [prefs, setPrefs] = useState(() => fromStatus(status));
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const savedTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const nameTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Spotlight's dropdown also changes the default expiry.
   useEffect(() => {
     setPrefs((p) => ({ ...p, defaultTtlSecs: status.defaultTtlSecs }));
   }, [status.defaultTtlSecs]);
 
-  const set = <K extends keyof Preferences>(key: K, value: Preferences[K]) => {
-    setPrefs((p) => ({ ...p, [key]: value }));
-    setSaved(false);
-  };
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
+  /** Resolves to whether it saved. */
+  const save = async (next: Preferences) => {
+    clearTimeout(nameTimer.current);
+    nameTimer.current = undefined;
+    if (!next.deviceName.trim()) {
+      setError("The device name can't be empty.");
+      return false;
+    }
     setError(null);
     try {
-      await platform.savePreferences(prefs);
+      await platform.savePreferences(next);
       setSaved(true);
+      clearTimeout(savedTimer.current);
+      savedTimer.current = setTimeout(() => setSaved(false), 1500);
+      return true;
     } catch (e) {
       setError(String(e));
+      return false;
     }
+  };
+  const set = <K extends keyof Preferences>(key: K, value: Preferences[K]) => {
+    const next = { ...prefs, [key]: value };
+    setPrefs(next);
+    setSaved(false);
+    if (key === "deviceName") {
+      clearTimeout(nameTimer.current);
+      nameTimer.current = setTimeout(() => save(next), NAME_SAVE_MS);
+    } else {
+      // A shortcut that's taken, say: show what's really in effect.
+      save(next).then((ok) => ok || setPrefs((p) => ({ ...p, [key]: fromStatus(status)[key] })));
+    }
+  };
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    save(prefs);
   };
 
   const options = ttlChoices(prefs.defaultTtlSecs, serverConfig?.max_ttl_secs);
@@ -412,7 +443,7 @@ function PreferencesForm({ status, serverConfig }: { status: Status; serverConfi
     <form onSubmit={submit}>
       <label>
         Device name <span className="optional">shown to your other devices</span>
-        <input required value={prefs.deviceName} onChange={(e) => set("deviceName", e.target.value)} />
+        <input required value={prefs.deviceName} onChange={(e) => set("deviceName", e.target.value)} onBlur={() => nameTimer.current && save(prefs)} />
       </label>
       {status.manualShortcut ? (
         <ManualShortcutHelp shortcut={status.manualShortcut} />
@@ -438,12 +469,9 @@ function PreferencesForm({ status, serverConfig }: { status: Status; serverConfi
         Launch YACS at login
       </label>
       {error && <p className="error">{error}</p>}
-      <div className="actions">
-        {saved && <span className="saved">Saved</span>}
-        <button className="primary" type="submit">
-          Save
-        </button>
-      </div>
+      <p className="hint autosave" role="status">
+        {saved ? <span className="saved">Saved</span> : "Changes save automatically."}
+      </p>
     </form>
   );
 }

@@ -33,6 +33,8 @@ const TTL_KEY = "yacs.ttl";
 const PROGRESS_BYTES = 256 * 1024;
 /** While the app is open without a live connection, look for new clips this often. */
 const POLL_MS = 10_000;
+/** How often relative times ("2 min ago") are redrawn. */
+const TICK_MS = 30_000;
 const LIVE_RETRY_MIN_MS = 1_000;
 const LIVE_RETRY_MAX_MS = 60_000;
 
@@ -334,7 +336,11 @@ function useLiveUpdates(client: WebClient, onChange: () => void) {
 
 // ── Home: send + history ─────────────────────────────────────────────────
 
-type List = { state: "loading" } | { state: "ok"; clips: ClipMeta[] } | { state: "error"; message: string };
+/** A failed refresh keeps the clips it had, with `error` set, instead of hiding them. */
+type List =
+  | { state: "loading" }
+  | { state: "ok"; clips: ClipMeta[]; error?: string }
+  | { state: "error"; message: string };
 /** A big upload or download in progress. */
 type Progress = { done: number; total: number; cancel: () => void };
 type Loaded = { state: "loading" } | { state: "ok"; clip: Decrypted } | { state: "gone" } | { state: "error"; message: string };
@@ -401,7 +407,8 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
         EAGER_CONCURRENCY,
       );
     } catch (e) {
-      setList({ state: "error", message: errorText(e) });
+      const message = errorText(e);
+      setList((l) => (l.state === "ok" ? { ...l, error: message } : { state: "error", message }));
     }
   }, [client, load]);
 
@@ -418,7 +425,14 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
     };
   }, [refresh, live]);
 
-  const clips = list.state === "ok" ? list.clips : [];
+  // "2 min ago" keeps counting while live updates make polling unnecessary,
+  // and clips drop out when they expire (the relay sends no event for that).
+  useEffect(() => {
+    const tick = setInterval(() => document.visibilityState === "visible" && setNow(Date.now()), TICK_MS);
+    return () => clearInterval(tick);
+  }, []);
+
+  const clips = list.state === "ok" ? list.clips.filter((c) => c.expires_at_ms > now) : [];
   const open = clips.find((c) => c.id === openId) ?? clips[0] ?? null;
   useEffect(() => {
     if (open) load(open.id);
@@ -501,6 +515,7 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
         </div>
         {list.state === "loading" && <p className="muted center">Loading…</p>}
         {list.state === "error" && <p className="error center">{list.message}</p>}
+        {list.state === "ok" && list.error && <p className="error center">Couldn't refresh: {list.error}</p>}
         {list.state === "ok" && clips.length === 0 && (
           <p className="muted center">No clips yet. Send one from here or from another device.</p>
         )}
@@ -521,7 +536,11 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
         ))}
       </section>
 
-      {toast && <div className={`toast ${toast.kind}`}>{toast.text}</div>}
+      {toast && (
+        <div className={`toast ${toast.kind}`} role="status">
+          {toast.text}
+        </div>
+      )}
       {settings && <SettingsSheet stored={stored} onClose={() => setSettings(false)} onChange={onChange} />}
     </Screen>
   );
@@ -849,10 +868,21 @@ function ClipPreview({ clip }: { clip: Decrypted }) {
 
 function SettingsSheet(props: { stored: StoredPairing; onClose: () => void; onChange: (s: StoredPairing | null) => void }) {
   const [deviceName, setDeviceName] = useState(props.stored.deviceName);
+  const { onClose } = props;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
   return (
-    <div className="sheet-backdrop" onClick={props.onClose}>
-      <div className="sheet" onClick={(e) => e.stopPropagation()}>
-        <h2>Settings</h2>
+    <div className="sheet-backdrop" onClick={onClose}>
+      <div className="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" onClick={(e) => e.stopPropagation()}>
+        <div className="sheet-head">
+          <h2 id="sheet-title">Settings</h2>
+          <button className="link" onClick={onClose}>
+            Close
+          </button>
+        </div>
         <label>
           Device name
           <input value={deviceName} onChange={(e) => setDeviceName(e.target.value)} />

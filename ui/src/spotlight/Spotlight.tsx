@@ -6,9 +6,13 @@ import { guessOs, modKey } from "../shared/hotkey";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
 import type { ClipMeta, ClipView, FileInfo, ServerConfig, Status, Transfer } from "../shared/types";
 
-type List = { state: "loading" } | { state: "ok"; clips: ClipMeta[] } | { state: "error"; message: string };
+/** A failed refresh keeps the clips it had, with `error` set, instead of hiding them. */
+type List =
+  | { state: "loading" }
+  | { state: "ok"; clips: ClipMeta[]; error?: string }
+  | { state: "error"; message: string };
 type Loaded = { state: "loading" } | { state: "ok"; clip: ClipView } | { state: "gone" } | { state: "error"; message: string };
-type Notice = { kind: "ok" | "error"; text: string };
+type Notice = { kind: "ok" | "info" | "error"; text: string };
 
 /** How long "Sent" stays up before Spotlight gets out of the way. */
 const SENT_HIDE_MS = 5000;
@@ -76,7 +80,8 @@ export function Spotlight() {
         EAGER_CONCURRENCY,
       );
     } catch (e) {
-      setList({ state: "error", message: String(e) });
+      const message = String(e);
+      setList((l) => (l.state === "ok" ? { ...l, error: message } : { state: "error", message }));
     }
   }, [load]);
 
@@ -142,7 +147,7 @@ export function Spotlight() {
   const send = useCallback(async () => {
     if (busy) return;
     setBusy(true);
-    setNotice({ kind: "ok", text: "Encrypting and sending…" });
+    setNotice({ kind: "info", text: "Encrypting and sending…" });
     try {
       const { clip, upload } = await platform.sendClipboard(ttl, (done, total) => {
         if (total > SENDING_BAR_BYTES) setSending({ done, total });
@@ -162,6 +167,7 @@ export function Spotlight() {
       setSelectedId(id);
       setNotice({ kind: "ok", text: `Sent · expires in ${formatDuration(ttl * 1000)}` });
       setSent(true);
+      setBusy(false); // `sent` keeps a second ⌘V from sending again
       hideAfter(SENT_HIDE_MS);
     } catch (e) {
       setSending(null);
@@ -211,6 +217,8 @@ export function Spotlight() {
         if (!selected) return;
         const next = clips.indexOf(selected) + (e.key === "ArrowDown" ? 1 : -1);
         if (clips[next]) setSelectedId(clips[next].id);
+      } else if (mod && key === "c" && window.getSelection()?.toString()) {
+        // Text selected in the preview: let ⌘C copy just that.
       } else if (e.key === "Enter" || (mod && key === "c")) {
         handled();
         copy();
@@ -266,8 +274,10 @@ export function Spotlight() {
               Open Settings <kbd>↵</kbd>
             </button>
           </Empty>
+        ) : list.state === "loading" && paired ? (
+          <Empty title="Loading…" detail="" />
         ) : list.state === "error" ? (
-          <Empty title="Can't reach the relay" detail={list.message} />
+          <Empty title="Couldn't load your clips" detail={list.message} />
         ) : list.state === "ok" && clips.length === 0 ? (
           <Empty
             title="No clips yet"
@@ -275,7 +285,7 @@ export function Spotlight() {
           />
         ) : list.state === "ok" && selected ? (
           <div className="split">
-            <ul className="clips">
+            <ul className="clips" role="listbox" aria-label="Clips" aria-activedescendant={`clip-${selected.id}`}>
               {clips.map((clip) => (
                 <ClipRow
                   key={clip.id}
@@ -296,8 +306,17 @@ export function Spotlight() {
       {transfer && <TransferBar transfer={transfer} onCancel={() => platform.cancelTransfer()} />}
       {sending ? (
         <TransferBar transfer={{ direction: "upload", label: "clipboard", ...sending }} />
+      ) : notice ? (
+        <div className={`notice ${notice.kind}`} role="status">
+          {notice.text}
+        </div>
       ) : (
-        notice && <div className={`notice ${notice.kind}`}>{notice.text}</div>
+        list.state === "ok" &&
+        list.error && (
+          <div className="notice error" role="status">
+            Couldn't refresh: {list.error}
+          </div>
+        )
       )}
 
       <footer className="panel-footer">
@@ -359,7 +378,15 @@ function ClipRow(props: {
     title = <span className="muted">Encrypted clip</span>;
   }
   return (
-    <li ref={ref} className={selected ? "clip selected" : "clip"} onMouseDown={props.onSelect} onDoubleClick={props.onCopy}>
+    <li
+      ref={ref}
+      id={`clip-${meta.id}`}
+      role="option"
+      aria-selected={selected}
+      className={selected ? "clip selected" : "clip"}
+      onMouseDown={props.onSelect}
+      onDoubleClick={props.onCopy}
+    >
       <span className="clip-icon">
         <KindIcon kind={icon} />
       </span>

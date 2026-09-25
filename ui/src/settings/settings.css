@@ -216,3 +216,17 @@ button.danger {
   /* Crisp modules when scaled. */
   image-rendering: pixelated;
 }
+
+.autosave {
+  margin: 0;
+  text-align: right;
+}
+
+/* Six words don't fit next to the buttons: the phrase gets its own line. */
+.row.phrase {
+  flex-wrap: wrap;
+}
+
+.row.phrase input {
+  flex: 1 1 100%;
+}

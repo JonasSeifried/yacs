@@ -273,6 +273,10 @@ html[data-os="macos"] .panel {
   color: var(--ok);
 }
 
+.notice.info {
+  color: var(--muted);
+}
+
 .transfer {
   padding: 8px 18px 9px;
   border-top: 1px solid var(--border);
@@ -338,6 +342,10 @@ html[data-os="macos"] .panel {
   margin: 0;
   font-weight: 600;
   font-size: 15px;
+}
+
+.empty-detail:empty {
+  display: none;
 }
 
 .empty-detail {

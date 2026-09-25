@@ -189,6 +189,7 @@ button.icon {
 
 .composer-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -384,6 +385,21 @@ button.icon {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sheet-head h2 {
+  margin: 0;
+}
+
+.sheet-head button.link {
+  align-self: center;
+  padding: 6px 0 6px 12px;
 }
 
 .sheet p {
