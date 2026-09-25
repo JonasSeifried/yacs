@@ -127,6 +127,39 @@ button.danger {
   color: var(--muted);
 }
 
+.notice {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+}
+
+.notice p {
+  margin: 0;
+}
+
+.notice strong {
+  font-weight: 550;
+}
+
+.command {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: break-word;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
 .actions {
   display: flex;
   align-items: center;

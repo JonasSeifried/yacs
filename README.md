@@ -65,7 +65,7 @@ Without Docker: `cargo build --release -p yacs-server` (after building the web a
 
 - Take the `.AppImage` (`chmod +x` it, then run it) or the `.deb` / `.rpm`. All three update themselves; the packages ask for your password to install an update.
 - The tray icon needs AppIndicator support. Ubuntu has it; on other GNOME desktops, add the "AppIndicator and KStatusNotifierItem Support" extension.
-- On Wayland, apps usually can't have global shortcuts. Bind `yacs-desktop --toggle` (with the AppImage: its path, then `--toggle`) to a shortcut in your desktop's keyboard settings instead.
+- On Wayland, apps can't set global shortcuts, so bind `yacs-desktop --toggle` (with the AppImage: its path, then `--toggle`) to a shortcut in your desktop's keyboard settings. YACS Settings shows the exact command and where to add it (GNOME, KDE, Hyprland, Sway).
 - The command line isn't bundled on Linux; install it as below.
 
 ## Command line

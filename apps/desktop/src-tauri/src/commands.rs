@@ -27,6 +27,8 @@ pub struct Status {
     device_name: String,
     hotkey: String,
     hotkey_error: Option<String>,
+    /// Wayland: bind the command in the desktop instead of recording a hotkey.
+    manual_shortcut: Option<hotkey::ManualShortcut>,
     default_ttl_secs: u64,
     autostart: bool,
     /// `macos`, `windows`, `linux`: lets the UI show ⌘ vs Ctrl.
@@ -46,6 +48,7 @@ pub fn status(app: AppHandle, state: State<'_, AppState>) -> Status {
         device_name: settings.device_name,
         hotkey: settings.hotkey,
         hotkey_error: state.hotkey_error.lock().expect("lock poisoned").clone(),
+        manual_shortcut: hotkey::manual(),
         default_ttl_secs: settings.default_ttl_secs,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         os: std::env::consts::OS,

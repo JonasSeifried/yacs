@@ -54,6 +54,8 @@ export interface Status {
   deviceName: string;
   hotkey: string;
   hotkeyError: string | null;
+  /** Wayland: the user binds this in their desktop instead of recording a hotkey. */
+  manualShortcut: ManualShortcut | null;
   defaultTtlSecs: number;
   autostart: boolean;
   os: Os;
@@ -61,6 +63,13 @@ export interface Status {
   /** A newer release that's ready to install. */
   update: string | null;
   cli: CliStatus;
+}
+
+export interface ManualShortcut {
+  /** This AppImage or the installed binary, with `--toggle`. */
+  command: string;
+  appimage: boolean;
+  desktop: "gnome" | "kde" | "hyprland" | "sway" | "other";
 }
 
 /** The `yacs` command bundled with the desktop app. */
@@ -89,10 +98,7 @@ export interface Preferences {
 
 /** `yacs_core::ClipItem`, as serde hands it to JS through `yacs-wasm`. */
 export type ClipItem =
-  | { Text: string }
-  | { Html: string }
-  | { Rtf: string }
-  | { Image: { mime: string; data: Uint8Array } };
+  { Text: string } | { Html: string } | { Rtf: string } | { Image: { mime: string; data: Uint8Array } };
 
 /** `yacs_core::Clip`: a decrypted clip with every format it carries. */
 export interface Clip {

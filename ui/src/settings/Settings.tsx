@@ -3,7 +3,7 @@ import { platform } from "../platform";
 import { acceleratorFromEvent, formatAccelerator } from "../shared/hotkey";
 import { readPairLink } from "../shared/pairlink";
 import { ttlChoices } from "../shared/time";
-import type { Os, PhonePairing, Preferences, ServerConfig, Status } from "../shared/types";
+import type { ManualShortcut, Os, PhonePairing, Preferences, ServerConfig, Status } from "../shared/types";
 import { relayBehind } from "../shared/version";
 
 export function Settings() {
@@ -399,11 +399,15 @@ function PreferencesForm({ status, serverConfig }: { status: Status; serverConfi
         Device name <span className="optional">shown to your other devices</span>
         <input required value={prefs.deviceName} onChange={(e) => set("deviceName", e.target.value)} />
       </label>
-      <label>
-        Shortcut to open YACS
-        <HotkeyRecorder value={prefs.hotkey} os={status.os} onChange={(v) => set("hotkey", v)} />
-        {status.hotkeyError && <span className="error">{status.hotkeyError}</span>}
-      </label>
+      {status.manualShortcut ? (
+        <ManualShortcutHelp shortcut={status.manualShortcut} />
+      ) : (
+        <label>
+          Shortcut to open YACS
+          <HotkeyRecorder value={prefs.hotkey} os={status.os} onChange={(v) => set("hotkey", v)} />
+          {status.hotkeyError && <span className="error">{status.hotkeyError}</span>}
+        </label>
+      )}
       <label>
         Default expiry for sent clips
         <select value={prefs.defaultTtlSecs} onChange={(e) => set("defaultTtlSecs", Number(e.target.value))}>
@@ -426,6 +430,74 @@ function PreferencesForm({ status, serverConfig }: { status: Status; serverConfi
         </button>
       </div>
     </form>
+  );
+}
+
+/** For tiling compositors, the config line to add; other desktops take the bare command. */
+function configLine({ command, desktop }: ManualShortcut) {
+  if (desktop === "hyprland")
+    return { file: "~/.config/hypr/hyprland.conf", line: `bind = CTRL SHIFT, space, exec, ${command}` };
+  if (desktop === "sway") return { file: "~/.config/sway/config", line: `bindsym Ctrl+Shift+space exec ${command}` };
+  return null;
+}
+
+/**
+ * Wayland doesn't let apps grab global shortcuts, so instead of the recorder
+ * Settings shows how to bind `--toggle` on the desktop it detected.
+ */
+function ManualShortcutHelp({ shortcut }: { shortcut: ManualShortcut }) {
+  const [copied, setCopied] = useState(false);
+  const config = configLine(shortcut);
+  const text = config?.line ?? shortcut.command;
+  const copy = async () => {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <div className="notice">
+      <strong>Shortcut to open YACS</strong>
+      <p>
+        Wayland doesn't let apps set their own global shortcuts.{" "}
+        {config ? (
+          <>
+            Add this line to <code>{config.file}</code>:
+          </>
+        ) : (
+          "Add one in your desktop's settings that runs:"
+        )}
+      </p>
+      <div className="row">
+        <code className="command">
+          {/* Browsers break lines after hyphens, which would split the flag. */}
+          {text.replace(/--toggle$/, "")}
+          <span className="nowrap">--toggle</span>
+        </code>
+        <button type="button" onClick={copy}>
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      {shortcut.desktop === "gnome" && (
+        <p>
+          In Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts, click <b>Add Shortcut</b>, name it
+          YACS, paste the command, and press a shortcut such as Ctrl+Shift+Space.
+        </p>
+      )}
+      {shortcut.desktop === "kde" && (
+        <p>
+          In System Settings → Keyboard → Shortcuts, click <b>Add New</b> → <b>Command or Script</b>, paste the command,
+          then set a shortcut such as Ctrl+Shift+Space.
+        </p>
+      )}
+      {shortcut.desktop === "sway" && <p>Then reload sway (Mod+Shift+C).</p>}
+      {shortcut.desktop === "other" && (
+        <p>
+          Look for custom or application shortcuts in your desktop's keyboard settings, and paste the command there.
+        </p>
+      )}
+      {shortcut.appimage && <p className="hint">If you move the AppImage, update the path in the shortcut.</p>}
+    </div>
   );
 }
 
