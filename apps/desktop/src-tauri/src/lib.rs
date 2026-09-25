@@ -114,6 +114,8 @@ pub fn run() {
             commands::hide_spotlight,
             commands::open_settings,
             commands::hide_settings,
+            commands::pause_hotkey,
+            commands::resume_hotkey,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build YACS")

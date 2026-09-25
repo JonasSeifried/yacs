@@ -6,6 +6,7 @@ use std::fs::File;
 use std::future::Future;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -44,6 +45,8 @@ pub struct Transfer {
 pub struct Finished {
     pub direction: Direction,
     pub ok: bool,
+    /// Stopped by the user: not an error worth showing in red.
+    pub cancelled: bool,
     pub message: String,
 }
 
@@ -62,6 +65,7 @@ pub struct Transfers {
 struct Running {
     transfer: Transfer,
     cancel: Arc<Notify>,
+    cancelled: Arc<AtomicBool>,
     reported: Instant,
 }
 
@@ -73,6 +77,7 @@ impl Transfers {
     /// The transfer stops at its next step and reports "Cancelled".
     pub fn cancel(&self) {
         if let Some(running) = &*self.lock() {
+            running.cancelled.store(true, Ordering::Relaxed);
             running.cancel.notify_one();
         }
     }
@@ -126,6 +131,7 @@ where
         total,
     };
     let cancel = Arc::new(Notify::new());
+    let cancelled = Arc::new(AtomicBool::new(false));
     {
         let mut current = transfers.lock();
         if let Some(running) = &*current {
@@ -141,6 +147,7 @@ where
         *current = Some(Running {
             transfer: transfer.clone(),
             cancel: cancel.clone(),
+            cancelled: cancelled.clone(),
             reported: Instant::now(),
         });
     }
@@ -159,6 +166,7 @@ where
         let finished = Finished {
             direction,
             ok,
+            cancelled: !ok && cancelled.load(Ordering::Relaxed),
             message,
         };
         emit(&app, None, Some(finished));

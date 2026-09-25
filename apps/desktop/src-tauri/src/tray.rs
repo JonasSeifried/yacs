@@ -1,38 +1,43 @@
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Wry};
+use tauri::{AppHandle, Manager, Wry};
 
 use crate::{update, windows};
 
 const TRAY_ID: &str = "main";
 
-fn menu(app: &AppHandle, update: Option<&str>) -> tauri::Result<Menu<Wry>> {
+fn menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let open = MenuItem::with_id(app, "open", "Open YACS", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit YACS", true, None::<&str>)?;
     let separator = PredefinedMenuItem::separator(app)?;
     let menu = Menu::with_items(app, &[&open, &settings, &separator, &quit])?;
-    if let Some(version) = update {
-        let label = format!("Update to {version} and restart");
+    let updates = app.state::<update::Updates>();
+    let item = match (updates.installing(), updates.available()) {
+        (Some(version), _) => Some((format!("Installing {version}…"), false)),
+        (None, Some(version)) => Some((format!("Update to {version} and restart"), true)),
+        (None, None) => None,
+    };
+    if let Some((label, enabled)) = item {
         menu.prepend(&PredefinedMenuItem::separator(app)?)?;
         menu.prepend(&MenuItem::with_id(
             app,
             "update",
             label,
-            true,
+            enabled,
             None::<&str>,
         )?)?;
     }
     Ok(menu)
 }
 
-/// Offer (or stop offering) an update in the tray menu.
-pub fn set_update(app: &AppHandle, version: Option<&str>) {
+/// Offer an update in the tray menu (or show it installing, or neither).
+pub fn refresh(app: &AppHandle) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };
-    match menu(app, version) {
+    match menu(app) {
         Ok(menu) => {
             let _ = tray.set_menu(Some(menu));
         }
@@ -41,7 +46,7 @@ pub fn set_update(app: &AppHandle, version: Option<&str>) {
 }
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
-    let menu = menu(app, None)?;
+    let menu = menu(app)?;
 
     // macOS menu bar icons are monochrome templates that adapt to light/dark;
     // the Windows tray shows the colored app icon.
@@ -65,6 +70,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             "update" => {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
+                    // Settings shows why (`Status::update_error`).
                     if let Err(e) = update::install(&app).await {
                         tracing::warn!(error = %e, "update failed");
                         windows::show_settings(&app);

@@ -39,6 +39,10 @@ pub struct Status {
     version: String,
     /// A newer release that's ready to install.
     update: Option<String>,
+    /// The version being installed right now (from the tray, say).
+    update_installing: Option<String>,
+    /// Why the last install failed.
+    update_error: Option<String>,
     cli: cli::CliStatus,
 }
 
@@ -57,6 +61,8 @@ pub fn status(app: AppHandle, state: State<'_, AppState>) -> Status {
         os: std::env::consts::OS,
         version: app.package_info().version.to_string(),
         update: app.state::<Updates>().available(),
+        update_installing: app.state::<Updates>().installing(),
+        update_error: app.state::<Updates>().error(),
         cli: cli::status(),
     }
 }
@@ -576,4 +582,20 @@ pub fn open_settings(app: AppHandle) {
 #[tauri::command]
 pub fn hide_settings(app: AppHandle) {
     windows::hide_settings(&app);
+}
+
+/// While Settings records a shortcut (see `hotkey::pause`).
+#[tauri::command]
+pub fn pause_hotkey(app: AppHandle, state: State<'_, AppState>) {
+    hotkey::pause(&app, &state.settings().hotkey);
+}
+
+#[tauri::command]
+pub fn resume_hotkey(app: AppHandle, state: State<'_, AppState>) {
+    let hotkey = state.settings().hotkey.clone();
+    if let Err(e) = hotkey::resume(&app, &hotkey) {
+        tracing::warn!(error = %e, "hotkey not registered again");
+        *state.hotkey_error.lock().expect("lock poisoned") = Some(e);
+        let _ = app.emit(windows::EVENT_STATUS_CHANGED, ());
+    }
 }

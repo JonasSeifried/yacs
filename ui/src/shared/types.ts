@@ -70,7 +70,7 @@ export interface Transfer {
 export interface TransferChanged {
   transfer: Transfer | null;
   /** Set once, when a transfer ends. */
-  finished: { direction: Transfer["direction"]; ok: boolean; message: string } | null;
+  finished: { direction: Transfer["direction"]; ok: boolean; cancelled: boolean; message: string } | null;
 }
 
 /** What `sendClipboard` did: sent a clip, or started uploading big files. */
@@ -96,6 +96,10 @@ export interface Status {
   version: string;
   /** A newer release that's ready to install. */
   update: string | null;
+  /** The version being installed right now (from the tray, say). */
+  updateInstalling: string | null;
+  /** Why the last install failed. */
+  updateError: string | null;
   cli: CliStatus;
 }
 

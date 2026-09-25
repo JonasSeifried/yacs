@@ -348,6 +348,8 @@ button.icon {
 }
 
 .toast {
+  display: flex;
+  align-items: center;
   position: fixed;
   left: 50%;
   bottom: calc(20px + env(safe-area-inset-bottom));
@@ -365,6 +367,16 @@ button.icon {
 .toast.error {
   background: var(--danger);
   color: #fff;
+}
+
+.toast-action {
+  margin: -11px -16px -11px 14px;
+  padding: 11px 16px;
+  background: none;
+  color: inherit;
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .sheet-backdrop {

@@ -96,6 +96,25 @@ pub fn register(app: &AppHandle, hotkey: &str) -> Result<(), String> {
         .map_err(|e| format!("couldn't register {hotkey}, another app may be using it ({e})"))
 }
 
+/// Off while Settings records a new shortcut: otherwise pressing the current
+/// one opens Spotlight instead of reaching the recorder.
+pub fn pause(app: &AppHandle, hotkey: &str) {
+    if manual().is_some() {
+        return;
+    }
+    if let Ok(shortcut) = parse(hotkey) {
+        let _ = app.global_shortcut().unregister(shortcut);
+    }
+}
+
+/// Undoes `pause`; does nothing if the hotkey is registered already.
+pub fn resume(app: &AppHandle, hotkey: &str) -> Result<(), String> {
+    if manual().is_some() || parse(hotkey).is_ok_and(|s| app.global_shortcut().is_registered(s)) {
+        return Ok(());
+    }
+    register(app, hotkey)
+}
+
 /// Swap the active hotkey. If the new one can't be registered, the old one is
 /// restored, so the user is never left without a way to open Spotlight.
 pub fn replace(app: &AppHandle, old: &str, new: &str) -> Result<(), String> {

@@ -16,12 +16,28 @@ const CHECK_EVERY: Duration = Duration::from_secs(12 * 60 * 60);
 #[derive(Default)]
 pub struct Updates {
     available: Mutex<Option<Update>>,
+    /// The version being downloaded and installed right now.
+    installing: Mutex<Option<String>>,
+    /// Why the last install failed, until the next attempt. The tray's
+    /// install has nowhere else to show it.
+    error: Mutex<Option<String>>,
 }
 
 impl Updates {
     /// Version of the update that's ready to install, if any.
     pub fn available(&self) -> Option<String> {
         self.lock().as_ref().map(|u| u.version.clone())
+    }
+
+    pub fn installing(&self) -> Option<String> {
+        self.installing
+            .lock()
+            .expect("update lock poisoned")
+            .clone()
+    }
+
+    pub fn error(&self) -> Option<String> {
+        self.error.lock().expect("update lock poisoned").clone()
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<Update>> {
@@ -64,24 +80,38 @@ pub async fn check(app: &AppHandle) -> Result<Option<String>, String> {
         changed
     };
     if changed {
-        tray::set_update(app, version.as_deref());
+        tray::refresh(app);
         let _ = app.emit(windows::EVENT_STATUS_CHANGED, ());
     }
     Ok(version)
 }
 
 /// Download, verify and install the update found by `check`, then restart.
+/// The tray and Settings show that it's running, and why it failed.
 pub async fn install(app: &AppHandle) -> Result<(), String> {
-    let update = app
-        .state::<Updates>()
+    let updates = app.state::<Updates>();
+    let update = updates
         .lock()
         .take()
         .ok_or("no update to install; check for updates first")?;
     tracing::info!(version = %update.version, "installing update");
+    *updates.error.lock().expect("update lock poisoned") = None;
+    set_installing(app, Some(update.version.clone()));
     if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
         let message = format!("couldn't install the update: {e}");
-        *app.state::<Updates>().lock() = Some(update);
+        *updates.lock() = Some(update);
+        *updates.error.lock().expect("update lock poisoned") = Some(message.clone());
+        set_installing(app, None);
         return Err(message);
     }
     app.restart();
+}
+
+fn set_installing(app: &AppHandle, version: Option<String>) {
+    *app.state::<Updates>()
+        .installing
+        .lock()
+        .expect("update lock poisoned") = version;
+    tray::refresh(app);
+    let _ = app.emit(windows::EVENT_STATUS_CHANGED, ());
 }

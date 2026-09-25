@@ -111,6 +111,8 @@ pub fn hide_settings(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(SETTINGS) {
         let _ = w.hide();
     }
+    // In case it closed while recording a shortcut.
+    crate::commands::resume_hotkey(app.clone(), app.state());
     return_focus(app);
 }
 

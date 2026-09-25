@@ -343,8 +343,15 @@ type List =
   | { state: "error"; message: string };
 /** A big upload or download in progress. */
 type Progress = { done: number; total: number; cancel: () => void };
+
+/** An upload the user cancelled: not an error to show. */
+class Cancelled extends Error {}
 type Loaded = { state: "loading" } | { state: "ok"; clip: Decrypted } | { state: "gone" } | { state: "error"; message: string };
-type Toast = { kind: "ok" | "error"; text: string };
+/** `undo`: the clip just deleted, which the toast's Undo brings back. */
+type Toast = { kind: "ok" | "error"; text: string; undo?: string };
+
+/** A delete waits this long for Undo before it goes to the relay (for every device). */
+const UNDO_MS = 5000;
 
 function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: StoredPairing | null) => void }) {
   const client = useMemo(() => new WebClient(stored), [stored]);
@@ -360,6 +367,9 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
   const [drafted, setDrafted] = useState(false);
   const outdated = useOutdated(config, upload === null && !drafted);
   const requested = useRef(new Set<string>());
+  /** Deleted here but not yet on the relay, with the timer that sends it. */
+  const [deleting, setDeleting] = useState<string[]>([]);
+  const pendingDeletes = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useTransfer(upload !== null);
 
@@ -368,10 +378,10 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
     forgetDownloads();
   }, []);
 
-  const notify = useCallback((kind: Toast["kind"], text: string) => {
+  const notify = useCallback((kind: Toast["kind"], text: string, undo?: string) => {
     clearTimeout(toastTimer.current);
-    setToast({ kind, text });
-    toastTimer.current = setTimeout(() => setToast(null), kind === "ok" ? 2500 : 6000);
+    setToast({ kind, text, undo });
+    toastTimer.current = setTimeout(() => setToast(null), undo ? UNDO_MS : kind === "ok" ? 2500 : 6000);
   }, []);
 
   const load = useCallback(
@@ -432,7 +442,8 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
     return () => clearInterval(tick);
   }, []);
 
-  const clips = list.state === "ok" ? list.clips.filter((c) => c.expires_at_ms > now) : [];
+  const clips =
+    list.state === "ok" ? list.clips.filter((c) => c.expires_at_ms > now && !deleting.includes(c.id)) : [];
   const open = clips.find((c) => c.id === openId) ?? clips[0] ?? null;
   useEffect(() => {
     if (open) load(open.id);
@@ -449,6 +460,8 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
     setUpload({ done: 0, total: 0, cancel: () => controller.abort() });
     try {
       return await work((done, total) => setUpload((u) => u && { ...u, done, total }), controller.signal);
+    } catch (e) {
+      throw controller.signal.aborted ? new Cancelled() : e;
     } finally {
       setUpload(null);
     }
@@ -467,14 +480,45 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
     notify("ok", `Sent · expires in ${formatDuration(ttl * 1000)}`);
   };
 
-  const remove = async (id: string) => {
-    try {
-      await client.delete(id);
-      setList((l) => (l.state === "ok" ? { state: "ok", clips: l.clips.filter((c) => c.id !== id) } : l));
-    } catch (e) {
-      notify("error", errorText(e));
-    }
+  const commitDelete = useCallback(
+    async (id: string) => {
+      clearTimeout(pendingDeletes.current.get(id));
+      pendingDeletes.current.delete(id);
+      try {
+        await client.delete(id);
+        setList((l) => (l.state === "ok" ? { ...l, clips: l.clips.filter((c) => c.id !== id) } : l));
+      } catch (e) {
+        notify("error", errorText(e));
+      } finally {
+        setDeleting((d) => d.filter((x) => x !== id)); // back in the list if it failed
+      }
+    },
+    [client, notify],
+  );
+
+  /** Hidden at once; deleted for every device unless Undo comes first. */
+  const remove = (id: string) => {
+    setDeleting((d) => [...d, id]);
+    pendingDeletes.current.set(id, setTimeout(() => commitDelete(id), UNDO_MS));
+    notify("ok", "Deleted", id);
   };
+
+  const undoDelete = (id: string) => {
+    clearTimeout(pendingDeletes.current.get(id));
+    pendingDeletes.current.delete(id);
+    setDeleting((d) => d.filter((x) => x !== id));
+    setOpenId(id);
+    clearTimeout(toastTimer.current);
+    setToast(null);
+  };
+
+  // A phone may freeze a page in the background: send pending deletes first.
+  useEffect(() => {
+    const onHidden = () =>
+      document.visibilityState === "hidden" && [...pendingDeletes.current.keys()].forEach(commitDelete);
+    document.addEventListener("visibilitychange", onHidden);
+    return () => document.removeEventListener("visibilitychange", onHidden);
+  }, [commitDelete]);
 
   return (
     <Screen>
@@ -539,6 +583,11 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
       {toast && (
         <div className={`toast ${toast.kind}`} role="status">
           {toast.text}
+          {toast.undo && (
+            <button className="toast-action" onClick={() => undoDelete(toast.undo!)}>
+              Undo
+            </button>
+          )}
         </div>
       )}
       {settings && <SettingsSheet stored={stored} onClose={() => setSettings(false)} onChange={onChange} />}
@@ -597,7 +646,8 @@ function Composer(props: {
       setText("");
       setFiles([]);
     } catch (e) {
-      props.onError(errorText(e));
+      // Cancelled on purpose: the draft stays, ready to send again.
+      if (!(e instanceof Cancelled)) props.onError(errorText(e));
     } finally {
       setBusy(false);
     }

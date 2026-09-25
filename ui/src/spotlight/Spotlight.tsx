@@ -12,10 +12,13 @@ type List =
   | { state: "ok"; clips: ClipMeta[]; error?: string }
   | { state: "error"; message: string };
 type Loaded = { state: "loading" } | { state: "ok"; clip: ClipView } | { state: "gone" } | { state: "error"; message: string };
-type Notice = { kind: "ok" | "info" | "error"; text: string };
+/** `undo`: the clip just deleted, which ⌘Z brings back. */
+type Notice = { kind: "ok" | "info" | "error"; text: string; undo?: string };
 
 /** How long "Sent" stays up before Spotlight gets out of the way. */
 const SENT_HIDE_MS = 5000;
+/** A delete waits this long for ⌘Z before it goes to the relay (for every device). */
+const UNDO_MS = 5000;
 /** Sends bigger than this show a progress bar; smaller ones are over in a blink. */
 const SENDING_BAR_BYTES = 256 * 1024;
 
@@ -37,6 +40,9 @@ export function Spotlight() {
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [now, setNow] = useState(Date.now());
   const requested = useRef(new Set<string>());
+  /** Deleted here but not yet on the relay, with the timer that sends it. */
+  const [deleting, setDeleting] = useState<string[]>([]);
+  const pendingDeletes = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const os = status?.os ?? guessOs();
 
   const hideAfter = useCallback((ms: number) => {
@@ -48,7 +54,7 @@ export function Spotlight() {
     setSent(false);
   }, []);
 
-  const clips = list.state === "ok" ? list.clips : [];
+  const clips = list.state === "ok" ? list.clips.filter((c) => !deleting.includes(c.id)) : [];
   const selected = clips.find((c) => c.id === selectedId) ?? clips[0] ?? null;
 
   const load = useCallback(async (id: string) => {
@@ -112,7 +118,7 @@ export function Spotlight() {
       platform.onTransferChanged(({ transfer, finished }) => {
         setTransfer(transfer);
         if (!finished) return;
-        setNotice({ kind: finished.ok ? "ok" : "error", text: finished.message });
+        setNotice({ kind: finished.ok ? "ok" : finished.cancelled ? "info" : "error", text: finished.message });
         if (finished.ok && finished.direction === "upload") reloadList();
         // The files are on the clipboard now: paste them where you were.
         if (finished.ok && finished.direction === "download") platform.hideSpotlight();
@@ -176,19 +182,50 @@ export function Spotlight() {
     }
   }, [busy, ttl, hideAfter]);
 
-  const remove = useCallback(async () => {
-    if (!selected || busy) return;
-    const index = clips.indexOf(selected);
+  const commitDelete = useCallback(async (id: string) => {
+    clearTimeout(pendingDeletes.current.get(id));
+    pendingDeletes.current.delete(id);
     try {
-      await platform.deleteClip(selected.id);
-      const rest = clips.filter((c) => c.id !== selected.id);
-      setList({ state: "ok", clips: rest });
-      setSelectedId(rest[Math.min(index, rest.length - 1)]?.id ?? null);
-      setNotice(null);
+      await platform.deleteClip(id);
+      setList((l) => (l.state === "ok" ? { ...l, clips: l.clips.filter((c) => c.id !== id) } : l));
     } catch (e) {
       setNotice({ kind: "error", text: String(e) });
+    } finally {
+      setDeleting((d) => d.filter((x) => x !== id)); // back in the list if it failed
     }
-  }, [selected, clips, busy]);
+  }, []);
+
+  /** Hidden at once; deleted for every device unless ⌘Z comes first. */
+  const remove = useCallback(() => {
+    if (!selected || busy) return;
+    const id = selected.id;
+    const index = clips.indexOf(selected);
+    const rest = clips.filter((c) => c.id !== id);
+    setDeleting((d) => [...d, id]);
+    pendingDeletes.current.set(id, setTimeout(() => commitDelete(id), UNDO_MS));
+    setSelectedId(rest[Math.min(index, rest.length - 1)]?.id ?? null);
+    setNotice({ kind: "info", text: "Deleted", undo: id });
+  }, [selected, clips, busy, commitDelete]);
+
+  const undoDelete = useCallback((id: string) => {
+    clearTimeout(pendingDeletes.current.get(id));
+    pendingDeletes.current.delete(id);
+    setDeleting((d) => d.filter((x) => x !== id));
+    setSelectedId(id);
+    setNotice(null);
+  }, []);
+
+  // Undo only lasts while Spotlight is open: hiding sends pending deletes now.
+  useEffect(() => {
+    const flush = () => [...pendingDeletes.current.keys()].forEach(commitDelete);
+    const onHidden = () => document.visibilityState === "hidden" && flush();
+    window.addEventListener("blur", flush);
+    document.addEventListener("visibilitychange", onHidden);
+    return () => {
+      window.removeEventListener("blur", flush);
+      document.removeEventListener("visibilitychange", onHidden);
+    };
+  }, [commitDelete]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -222,6 +259,9 @@ export function Spotlight() {
       } else if (e.key === "Enter" || (mod && key === "c")) {
         handled();
         copy();
+      } else if (mod && key === "z" && notice?.undo) {
+        handled();
+        undoDelete(notice.undo);
       } else if (mod && key === "v") {
         handled();
         send();
@@ -238,7 +278,7 @@ export function Spotlight() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [os, status, clips, selected, choices, ttl, sent, copy, send, remove, changeTtl, cancelHide]);
+  }, [os, status, clips, selected, choices, ttl, sent, notice, copy, send, remove, undoDelete, changeTtl, cancelHide]);
 
   // A click into the HTML preview moves focus into its iframe, where our keys
   // don't arrive. Take it straight back.
@@ -309,6 +349,11 @@ export function Spotlight() {
       ) : notice ? (
         <div className={`notice ${notice.kind}`} role="status">
           {notice.text}
+          {notice.undo && (
+            <button className="link" onClick={() => undoDelete(notice.undo!)} tabIndex={-1}>
+              Undo <kbd>{modKey(os, "Z")}</kbd>
+            </button>
+          )}
         </div>
       ) : (
         list.state === "ok" &&

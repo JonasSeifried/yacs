@@ -277,6 +277,23 @@ html[data-os="macos"] .panel {
   color: var(--muted);
 }
 
+.notice button.link {
+  margin-left: 10px;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 12.5px;
+}
+
+.notice button.link:hover {
+  text-decoration: underline;
+}
+
+.notice button.link kbd {
+  margin-left: 4px;
+}
+
 .transfer {
   padding: 8px 18px 9px;
   border-top: 1px solid var(--border);

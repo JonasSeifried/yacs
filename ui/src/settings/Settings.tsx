@@ -112,9 +112,13 @@ function Updates({ status, serverConfig }: { status: Status; serverConfig: Serve
         {serverConfig?.version && ` · relay ${serverConfig.version}`}
       </p>
       {serverConfig && <RelayHint relay={serverConfig.version} latest={status.update ?? status.version} />}
-      {error && <p className="error">{error}</p>}
+      {(error ?? status.updateError) && <p className="error">{error ?? status.updateError}</p>}
       <div className="actions">
-        {status.update ? (
+        {status.updateInstalling ? (
+          <button className="primary" disabled>
+            Installing {status.updateInstalling}…
+          </button>
+        ) : status.update ? (
           <button className="primary" onClick={install} disabled={state === "installing"}>
             {state === "installing" ? "Installing…" : `Update to ${status.update} and restart`}
           </button>
@@ -547,6 +551,13 @@ function ManualShortcutHelp({ shortcut }: { shortcut: ManualShortcut }) {
 function HotkeyRecorder({ value, os, onChange }: { value: string; os: Os; onChange: (value: string) => void }) {
   const [recording, setRecording] = useState(false);
   const [hint, setHint] = useState<string | null>(null);
+
+  // The global shortcut would swallow the current one before it gets here.
+  useEffect(() => {
+    if (!recording) return;
+    platform.pauseHotkey();
+    return () => void platform.resumeHotkey();
+  }, [recording]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLButtonElement>) => {
     if (!recording) return;

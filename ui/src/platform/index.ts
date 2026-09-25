@@ -54,6 +54,9 @@ export interface Platform {
   hideSpotlight(): Promise<void>;
   openSettings(): Promise<void>;
   hideSettings(): Promise<void>;
+  /** While Settings records a new shortcut, so the current one reaches it. */
+  pauseHotkey(): Promise<void>;
+  resumeHotkey(): Promise<void>;
   /** Returns an unsubscribe function. */
   onSpotlightShown(handler: () => void): Promise<() => void>;
   onStatusChanged(handler: () => void): Promise<() => void>;
