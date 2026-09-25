@@ -1,13 +1,13 @@
 # YACS: Implementation Plan
 
-Self-hostable, end-to-end encrypted clipboard sync. Rust monorepo: Axum relay, Tauri v2 desktop, PWA for mobile, native Tauri mobile later.
+Self-hostable, end-to-end encrypted clipboard sync. Rust monorepo: Axum relay, Tauri v2 desktop, PWA for mobile (native Tauri mobile on hold).
 
 ## 1. Decisions
 
 | Topic | Decision |
 | --- | --- |
 | Desktop v1 | macOS + Windows. Linux since 0.2.3 (AppImage, .deb, .rpm; on Wayland, bind `yacs-desktop --toggle` since global hotkeys are blocked there). |
-| Mobile | Now: PWA served by the relay. Later: Tauri mobile app with native clipboard plugins and share extensions. Both share one UI codebase. |
+| Mobile | PWA served by the relay. On hold: Tauri mobile app with native clipboard plugins and share extensions. Both share one UI codebase. |
 | Pairing | Shared phrase, focus on self-hosting. Low-cost hardening: the app generates the phrase by default, and Argon2id is used for key derivation. Accounts only if a public hosted version happens later. |
 | Hotkey UX | `CommandOrControl+Shift+Space` (⌘⇧Space on macOS, Ctrl+Shift+Space on Windows) opens Spotlight with a preview of the latest remote clip. `Ctrl+C` copies the preview to the local clipboard. `Ctrl+V` sends the local clipboard. `Esc` or losing focus closes it. |
 | Server model | Short history: each channel keeps every clip until its TTL expires (capped per channel). Reading doesn't delete, so 3+ devices work. |
@@ -189,7 +189,9 @@ GET    /*                                             embedded PWA (rust-embed)
 - **Service worker:** caches only the app shell (hashed assets forever, the page network-first). It never touches `/api`, so nothing decrypted is ever cached.
 - **Build:** `yacs-wasm` via `wasm-pack` (`pnpm --filter @yacs/ui wasm`), then `vite build --mode web` into `ui/dist/web`, which `yacs-server` embeds with `rust-embed` (read from disk in debug builds). The desktop build is `--mode desktop` and doesn't need WASM.
 
-### Later: Tauri mobile
+### On hold: Tauri mobile
+On hold since 0.3.1: the PWA covers phones well enough (big files included), so this may never be needed.
+
 Same `ui/src/mobile` with the `tauri.ts` adapter. Rust reuses `yacs-core` + `yacs-client` directly (no WASM). Tauri's clipboard plugin is text-only on mobile, so rich formats need a small custom plugin: Swift `UIPasteboard` / Kotlin `ClipboardManager`. Adds an iOS Share Extension + Android share intent.
 
 | Capability | PWA | Tauri mobile + native plugin |
@@ -247,7 +249,7 @@ GET    /api/v1/channels/{c}/clips/{id}/chunks/{i}              → sealed chunk 
 - **CLI:** `yacs send big.iso` picks the chunked path by size (anything over the inline limit is sent as a file, even text), with a progress line on stderr; Ctrl+C aborts the upload. `yacs recv -o` streams to `name.part`, then renames; piped stdout works too. `yacs info` says whether the relay takes big files. The e2e test sends 200 MB and checks each process peaks below 50 MB (`wait4`).
 - **Desktop:** ⌘V with big files starts a background upload (`transfers.rs`, one transfer at a time) with a progress bar and Cancel in Spotlight, which may hide meanwhile; the finished clip shows up like any clip. Big clips are never prefetched beyond their header: the preview lists names and sizes; ↵ downloads them into Downloads (`name.part`, then a free name) with progress, puts them on the clipboard and hides Spotlight. The paths are remembered, so ↵ again doesn't download again.
 - **PWA upload:** in a module Web Worker: `file.slice()` → `arrayBuffer()` → WASM `StreamCipher.seal` → `PUT` with a `Uint8Array` body (streaming request bodies don't work in Safari). Progress bar plus the hint **"Keep this screen open until the upload finishes"**, and a screen wake lock while it runs: iOS pauses background pages; retries carry on when the page is visible again (about four minutes of attempts per chunk), a reload starts over. Android's share target receives big files too.
-- **PWA download:** a download worker fetches and opens the chunks and hands them, one per pull, through a `MessagePort` to the service worker, which answers a hidden iframe's `/download/{token}` with a streamed `Content-Disposition: attachment` response (always `application/octet-stream`). The key never reaches the service worker; the page registers each download with it and waits for an ack, so an older service worker without the route falls back. iOS (chosen by user agent) and pages without a service worker: the worker writes the decrypted file into OPFS (`createSyncAccessHandle`), then a **Share** tap (iOS needs a fresh gesture) hands `getFile()` to the share sheet; the OPFS copy goes after sharing, or at the next start. Last resort: a Blob in memory, refused above 1 GB. Never a multi-GB `Blob` otherwise. Verified in Chromium: uploads, cancel (relay gets the `DELETE`), service-worker and OPFS downloads byte for byte. Unverified: whether OPFS-backed files stay out of RAM on iOS and whether service-worker downloads work from a home-screen app. **The user tests on iPhone and Android after the release.**
+- **PWA download:** a download worker fetches and opens the chunks and hands them, one per pull, through a `MessagePort` to the service worker, which answers a hidden iframe's `/download/{token}` with a streamed `Content-Disposition: attachment` response (always `application/octet-stream`). The key never reaches the service worker; the page registers each download with it and waits for an ack, so an older service worker without the route falls back. iOS (chosen by user agent) and pages without a service worker: the worker writes the decrypted file into OPFS (`createSyncAccessHandle`), then a **Share** tap (iOS needs a fresh gesture) hands `getFile()` to the share sheet; the OPFS copy goes after sharing, or at the next start. Last resort: a Blob in memory, refused above 1 GB. Never a multi-GB `Blob` otherwise. Verified in Chromium: uploads, cancel (relay gets the `DELETE`), service-worker and OPFS downloads byte for byte. Verified on devices (0.3.1): an 80 MB file uploads from Android and downloads on Android and iPhone. Still unverified: multi-GB files on phones, whether OPFS-backed files stay out of RAM on iOS, and whether service-worker downloads work from a home-screen app.
 
 ## 8. Roadmap
 
@@ -261,8 +263,8 @@ This reorders the original roadmap: crypto and the protocol come first, so the U
 | **3: Desktop clipboard** ✅ (verified Mac ↔ PC) | Core UX | `clipboard-rs` multi-format read/write, history list + keyboard navigation, Ctrl+C / Ctrl+V / Del, TTL dropdown, sanitized preview | Rich text from Word/browser and screenshots round-trip between Mac and PC |
 | **4: PWA + release (v1.0)** ✅ (v0.1.1: phones pair via QR over HTTPS, relay on a VPS behind nginx, desktop self-update verified) | Mobile + ship | `yacs-wasm`, mobile UI, embedded PWA, QR pairing, Dockerfile + compose (Caddy or nginx), signed desktop builds, updater | A phone can pair via QR and copy/send; `docker compose up` works on a VPS |
 | **5: v1.x** | Breadth | ✅ SSE live updates (0.2.0) and the relay version in desktop Settings; ✅ CLI for servers: `yacs pair` saves the pairing (from the desktop's link or the phrase), `yacs send FILE`, static release binaries, `yacs update` (signed), `yacs relay update` (Docker compose); the desktop apps bundle `yacs` and put it on the PATH on request (macOS, Windows); ✅ Linux desktop (0.2.3); files through the relay, up to its size limit | |
-| **6: Large files** ✅ (0.3.0; device testing pending) | Any size through the relay | Chunked, streamed uploads and downloads on every client (section 7) | A multi-GB file goes phone ↔ desktop through the relay, memory stays flat |
-| **7: Native mobile** (later) | Tauri mobile | Native clipboard plugins + share extensions | |
+| **6: Large files** ✅ (0.3.0; 80 MB verified on Android + iPhone in 0.3.1) | Any size through the relay | Chunked, streamed uploads and downloads on every client (section 7) | A multi-GB file goes phone ↔ desktop through the relay, memory stays flat |
+| **7: Native mobile** (on hold) | Tauri mobile | Native clipboard plugins + share extensions | |
 
 ### Note on P2P
 Direct device-to-device transfer (iroh or WebRTC) was considered for big files and dropped: chunked uploads through the relay (section 7) cover it without hole punching, TURN or both devices being online at once.
