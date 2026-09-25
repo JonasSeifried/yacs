@@ -65,7 +65,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let state = AppState::load(&app.path().app_config_dir()?, &app.config().identifier);
+            let state = AppState::load(&app.path().app_config_dir()?);
             let hotkey = state.settings().hotkey.clone();
             let paired = state.client().is_some();
             app.manage(state);

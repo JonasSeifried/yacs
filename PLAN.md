@@ -62,7 +62,7 @@ root   ── HKDF-SHA256(info="yacs/v1/channel")                  → channel_i
 root   ── HKDF-SHA256(info="yacs/v1/key")                      → enc_key (32 B)
 ```
 - The salt is fixed on purpose: both devices must derive the same values without talking to each other.
-- The key is derived once at pairing time and stored, so the Argon2 cost is paid only once: `pairing.json` (mode 0600) in the desktop app's config dir, `cli.json` for `yacs`, `localStorage` in the PWA. Not the OS keychain: once the app pairs the `yacs` command, the key is in a file anyway; on Linux a keyring isn't always running; and any program running as the user can read the clipboard directly. Versions up to 0.2.3 used the keychain; the app moves such pairings to the file on start, which is all the `keyring` crate is still there for.
+- The key is derived once at pairing time and stored, so the Argon2 cost is paid only once: `pairing.json` (mode 0600) in the desktop app's config dir, `cli.json` for `yacs`, `localStorage` in the PWA. Not the OS keychain: once the app pairs the `yacs` command, the key is in a file anyway; on Linux a keyring isn't always running; and any program running as the user can read the clipboard directly. Versions up to 0.2.3 used the keychain, and 0.2.4 moved such pairings to the file; after that, devices still on 0.2.3 have to pair again.
 - Parameters are versioned (`v1`). Every client must use exactly the same parameters, so they are enforced by shared test vectors.
 - The default phrase is generated (6 words from the EFF wordlist, about 77 bits). Users can still type their own.
 
