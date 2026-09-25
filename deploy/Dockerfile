@@ -25,6 +25,8 @@ COPY ui/package.json ui/
 COPY apps/desktop/package.json apps/desktop/
 RUN pnpm install --frozen-lockfile --filter @yacs/ui
 COPY ui ui
+# vite.config.ts reads the workspace version from it.
+COPY Cargo.toml ./
 COPY --from=wasm /src/ui/src/wasm ui/src/wasm
 RUN pnpm --filter @yacs/ui build:web
 

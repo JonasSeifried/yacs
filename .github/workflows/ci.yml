@@ -58,6 +58,24 @@ jobs:
       - run: pnpm ui:test
       - run: pnpm --filter @yacs/ui build
 
+  # The relay image's WASM and PWA stages, which only the release built
+  # before: it copies in just what they need, so a new file the UI build reads
+  # breaks the image and not the build above.
+  relay-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          target: ui
+          cache-from: |
+            type=gha,scope=ci-relay-ui
+            type=gha,scope=relay-amd64
+          cache-to: type=gha,mode=max,scope=ci-relay-ui
+
   desktop:
     strategy:
       fail-fast: false
