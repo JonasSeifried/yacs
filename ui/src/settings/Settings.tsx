@@ -452,11 +452,13 @@ function PreferencesForm({ status, serverConfig }: { status: Status; serverConfi
       {status.manualShortcut ? (
         <ManualShortcutHelp shortcut={status.manualShortcut} />
       ) : (
-        <label>
-          Shortcut to open YACS
+        // Not a <label>: a click anywhere in one clicks the recorder, which
+        // would start recording again.
+        <div className="field" role="group" aria-labelledby="hotkey-label">
+          <span id="hotkey-label">Shortcut to open YACS</span>
           <HotkeyRecorder value={prefs.hotkey} os={status.os} onChange={(v) => set("hotkey", v)} />
           {status.hotkeyError && <span className="error">{status.hotkeyError}</span>}
-        </label>
+        </div>
       )}
       <label>
         Default expiry for sent clips

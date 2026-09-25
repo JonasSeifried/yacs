@@ -30,7 +30,8 @@ form {
   gap: 14px;
 }
 
-label {
+label,
+.field {
   display: flex;
   flex-direction: column;
   gap: 6px;
