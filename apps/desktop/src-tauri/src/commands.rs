@@ -201,23 +201,40 @@ pub async fn get_clip(state: State<'_, AppState>, id: String) -> CmdResult<Optio
 pub async fn clip_image(state: State<'_, AppState>, id: String) -> CmdResult<Response> {
     let entry = load(&state, &id).await?;
     let image = entry.image().ok_or("this clip has no image")?;
-    Ok(Response::new(image.data.clone()))
+    Ok(Response::new(image.to_vec()))
 }
 
-/// Put every format of the clip on the clipboard.
+/// Put every format of the clip on the clipboard. Files are saved to
+/// Downloads first and go on the clipboard as files.
 #[tauri::command]
-pub async fn copy_clip(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+pub async fn copy_clip(app: AppHandle, state: State<'_, AppState>, id: String) -> CmdResult<()> {
     let entry = load(&state, &id).await?;
-    tauri::async_runtime::spawn_blocking(move || clipboard::write(&entry.clip.items))
-        .await
-        .map_err(|e| e.to_string())?
+    let downloads = match entry.has_files() {
+        true => Some(
+            app.path()
+                .download_dir()
+                .map_err(|e| format!("can't find the Downloads folder: {e}"))?,
+        ),
+        false => None,
+    };
+    tauri::async_runtime::spawn_blocking(move || match downloads {
+        Some(dir) => clipboard::write_files(&clipboard::save_files(&entry.clip.items, &dir)?),
+        None => clipboard::write(&entry.clip.items),
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Encrypt and upload what's on the clipboard right now.
 #[tauri::command]
 pub async fn send_clipboard(state: State<'_, AppState>, ttl_secs: u64) -> CmdResult<ClipView> {
     let client = client(&state)?;
-    let items = tauri::async_runtime::spawn_blocking(clipboard::read)
+    let max_size = client
+        .config()
+        .await
+        .map_err(|e| e.to_string())?
+        .max_size_bytes;
+    let items = tauri::async_runtime::spawn_blocking(move || clipboard::read(max_size))
         .await
         .map_err(|e| e.to_string())??;
     let device_name = state.settings().device_name.clone();

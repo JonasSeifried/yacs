@@ -1,6 +1,8 @@
 // The browser clipboard. Browsers only offer text/plain, text/html and
-// image/png, so RTF from a desktop clip is left out when copying here.
+// image/png, so RTF from a desktop clip is left out when copying here, and
+// files are saved or shared instead.
 
+import { isImageMime } from "../shared/clip";
 import type { Clip, ClipItem } from "../shared/types";
 
 const CLIPBOARD_NEEDS_HTTPS =
@@ -14,7 +16,7 @@ const CLIPBOARD_NEEDS_HTTPS =
 export async function copyClip(clip: Clip): Promise<void> {
   const text = pick(clip, "Text");
   const html = pick(clip, "Html");
-  const image = pick(clip, "Image");
+  const image = pick(clip, "Image") ?? imageFile(clip);
 
   if (!navigator.clipboard) throw new Error(CLIPBOARD_NEEDS_HTTPS);
   if (!navigator.clipboard.write || typeof ClipboardItem === "undefined") {
@@ -29,7 +31,10 @@ export async function copyClip(clip: Clip): Promise<void> {
     const blob = new Blob([image.data as Uint8Array<ArrayBuffer>], { type: image.mime });
     record["image/png"] = image.mime === "image/png" ? blob : toPng(blob);
   }
-  if (Object.keys(record).length === 0) throw new Error("This clip only has rich text (RTF), which browsers can't copy.");
+  if (Object.keys(record).length === 0) {
+    if (pick(clip, "File")) throw new Error("Files can't go on this clipboard. Use Save / Share.");
+    throw new Error("This clip only has rich text (RTF), which browsers can't copy.");
+  }
   await navigator.clipboard.write([new ClipboardItem(record)]);
 }
 
@@ -59,31 +64,64 @@ export async function readClipboard(): Promise<ClipItem[]> {
   return items.filter((i) => !("Text" in i) || i.Text.length > 0);
 }
 
+/** Whether Copy can put anything on a browser's clipboard. */
+export function canCopy(clip: Clip): boolean {
+  return clip.items.some((i) => "Text" in i || "Html" in i || "Image" in i) || imageFile(clip) !== undefined;
+}
+
+/** A single image file can be copied as the picture. */
+function imageFile(clip: Clip) {
+  const files = clip.items.filter((i) => "File" in i);
+  return files.length === 1 && isImageMime(files[0].File.mime) ? files[0].File : undefined;
+}
+
 export async function imageItem(blob: Blob): Promise<ClipItem> {
   return { Image: { mime: blob.type || "image/png", data: new Uint8Array(await blob.arrayBuffer()) } };
 }
 
-/** Share sheet where available (save to Photos, send to an app), else a download. */
-export async function shareImage(clip: Clip, name: string) {
+/** Picked or shared files: images as pictures (to paste anywhere), the rest as files. */
+export async function fileItem(file: File): Promise<ClipItem> {
+  if (isImageMime(file.type)) return imageItem(file);
+  const data = new Uint8Array(await file.arrayBuffer());
+  return { File: { name: file.name || "file", mime: file.type || "application/octet-stream", data } };
+}
+
+export function canSave(clip: Clip): boolean {
+  return clip.items.some((i) => "File" in i || "Image" in i);
+}
+
+/** The clip's files, or its image, as files to save. Copies the bytes: build them on demand. */
+export function savable(clip: Clip, name: string): File[] {
+  const files = clip.items.flatMap((i) =>
+    "File" in i ? [new File([i.File.data as Uint8Array<ArrayBuffer>], i.File.name, { type: i.File.mime })] : [],
+  );
+  if (files.length) return files;
   const image = pick(clip, "Image");
-  if (!image) return;
+  if (!image) return [];
   const ext = image.mime.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
-  const file = new File([image.data as Uint8Array<ArrayBuffer>], `${name}.${ext}`, { type: image.mime });
-  if (navigator.canShare?.({ files: [file] })) {
+  return [new File([image.data as Uint8Array<ArrayBuffer>], `${name}.${ext}`, { type: image.mime })];
+}
+
+/** Share sheet where available (save to Photos or Files, send to an app), else downloads. */
+export async function shareFiles(files: File[]) {
+  if (files.length === 0) return;
+  if (navigator.canShare?.({ files })) {
     try {
-      await navigator.share({ files: [file] });
+      await navigator.share({ files });
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) throw e;
     }
     return;
   }
-  const url = URL.createObjectURL(file);
-  const a = Object.assign(document.createElement("a"), { href: url, download: file.name });
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  for (const file of files) {
+    const url = URL.createObjectURL(file);
+    const a = Object.assign(document.createElement("a"), { href: url, download: file.name });
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
 }
 
-type Kind = "Text" | "Html" | "Rtf" | "Image";
+type Kind = "Text" | "Html" | "Rtf" | "Image" | "File";
 type Value<K extends Kind> = Extract<ClipItem, Record<K, unknown>>[K];
 
 export function pick<K extends Kind>(clip: Clip, kind: K): Value<K> | undefined {

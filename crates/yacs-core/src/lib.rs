@@ -12,5 +12,5 @@ mod phrase;
 pub use envelope::{Envelope, PROTOCOL_VERSION};
 pub use error::{Error, Result};
 pub use pairing::{ChannelId, ChannelKey, Pairing, normalize_phrase};
-pub use payload::{Clip, ClipItem, Image, Payload};
+pub use payload::{Clip, ClipItem, File, Image, Payload};
 pub use phrase::{DEFAULT_PHRASE_WORDS, generate_phrase};

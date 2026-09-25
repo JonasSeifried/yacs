@@ -12,6 +12,7 @@ function clip(fields: Partial<ClipView>): ClipView {
     html: null,
     rtf: false,
     image: null,
+    files: [],
     ...fields,
   };
 }
@@ -32,6 +33,13 @@ describe("clipTitle", () => {
     expect(clipTitle(clip({ rtf: true, text: "  " }))).toBe("Formatted text");
     expect(clipTitle(clip({}))).toBe("Empty clip");
   });
+
+  it("names the files", () => {
+    const pdf = { name: "report.pdf", mime: "application/pdf", size: 1 };
+    const zip = { name: "photos.zip", mime: "application/zip", size: 1 };
+    expect(clipTitle(clip({ files: [pdf], text: "see attached" }))).toBe("report.pdf");
+    expect(clipTitle(clip({ files: [pdf, zip] }))).toBe("2 files: report.pdf, photos.zip");
+  });
 });
 
 describe("previewKind", () => {
@@ -41,6 +49,7 @@ describe("previewKind", () => {
     expect(previewKind(clip({ html: '<img src="https://example.com/cat.png">', image }))).toBe("image");
     expect(previewKind(clip({ html: "<b>only html</b>" }))).toBe("html");
     expect(previewKind(clip({ rtf: true }))).toBe("none");
+    expect(previewKind(clip({ text: "hi", files: [{ name: "a.png", mime: "image/png", size: 1 }] }))).toBe("files");
   });
 });
 

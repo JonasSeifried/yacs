@@ -1,12 +1,18 @@
 import DOMPurify from "dompurify";
-import type { ClipView } from "./types";
+import type { ClipView, FileInfo } from "./types";
 
 const TITLE_CHARS = 120;
+
+/** Images every receiver can show; `yacs_core::File::is_image`. */
+export function isImageMime(mime: string): boolean {
+  return ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mime);
+}
 
 /** One line for the history list. */
 export function clipTitle(clip: ClipView): string {
   const text = clip.text?.replace(/\s+/g, " ").trim();
-  if (text) return text.length > TITLE_CHARS ? `${text.slice(0, TITLE_CHARS)}…` : text;
+  if (clip.files.length) return capped(filesTitle(clip.files));
+  if (text) return capped(text);
   if (clip.image) {
     const { width, height } = clip.image;
     return width && height ? `Image · ${width}×${height}` : "Image";
@@ -15,16 +21,27 @@ export function clipTitle(clip: ClipView): string {
   return "Empty clip";
 }
 
-export type PreviewKind = "html" | "text" | "image" | "none";
+function filesTitle(files: FileInfo[]): string {
+  if (files.length === 1) return files[0].name;
+  return `${files.length} files: ${files.map((f) => f.name).join(", ")}`;
+}
+
+function capped(text: string): string {
+  return text.length > TITLE_CHARS ? `${text.slice(0, TITLE_CHARS)}…` : text;
+}
+
+export type PreviewKind = "files" | "html" | "text" | "image" | "none";
 
 /**
- * What the preview shows. Text wins over the image: an image next to text is
+ * What the preview shows. Files win: someone attached them on purpose.
+ * Text wins over the image: an image next to text is
  * usually a rendering of it (Word), while a copied picture from a browser
  * comes with an `<img>` tag pointing at a URL that is never loaded.
  */
 export function previewKind(clip: ClipView): PreviewKind {
   // Without a working sanitizer, HTML is never rendered.
   const html = clip.html !== null && DOMPurify.isSupported;
+  if (clip.files.length) return "files";
   if (clip.text?.trim()) return html ? "html" : "text";
   if (clip.image) return "image";
   if (html) return "html";

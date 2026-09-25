@@ -214,12 +214,14 @@ export function clipView(meta: ClipMeta, clip: Clip): ClipView {
     html: null,
     rtf: false,
     image: null,
+    files: [],
   };
   for (const item of clip.items) {
     if ("Text" in item) view.text ??= item.Text;
     else if ("Html" in item) view.html ??= item.Html;
     else if ("Rtf" in item) view.rtf = true;
-    else view.image ??= { mime: item.Image.mime, size: item.Image.data.length, width: null, height: null };
+    else if ("Image" in item) view.image ??= { mime: item.Image.mime, size: item.Image.data.length, width: null, height: null };
+    else view.files.push({ name: item.File.name, mime: item.File.mime, size: item.File.data.length });
   }
   return view;
 }

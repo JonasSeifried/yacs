@@ -215,6 +215,34 @@ button.icon {
   max-width: 100%;
 }
 
+.draft-files,
+.clip-files {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.draft-files li,
+.clip-files li {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.draft-files .file-name,
+.clip-files .file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-image + .clip-files {
+  margin-top: 10px;
+}
+
 .history {
   display: flex;
   flex-direction: column;

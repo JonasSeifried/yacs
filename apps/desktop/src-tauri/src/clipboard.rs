@@ -4,11 +4,10 @@
 //!
 //! Both are blocking calls: run them off the async runtime.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use clipboard_rs::common::{RustImage, RustImageData};
 use clipboard_rs::{Clipboard, ClipboardContent, ClipboardContext, ContentFormat};
-use image::ImageFormat;
 use yacs_core::{ClipItem, Image};
 
 const PNG_MIME: &str = "image/png";
@@ -22,24 +21,20 @@ const NATIVE_PNG: &str = "PNG";
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
 const NATIVE_PNG: &str = "image/png";
 
-/// Image files larger than this aren't read in; the relay's limit is usually far lower.
-const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-
-pub fn read() -> Result<Vec<ClipItem>, String> {
+/// `max_file_bytes`: copied files larger than this in total aren't read in
+/// (the relay's limit), so a huge file fails right away.
+pub fn read(max_file_bytes: u64) -> Result<Vec<ClipItem>, String> {
     let ctx = context()?;
-    // A file copied in Finder or Explorer. Its clipboard entry also carries
-    // the file name as text and the file icon as an image, which are useless
-    // to the receiver: an image file is sent as that image, nothing else is.
+    // Files copied in Finder or Explorer. Their clipboard entry also carries
+    // the file names as text and the file icon as an image, which are
+    // useless to the receiver: only the files are sent.
     if ctx.has(ContentFormat::Files) {
         let files = ctx
             .get_files()
             .map_err(|e| format!("can't read the copied files: {e}"))?;
-        return match files.as_slice() {
-            [path] => read_image_file(Path::new(path), MAX_FILE_BYTES).map(|i| vec![ClipItem::Image(i)]),
-            _ => Err("Several files are copied. YACS can send one image file at a time; other files aren't supported yet.".into()),
-        };
+        let paths: Vec<PathBuf> = files.iter().map(|f| local_path(f)).collect();
+        return read_files(&paths, max_file_bytes);
     }
-
     let mut items = Vec::new();
     let string = |format, get: fn(&ClipboardContext) -> clipboard_rs::Result<String>| {
         ctx.has(format)
@@ -87,44 +82,113 @@ fn read_image(ctx: &ClipboardContext) -> Option<Image> {
     }
 }
 
-/// Formats every receiver can show (browsers included) are sent as they are;
-/// BMP and TIFF are converted to PNG.
-fn read_image_file(path: &Path, max_bytes: u64) -> Result<Image, String> {
-    let name = path.file_name().map_or_else(
-        || path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    );
-    let metadata = std::fs::metadata(path).map_err(|e| format!("can't read {name}: {e}"))?;
-    if metadata.is_dir() {
-        return Err(format!(
-            "{name} is a folder. YACS can send image files, other files aren't supported yet."
-        ));
-    }
-    if metadata.len() > max_bytes {
-        return Err(format!(
-            "{name} is too large to send ({} MB max).",
-            max_bytes / 1_000_000
-        ));
-    }
-    let data = std::fs::read(path).map_err(|e| format!("can't read {name}: {e}"))?;
-    match image::guess_format(&data) {
-        Ok(
-            format @ (ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::Gif | ImageFormat::WebP),
-        ) => Ok(Image {
-            mime: format.to_mime_type().into(),
-            data,
-        }),
-        Ok(ImageFormat::Bmp | ImageFormat::Tiff) => {
-            let mut png = std::io::Cursor::new(Vec::new());
-            image::load_from_memory(&data)
-                .and_then(|decoded| decoded.write_to(&mut png, ImageFormat::Png))
-                .map_err(|e| format!("can't convert {name}: {e}"))?;
-            Ok(self::png(png.into_inner()))
+/// Linux hands out `file://` URIs; macOS and Windows plain paths.
+fn local_path(file: &str) -> PathBuf {
+    url::Url::parse(file)
+        .ok()
+        .filter(|url| url.scheme() == "file")
+        .and_then(|url| url.to_file_path().ok())
+        .unwrap_or_else(|| PathBuf::from(file))
+}
+
+fn read_files(paths: &[PathBuf], max_bytes: u64) -> Result<Vec<ClipItem>, String> {
+    let mut total = 0;
+    let mut named = Vec::new();
+    for path in paths {
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let metadata = std::fs::metadata(path).map_err(|e| format!("can't read {name}: {e}"))?;
+        if metadata.is_dir() {
+            return Err(format!(
+                "{name} is a folder. YACS sends files, not folders; zip it first."
+            ));
         }
-        _ => Err(format!(
-            "{name} isn't an image YACS can send (PNG, JPEG, GIF, WebP, BMP or TIFF). Other files aren't supported yet."
-        )),
+        total += metadata.len();
+        named.push((path, name));
     }
+    if total > max_bytes {
+        let what = match &named[..] {
+            [(_, name)] => name.clone(),
+            _ => format!("These {} files", named.len()),
+        };
+        return Err(format!(
+            "{what} is {}, but the relay takes up to {} per clip.",
+            size(total),
+            size(max_bytes)
+        ));
+    }
+    named
+        .into_iter()
+        .map(|(path, name)| {
+            let data = std::fs::read(path).map_err(|e| format!("can't read {name}: {e}"))?;
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            Ok(ClipItem::File(yacs_core::File {
+                name,
+                mime: mime.essence_str().to_owned(),
+                data,
+            }))
+        })
+        .collect()
+}
+
+fn size(bytes: u64) -> String {
+    match bytes {
+        0..1_000_000 => format!("{} KB", bytes.div_ceil(1000)),
+        _ => format!("{:.0} MB", bytes as f64 / 1e6),
+    }
+}
+
+/// Writes the clip's files into `dir` (reusing one that's already there with
+/// the same content) and returns their paths.
+pub fn save_files(items: &[ClipItem], dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let files = items.iter().filter_map(|item| match item {
+        ClipItem::File(file) => Some(file),
+        _ => None,
+    });
+    std::fs::create_dir_all(dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
+    files.map(|file| save_file(file, dir)).collect()
+}
+
+fn save_file(file: &yacs_core::File, dir: &Path) -> Result<PathBuf, String> {
+    let name = file.safe_name();
+    let (stem, ext) = match name.rfind('.') {
+        Some(dot) if dot > 0 => (&name[..dot], &name[dot..]),
+        _ => (name.as_str(), ""),
+    };
+    for n in 0.. {
+        let candidate = match n {
+            0 => dir.join(&name),
+            _ => dir.join(format!("{stem} ({n}){ext}")),
+        };
+        let mut options = std::fs::OpenOptions::new();
+        match options.write(true).create_new(true).open(&candidate) {
+            Ok(mut out) => {
+                return std::io::Write::write_all(&mut out, &file.data)
+                    .map(|()| candidate)
+                    .map_err(|e| format!("can't save {name}: {e}"));
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                let same = std::fs::metadata(&candidate)
+                    .is_ok_and(|m| m.len() == file.data.len() as u64)
+                    && std::fs::read(&candidate).is_ok_and(|d| d == file.data);
+                if same {
+                    return Ok(candidate);
+                }
+            }
+            Err(e) => return Err(format!("can't save {name}: {e}")),
+        }
+    }
+    unreachable!("some name is always free")
+}
+
+/// Puts files on the clipboard, as if they were copied in Finder or Explorer.
+pub fn write_files(paths: &[PathBuf]) -> Result<(), String> {
+    let paths = paths.iter().map(|p| p.display().to_string()).collect();
+    context()?
+        .set_files(paths)
+        .map_err(|e| format!("couldn't write to the clipboard: {e}"))
 }
 
 pub fn write(items: &[ClipItem]) -> Result<(), String> {
@@ -154,6 +218,8 @@ pub fn write(items: &[ClipItem]) -> Result<(), String> {
             ClipItem::Rtf(rtf) => contents.push(ClipboardContent::Rtf(rtf.clone())),
             // Handled below: the clipboard holds one image.
             ClipItem::Image(_) => {}
+            // See `save_files` and `write_files`.
+            ClipItem::File(_) => {}
         }
     }
     if let Some(image) = image {
@@ -190,6 +256,8 @@ fn to_png(image: &Image) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
+    use image::ImageFormat;
+
     use super::*;
 
     fn encoded(format: image::ImageFormat) -> Vec<u8> {
@@ -227,36 +295,88 @@ mod tests {
     }
 
     #[test]
-    fn image_files_are_sent_as_images() {
+    fn copied_files_are_read_up_to_the_limit() {
         let dir = tempfile::tempdir().unwrap();
         let file = |name: &str, data: &[u8]| {
             let path = dir.path().join(name);
             std::fs::write(&path, data).unwrap();
             path
         };
+        let pdf = file("report.pdf", b"%PDF-1.7 hello");
+        let bin = file("blob", &[0, 1, 2]);
 
-        let png = encoded(ImageFormat::Png);
-        let image = read_image_file(&file("shot.png", &png), MAX_FILE_BYTES).unwrap();
-        assert_eq!((image.mime.as_str(), &image.data), (PNG_MIME, &png));
+        let items = read_files(&[pdf.clone(), bin.clone()], 1000).unwrap();
+        let [ClipItem::File(a), ClipItem::File(b)] = &items[..] else {
+            panic!("{items:?}");
+        };
+        assert_eq!(
+            (a.name.as_str(), a.mime.as_str()),
+            ("report.pdf", "application/pdf")
+        );
+        assert_eq!(a.data, b"%PDF-1.7 hello");
+        assert_eq!(
+            (b.name.as_str(), b.mime.as_str()),
+            ("blob", "application/octet-stream")
+        );
 
-        // Content decides, not the extension.
-        let jpeg = encoded(ImageFormat::Jpeg);
-        let image = read_image_file(&file("photo.png", &jpeg), MAX_FILE_BYTES).unwrap();
-        assert_eq!((image.mime.as_str(), &image.data), ("image/jpeg", &jpeg));
-
-        let image =
-            read_image_file(&file("old.bmp", &encoded(ImageFormat::Bmp)), MAX_FILE_BYTES).unwrap();
-        assert_eq!(image.mime, PNG_MIME);
-        assert!(image.data.starts_with(PNG_MAGIC));
-
-        let err = read_image_file(&file("notes.txt", b"hello"), MAX_FILE_BYTES).unwrap_err();
-        assert!(err.starts_with("notes.txt isn't an image"), "{err}");
-        let err = read_image_file(&file("big.png", &png), 10).unwrap_err();
-        assert!(err.contains("too large"), "{err}");
-        let err = read_image_file(dir.path(), MAX_FILE_BYTES).unwrap_err();
+        let err = read_files(std::slice::from_ref(&pdf), 10).unwrap_err();
+        assert_eq!(
+            err,
+            "report.pdf is 1 KB, but the relay takes up to 1 KB per clip."
+        );
+        let err = read_files(&[pdf.clone(), bin], 10).unwrap_err();
+        assert!(err.starts_with("These 2 files"), "{err}");
+        let err = read_files(&[dir.path().to_owned()], 1000).unwrap_err();
         assert!(err.contains("is a folder"), "{err}");
-        let err = read_image_file(&dir.path().join("gone.png"), MAX_FILE_BYTES).unwrap_err();
-        assert!(err.starts_with("can't read gone.png"), "{err}");
+        let err = read_files(&[dir.path().join("gone.txt")], 1000).unwrap_err();
+        assert!(err.starts_with("can't read gone.txt"), "{err}");
+    }
+
+    #[test]
+    fn linux_file_uris_become_paths() {
+        #[cfg(unix)]
+        assert_eq!(
+            local_path("file:///home/me/My%20Notes.txt"),
+            PathBuf::from("/home/me/My Notes.txt")
+        );
+        assert_eq!(
+            local_path("/Users/me/a.txt"),
+            PathBuf::from("/Users/me/a.txt")
+        );
+        assert_eq!(
+            local_path(r"C:\Users\me\a.txt"),
+            PathBuf::from(r"C:\Users\me\a.txt")
+        );
+    }
+
+    #[test]
+    fn saved_files_get_free_names_and_are_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let item = |name: &str, data: &[u8]| {
+            ClipItem::File(yacs_core::File {
+                name: name.into(),
+                mime: "text/plain".into(),
+                data: data.to_vec(),
+            })
+        };
+        let saved = save_files(&[item("../notes.txt", b"one")], dir.path()).unwrap();
+        assert_eq!(saved, [dir.path().join("notes.txt")]);
+        // The same file again: nothing new.
+        assert_eq!(
+            save_files(&[item("notes.txt", b"one")], dir.path()).unwrap(),
+            saved
+        );
+        // Same name, other content: numbered.
+        let other = save_files(
+            &[item("notes.txt", b"two"), item("README", b"x")],
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            other,
+            [dir.path().join("notes (1).txt"), dir.path().join("README")]
+        );
+        assert_eq!(std::fs::read(&other[0]).unwrap(), b"two");
     }
 
     /// Replaces whatever is on the clipboard, so it only runs on request:
@@ -271,18 +391,27 @@ mod tests {
             ClipItem::Image(png(encoded(ImageFormat::Png))),
         ];
         write(&items).unwrap();
-        let back = read().unwrap();
+        let back = read(u64::MAX).unwrap();
         assert_eq!(back[0], items[0]);
         assert!(matches!(&back[1], ClipItem::Html(h) if h.contains("<b>hello</b>")));
         assert!(matches!(&back[2], ClipItem::Rtf(r) if r.contains("hello")));
         assert!(matches!(&back[3], ClipItem::Image(i) if i.data.starts_with(PNG_MAGIC)));
 
         write(&items[3..]).unwrap();
-        let back = read().unwrap();
+        let back = read(u64::MAX).unwrap();
         assert!(
             matches!(&back[..], [ClipItem::Image(_)]),
             "{} items",
             back.len()
         );
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = ClipItem::File(yacs_core::File {
+            name: "yacs test.txt".into(),
+            mime: "text/plain".into(),
+            data: b"hello".to_vec(),
+        });
+        write_files(&save_files(std::slice::from_ref(&file), dir.path()).unwrap()).unwrap();
+        assert_eq!(read(u64::MAX).unwrap(), [file]);
     }
 }

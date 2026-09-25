@@ -2,7 +2,7 @@
 
 **Yet Another Clipboard Service**: copy on one device, paste on another. End-to-end encrypted, self-hosted, no accounts.
 
-- **Desktop** (macOS, Windows, Linux): press `⌘⇧Space` / `Ctrl+Shift+Space` for a Spotlight-style panel. `⌘V` sends your clipboard; `↵` copies a clip back, with every format it had (text, HTML, RTF, images).
+- **Desktop** (macOS, Windows, Linux): press `⌘⇧Space` / `Ctrl+Shift+Space` for a Spotlight-style panel. `⌘V` sends your clipboard; `↵` copies a clip back, with every format it had (text, HTML, RTF, images). Copied files are sent too, and arrive in Downloads and on the clipboard.
 - **Phone**: a web app served by your relay. Scan a QR code from the desktop and it's paired; add it to the home screen to use it like an app.
 - **Relay**: one small server that stores encrypted clips until they expire (15 minutes by default). It can't read them.
 
@@ -36,7 +36,7 @@ docker compose -f compose.nginx.yaml up -d
 | `YACS_ACCESS_TOKEN` | unset | Clients must send it. Set it whenever the relay is reachable from the internet. |
 | `YACS_DEFAULT_TTL` | `15m` | Expiry when a client doesn't choose one. |
 | `YACS_MAX_TTL` | `24h` | Longest expiry a client may choose (`7d` shows up in the apps once allowed). |
-| `YACS_MAX_SIZE` | `20MB` | Largest clip. |
+| `YACS_MAX_SIZE` | `20MB` | Largest clip, sent files included. |
 | `YACS_MAX_CLIPS_PER_CHANNEL` | `50` | History length; the oldest clip goes first. |
 | `YACS_MAX_DISK` | `2GB` | Total storage for all channels. |
 | `YACS_BIND` / `YACS_DATA_DIR` | `0.0.0.0:8080` / `./data` | Set by the Docker image to `/data`. |
@@ -83,9 +83,11 @@ On a Mac or Windows PC with the desktop app, use Settings → Command line → *
 
 ```sh
 yacs send ~/.ssh/id_ed25519.pub   # text files arrive as text, images as images
+yacs send report.pdf              # other files as files (--as-file for any file)
 some-command | yacs send          # or send stdin; the final newline is dropped
 yacs send --text "hello"
 yacs recv > clip.txt              # the newest clip; `yacs list` shows the others
+yacs recv -o ~/Downloads          # a file clip, under its own name
 yacs update                       # the newest version, checked against the release signature
 yacs relay update                 # on the relay's machine: pull the new relay image and restart it
 ```

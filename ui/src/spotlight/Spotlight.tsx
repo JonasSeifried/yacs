@@ -1,10 +1,10 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { platform } from "../platform";
 import { EAGER_BYTES, EAGER_CONCURRENCY, runLimited } from "../shared/async";
-import { clipTitle, previewDocument, previewKind } from "../shared/clip";
+import { clipTitle, isImageMime, previewDocument, previewKind } from "../shared/clip";
 import { guessOs, modKey } from "../shared/hotkey";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
-import type { ClipMeta, ClipView, ServerConfig, Status } from "../shared/types";
+import type { ClipMeta, ClipView, FileInfo, ServerConfig, Status } from "../shared/types";
 
 type List = { state: "loading" } | { state: "ok"; clips: ClipMeta[] } | { state: "error"; message: string };
 type Loaded = { state: "loading" } | { state: "ok"; clip: ClipView } | { state: "gone" } | { state: "error"; message: string };
@@ -221,6 +221,8 @@ export function Spotlight() {
   }, []);
 
   const paired = status?.paired ?? false;
+  const selectedLoaded = selected ? loaded[selected.id] : undefined;
+  const selectedHasFiles = selectedLoaded?.state === "ok" && selectedLoaded.clip.files.length > 0;
   return (
     <main className="panel">
       <header className="panel-header">
@@ -272,7 +274,7 @@ export function Spotlight() {
           <>
             {selected && (
               <>
-                <Hint keys="↵" label="copy" />
+                <Hint keys="↵" label={selectedHasFiles ? "save & copy" : "copy"} />
                 <Hint keys={os === "macos" ? "⌘⌫" : "Del"} label="delete" />
               </>
             )}
@@ -346,7 +348,8 @@ function Preview({ meta, loaded, now }: { meta: ClipMeta; loaded: Loaded | undef
   }
 
   const { clip } = loaded;
-  const formats = [clip.text !== null && "text", (clip.html !== null || clip.rtf) && "formatted", clip.image && "image"]
+  const files = clip.files.length && (clip.files.length === 1 ? "file" : `${clip.files.length} files`);
+  const formats = [files, clip.text !== null && "text", (clip.html !== null || clip.rtf) && "formatted", clip.image && "image"]
     .filter(Boolean)
     .join(", ");
   const footer = `${expires} · ${formatSize(meta.size)} · ${formats}`;
@@ -363,6 +366,7 @@ function Preview({ meta, loaded, now }: { meta: ClipMeta; loaded: Loaded | undef
         </pre>
       )}
       {kind === "image" && <ImagePreview id={meta.id} />}
+      {kind === "files" && <FilesPreview id={meta.id} files={clip.files} />}
       {kind === "none" && <p className="preview-note">Rich text without a preview. Copy it to paste with formatting.</p>}
     </PreviewShell>
   );
@@ -400,6 +404,25 @@ function ImagePreview({ id }: { id: string }) {
   }, [id]);
   if (error) return <p className="preview-note error">{error}</p>;
   return url ? <img className="preview-image" src={url} alt="" /> : <p className="preview-note">Loading image…</p>;
+}
+
+/** An image file is shown; the rest are listed. */
+function FilesPreview({ id, files }: { id: string; files: FileInfo[] }) {
+  const image = files.length === 1 && isImageMime(files[0].mime);
+  return (
+    <div className="preview-files">
+      {image && <ImagePreview id={id} />}
+      <ul>
+        {files.map((file, i) => (
+          <li key={i}>
+            <span className="file-name">{file.name}</span>
+            <span className="muted">{formatSize(file.size)}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="muted small">↵ saves {files.length === 1 ? "it" : "them"} to Downloads and puts {files.length === 1 ? "it" : "them"} on the clipboard.</p>
+    </div>
+  );
 }
 
 function Hint({ keys, label }: { keys: string; label: string }) {

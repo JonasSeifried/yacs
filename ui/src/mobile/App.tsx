@@ -11,10 +11,10 @@ import {
   unpair,
 } from "../platform/web";
 import { EAGER_BYTES, EAGER_CONCURRENCY, runLimited } from "../shared/async";
-import { clipTitle, previewDocument, previewKind } from "../shared/clip";
+import { clipTitle, isImageMime, previewDocument, previewKind } from "../shared/clip";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
 import type { ClipItem, ClipMeta, ServerConfig } from "../shared/types";
-import { copyClip, imageItem, pick, readClipboard, shareImage } from "./clipboard";
+import { canCopy, canSave, copyClip, fileItem, pick, readClipboard, savable, shareFiles } from "./clipboard";
 import { type PairLink, forgetPairLink, guessDeviceName, isIosBrowserTab, pairLinkFromCode, parsePairLink } from "./link";
 import { canScan, qrDecoder } from "./qr";
 
@@ -438,6 +438,7 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
       <Composer
         ttl={ttl}
         ttlChoices={ttlChoices(ttl, config?.max_ttl_secs)}
+        maxBytes={config?.max_size_bytes ?? null}
         onTtl={changeTtl}
         onSend={send}
         onError={(text) => notify("error", text)}
@@ -479,14 +480,17 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
 function Composer(props: {
   ttl: number;
   ttlChoices: { secs: number; label: string }[];
+  /** The relay's limit per clip, once known. */
+  maxBytes: number | null;
   onTtl: (secs: number) => void;
   onSend: (items: ClipItem[]) => Promise<void>;
   onError: (text: string) => void;
 }) {
   const [text, setText] = useState("");
-  const [image, setImage] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [busy, setBusy] = useState(false);
-  const imageUrl = useObjectUrl(image);
+  const shownImage = files.length === 1 && isImageMime(files[0].type) ? files[0] : null;
+  const imageUrl = useObjectUrl(shownImage);
   const picker = useRef<HTMLInputElement>(null);
 
   // Android "Share → YACS": the service worker left the content in a cache.
@@ -496,10 +500,18 @@ function Composer(props: {
     (async () => {
       const cache = await caches.open("yacs-shared");
       const sharedText = await (await cache.match("/shared/text"))?.text();
-      const sharedImage = await (await cache.match("/shared/image"))?.blob();
+      const sharedFiles: File[] = [];
+      for (const request of await cache.keys()) {
+        if (!new URL(request.url).pathname.startsWith("/shared/file/")) continue;
+        const res = await cache.match(request);
+        if (!res) continue;
+        const name = decodeURIComponent(res.headers.get("x-yacs-name") ?? "") || "shared";
+        const blob = await res.blob();
+        sharedFiles.push(new File([blob], name, { type: blob.type }));
+      }
       await caches.delete("yacs-shared");
       if (sharedText) setText(sharedText);
-      if (sharedImage) setImage(new File([sharedImage], "shared", { type: sharedImage.type }));
+      if (sharedFiles.length) setFiles(sharedFiles);
     })().catch(() => {});
   }, []);
 
@@ -510,7 +522,7 @@ function Composer(props: {
       if (got.length === 0) throw new Error("Nothing to send: the clipboard is empty.");
       await props.onSend(got);
       setText("");
-      setImage(null);
+      setFiles([]);
     } catch (e) {
       props.onError(errorText(e));
     } finally {
@@ -518,19 +530,36 @@ function Composer(props: {
     }
   };
 
-  const drafted = text.trim() !== "" || image !== null;
+  const total = files.reduce((sum, f) => sum + f.size, 0);
+  const tooLarge = props.maxBytes !== null && total > props.maxBytes;
+  const drafted = text.trim() !== "" || files.length > 0;
   return (
     <section className="card composer">
       {drafted ? (
         <>
           {imageUrl && <img className="draft-image" src={imageUrl} alt="" />}
+          {files.length > 0 && !shownImage && (
+            <ul className="draft-files">
+              {files.map((f, i) => (
+                <li key={i}>
+                  <span className="file-name">{f.name}</span>
+                  <span className="muted">{formatSize(f.size)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {tooLarge && (
+            <p className="error small">
+              {formatSize(total)} is more than this relay takes per clip ({formatSize(props.maxBytes!)}).
+            </p>
+          )}
           <button
             className="primary"
-            disabled={busy}
+            disabled={busy || tooLarge}
             onClick={() =>
               run(async () => [
                 ...(text.trim() ? [{ Text: text }] : []),
-                ...(image ? [await imageItem(image)] : []),
+                ...(await Promise.all(files.map(fileItem))),
               ])
             }
           >
@@ -550,14 +579,14 @@ function Composer(props: {
       />
       <div className="composer-row">
         <button className="ghost" onClick={() => picker.current?.click()} disabled={busy}>
-          {image ? "Change image" : "Add image"}
+          {files.length ? "Change files" : "Add files"}
         </button>
         {drafted && (
           <button
             className="ghost"
             onClick={() => {
               setText("");
-              setImage(null);
+              setFiles([]);
             }}
           >
             Clear
@@ -577,10 +606,10 @@ function Composer(props: {
       <input
         ref={picker}
         type="file"
-        accept="image/*"
+        multiple
         hidden
         onChange={(e) => {
-          setImage(e.target.files?.[0] ?? null);
+          setFiles([...(e.target.files ?? [])]);
           e.target.value = "";
         }}
       />
@@ -636,11 +665,16 @@ function ClipCard(props: {
             )}
           </div>
           <div className="clip-actions">
-            <button className="primary" onClick={copy} disabled={!decrypted}>
-              Copy
-            </button>
-            {decrypted && pick(decrypted.clip, "Image") && (
-              <button className="ghost" onClick={() => shareImage(decrypted.clip, `yacs-${meta.id}`).catch((e) => props.onError(errorText(e)))}>
+            {(!decrypted || canCopy(decrypted.clip)) && (
+              <button className="primary" onClick={copy} disabled={!decrypted}>
+                Copy
+              </button>
+            )}
+            {decrypted && canSave(decrypted.clip) && (
+              <button
+                className={canCopy(decrypted.clip) ? "ghost" : "primary"}
+                onClick={() => shareFiles(savable(decrypted.clip, `yacs-${meta.id}`)).catch((e) => props.onError(errorText(e)))}
+              >
                 Save / Share
               </button>
             )}
@@ -656,13 +690,30 @@ function ClipCard(props: {
 }
 
 function ClipPreview({ clip }: { clip: Decrypted }) {
-  const image = pick(clip.clip, "Image");
+  const files = clip.view.files;
+  const imageFile = files.length === 1 && isImageMime(files[0].mime) ? pick(clip.clip, "File") : undefined;
+  const image = pick(clip.clip, "Image") ?? imageFile;
   const blob = useMemo(
     () => (image ? new Blob([image.data as Uint8Array<ArrayBuffer>], { type: image.mime }) : null),
     [image],
   );
   const url = useObjectUrl(blob);
   const kind = previewKind(clip.view);
+  if (kind === "files") {
+    return (
+      <>
+        {imageFile && url && <img className="clip-image" src={url} alt="" />}
+        <ul className="clip-files">
+          {files.map((f, i) => (
+            <li key={i}>
+              <span className="file-name">{f.name}</span>
+              <span className="muted">{formatSize(f.size)}</span>
+            </li>
+          ))}
+        </ul>
+      </>
+    );
+  }
   if (kind === "image") return url ? <img className="clip-image" src={url} alt="" /> : null;
   if (kind === "html" && clip.view.html !== null) {
     return <iframe className="clip-html" sandbox="" srcDoc={previewDocument(clip.view.html)} title="Preview" />;

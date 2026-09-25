@@ -19,6 +19,13 @@ export interface ClipView {
   html: string | null;
   rtf: boolean;
   image: ImageInfo | null;
+  files: FileInfo[];
+}
+
+export interface FileInfo {
+  name: string;
+  mime: string;
+  size: number;
 }
 
 export interface ImageInfo {
@@ -98,7 +105,11 @@ export interface Preferences {
 
 /** `yacs_core::ClipItem`, as serde hands it to JS through `yacs-wasm`. */
 export type ClipItem =
-  { Text: string } | { Html: string } | { Rtf: string } | { Image: { mime: string; data: Uint8Array } };
+  | { Text: string }
+  | { Html: string }
+  | { Rtf: string }
+  | { Image: { mime: string; data: Uint8Array } }
+  | { File: { name: string; mime: string; data: Uint8Array } };
 
 /** `yacs_core::Clip`: a decrypted clip with every format it carries. */
 export interface Clip {

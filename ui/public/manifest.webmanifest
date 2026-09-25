@@ -20,7 +20,7 @@
       "title": "title",
       "text": "text",
       "url": "url",
-      "files": [{ "name": "image", "accept": ["image/*"] }]
+      "files": [{ "name": "files", "accept": ["*/*"] }]
     }
   }
 }

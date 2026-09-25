@@ -26,11 +26,27 @@ pub struct Entry {
 }
 
 impl Entry {
-    pub fn image(&self) -> Option<&yacs_core::Image> {
-        self.clip.items.iter().find_map(|item| match item {
-            ClipItem::Image(image) => Some(image),
+    /// The image to preview: the clip's image, or else its first image file.
+    pub fn image(&self) -> Option<&[u8]> {
+        let items = &self.clip.items;
+        let image = items.iter().find_map(|item| match item {
+            ClipItem::Image(image) => Some(&image.data),
             _ => None,
-        })
+        });
+        let file = || {
+            items.iter().find_map(|item| match item {
+                ClipItem::File(file) if file.is_image() => Some(&file.data),
+                _ => None,
+            })
+        };
+        image.or_else(file).map(Vec::as_slice)
+    }
+
+    pub fn has_files(&self) -> bool {
+        self.clip
+            .items
+            .iter()
+            .any(|item| matches!(item, ClipItem::File(_)))
     }
 }
 
@@ -156,6 +172,15 @@ pub struct ClipView {
     pub html: Option<String>,
     pub rtf: bool,
     pub image: Option<ImageView>,
+    pub files: Vec<FileView>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct FileView {
+    pub name: String,
+    pub mime: String,
+    pub size: usize,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -177,6 +202,7 @@ impl From<&Entry> for ClipView {
             html: None,
             rtf: false,
             image: None,
+            files: Vec::new(),
         };
         for item in &entry.clip.items {
             match item {
@@ -204,6 +230,11 @@ impl From<&Entry> for ClipView {
                         height: size.map(|s| s.1),
                     });
                 }
+                ClipItem::File(file) => view.files.push(FileView {
+                    name: file.name.clone(),
+                    mime: file.mime.clone(),
+                    size: file.data.len(),
+                }),
                 _ => {}
             }
         }
@@ -305,6 +336,32 @@ mod tests {
         assert_eq!((image.width, image.height), (Some(64), Some(48)));
         assert_eq!(image.size, len);
         assert_eq!(view.text, None);
+    }
+
+    #[test]
+    fn files_are_listed_and_image_files_previewed() {
+        let file = |name: &str, mime: &str| {
+            ClipItem::File(yacs_core::File {
+                name: name.into(),
+                mime: mime.into(),
+                data: vec![1, 2, 3],
+            })
+        };
+        let entry = entry(
+            "a",
+            1,
+            vec![
+                file("report.pdf", "application/pdf"),
+                file("shot.png", "image/png"),
+            ],
+        );
+        let view = ClipView::from(&entry);
+        let names: Vec<_> = view.files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["report.pdf", "shot.png"]);
+        assert_eq!(view.files[0].size, 3);
+        assert_eq!(view.image, None);
+        assert!(entry.has_files());
+        assert_eq!(entry.image(), Some(&[1u8, 2, 3][..]));
     }
 
     #[tokio::test]

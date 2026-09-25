@@ -1,13 +1,15 @@
 //! What `yacs send` sends: a file, an argument or stdin, as one clip item.
+//! Receiving machines put text and images on the clipboard, and save files.
 
 use std::io::{IsTerminal, Read};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use yacs_core::{ClipItem, Image};
+use yacs_core::{ClipItem, File, Image};
 
-/// The item, and a short description for the "sent …" line.
-pub fn from_file(path: &Path) -> Result<(ClipItem, String)> {
+/// The item, and a short description for the "sent …" line. Text and
+/// images are sent as such unless `as_file`; everything else as a file.
+pub fn from_file(path: &Path, as_file: bool) -> Result<(ClipItem, String)> {
     if path == Path::new("-") {
         return from_stdin();
     }
@@ -23,6 +25,10 @@ pub fn from_file(path: &Path) -> Result<(ClipItem, String)> {
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
+    let label = format!("{name} ({})", crate::human_size(data.len() as u64));
+    if as_file {
+        return Ok((file(path, name, data), label));
+    }
     if let Some(mime) = image_type(&data) {
         let size = data.len();
         return Ok((
@@ -33,15 +39,22 @@ pub fn from_file(path: &Path) -> Result<(ClipItem, String)> {
             format!("{name} ({})", crate::human_size(size as u64)),
         ));
     }
-    let Ok(text) = String::from_utf8(data) else {
-        bail!(
-            "{} isn't text or an image (png, jpg, gif, webp); YACS sends what a clipboard can hold",
-            path.display()
-        );
+    let text = match String::from_utf8(data) {
+        Ok(text) => text,
+        Err(e) => return Ok((file(path, name, e.into_bytes()), label)),
     };
     let text = without_final_newline(text);
     let label = format!("{name} ({})", crate::human_size(text.len() as u64));
     Ok((ClipItem::Text(text), label))
+}
+
+fn file(path: &Path, name: String, data: Vec<u8>) -> ClipItem {
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    ClipItem::File(File {
+        name,
+        mime: mime.essence_str().to_owned(),
+        data,
+    })
 }
 
 pub fn from_stdin() -> Result<(ClipItem, String)> {
@@ -107,6 +120,45 @@ mod tests {
         assert_eq!(without_final_newline("key\r\n".into()), "key");
         assert_eq!(without_final_newline("a\n\n".into()), "a\n");
         assert_eq!(without_final_newline("key".into()), "key");
+    }
+
+    #[test]
+    fn sends_text_images_and_everything_else_as_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str, data: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, data).unwrap();
+            path
+        };
+        let notes = path("notes.txt", b"hi\n");
+        assert_eq!(
+            from_file(&notes, false).unwrap().0,
+            ClipItem::Text("hi".into())
+        );
+        let png = path("shot.png", b"\x89PNG\r\n\x1a\n");
+        assert!(matches!(
+            from_file(&png, false).unwrap().0,
+            ClipItem::Image(_)
+        ));
+
+        let (item, label) = from_file(&path("report.pdf", b"%PDF\xff"), false).unwrap();
+        let ClipItem::File(file) = item else {
+            panic!("{item:?}")
+        };
+        assert_eq!(
+            (file.name.as_str(), file.mime.as_str()),
+            ("report.pdf", "application/pdf")
+        );
+        assert_eq!(file.data, b"%PDF\xff");
+        assert_eq!(label, "report.pdf (5 B)");
+
+        let ClipItem::File(file) = from_file(&notes, true).unwrap().0 else {
+            panic!()
+        };
+        assert_eq!(
+            (file.mime.as_str(), &file.data[..]),
+            ("text/plain", &b"hi\n"[..])
+        );
     }
 
     #[test]

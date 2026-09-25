@@ -63,11 +63,14 @@ async function receiveShare(request) {
   const text = [form.get("title"), form.get("text"), form.get("url")].filter((v) => typeof v === "string" && v).join("\n");
   const cache = await caches.open(SHARED);
   await cache.put("/shared/text", new Response(text));
-  const image = form.get("image");
-  if (image instanceof File && image.size > 0) {
-    await cache.put("/shared/image", new Response(image, { headers: { "content-type": image.type } }));
-  } else {
-    await cache.delete("/shared/image");
+  for (const request of await cache.keys()) {
+    if (new URL(request.url).pathname.startsWith("/shared/file/")) await cache.delete(request);
+  }
+  // "image" is what older installs still send, until the browser updates the manifest.
+  const files = [...form.getAll("files"), ...form.getAll("image")].filter((f) => f instanceof File && f.size > 0);
+  for (const [i, file] of files.entries()) {
+    const headers = { "content-type": file.type, "x-yacs-name": encodeURIComponent(file.name) };
+    await cache.put(`/shared/file/${i}`, new Response(file, { headers }));
   }
   return Response.redirect("/?shared=1", 303);
 }

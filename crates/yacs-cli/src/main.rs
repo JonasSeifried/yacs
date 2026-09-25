@@ -17,9 +17,11 @@ const EXAMPLES: &str = "\
 Examples:
   yacs pair                          pair once; paste the link from the desktop app
   yacs send ~/.ssh/id_ed25519.pub    a text file arrives as text, an image as an image
+  yacs send report.pdf               other files arrive as files
   cat notes.txt | yacs send
   yacs send --text \"hello\"
   yacs recv > clip.txt
+  yacs recv -o ~/Downloads           a file clip keeps its name in that folder
   yacs update                        get the newest version
   yacs relay update                  on the relay's machine: update the relay (Docker)";
 
@@ -58,14 +60,17 @@ enum Command {
     Pair,
     /// Forget the saved pairing. Clips on the relay stay.
     Unpair,
-    /// Send a file (text or image), text, or stdin.
+    /// Send a file, text, or stdin.
     Send {
         /// File to send; `-` or nothing reads stdin. Text files arrive as
-        /// text, images (png, jpg, gif, webp) as images.
+        /// text, images (png, jpg, gif, webp) as images, other files as files.
         file: Option<PathBuf>,
         /// Send this text instead of a file.
         #[arg(short, long, conflicts_with = "file")]
         text: Option<String>,
+        /// Send the file as a file, even if it's text or an image.
+        #[arg(short = 'f', long, requires = "file")]
+        as_file: bool,
         /// How long the relay keeps it, e.g. 5m, 1h, 24h. Defaults to the relay's default.
         #[arg(long, value_parser = humantime::parse_duration)]
         ttl: Option<Duration>,
@@ -75,7 +80,9 @@ enum Command {
     /// Print the newest clip, or the one with the given id.
     Recv {
         id: Option<String>,
-        /// Write to a file instead of stdout. Required for image clips.
+        /// Write to a file instead of stdout. Required for images, and for
+        /// files unless stdout is piped. An existing folder keeps the names
+        /// of the clip's files.
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
@@ -140,10 +147,15 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Pair | Command::Unpair | Command::Update { .. } | Command::Relay { .. } => {
             unreachable!("handled above")
         }
-        Command::Send { file, text, ttl } => {
+        Command::Send {
+            file,
+            text,
+            as_file,
+            ttl,
+        } => {
             let (item, what) = match (text, file) {
                 (Some(text), _) => content::from_text(text),
-                (None, Some(path)) => content::from_file(&path)?,
+                (None, Some(path)) => content::from_file(&path, as_file)?,
                 (None, None) => content::from_stdin()?,
             };
             let device_name = cli
@@ -355,7 +367,21 @@ fn read_line() -> Result<String> {
 }
 
 /// Text formats go to stdout (plain text preferred); images need `--output`.
+/// Files go into `--output` (a folder keeps their names), or one file to a
+/// piped stdout.
 fn write_clip(clip: &Clip, output: Option<&Path>) -> Result<()> {
+    let files: Vec<&yacs_core::File> = clip
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            ClipItem::File(file) => Some(file),
+            _ => None,
+        })
+        .collect();
+    if !files.is_empty() {
+        return write_files(&files, output);
+    }
+
     let image = clip.items.iter().find_map(|i| match i {
         ClipItem::Image(image) => Some(image),
         _ => None,
@@ -380,6 +406,37 @@ fn write_clip(clip: &Clip, output: Option<&Path>) -> Result<()> {
         }
         (None, Some(image), None) => bail!("clip is an image ({}); use --output FILE", image.mime),
         (_, None, None) => bail!("clip has no content this CLI can show"),
+    }
+}
+
+fn write_files(files: &[&yacs_core::File], output: Option<&Path>) -> Result<()> {
+    let listing = files
+        .iter()
+        .map(|f| format!("{} ({})", f.name, human_size(f.data.len() as u64)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match (output, files) {
+        (Some(dir), _) if dir.is_dir() => {
+            for file in files {
+                let path = dir.join(file.safe_name());
+                if path.exists() {
+                    bail!("{} already exists", path.display());
+                }
+                write_file(&path, &file.data)?;
+                eprintln!("saved {}", path.display());
+            }
+            Ok(())
+        }
+        (Some(path), [file]) => write_file(path, &file.data),
+        (Some(path), _) => bail!(
+            "clip has {} files; --output must be an existing folder, not {}",
+            files.len(),
+            path.display()
+        ),
+        (None, [file]) if !std::io::stdout().is_terminal() => {
+            Ok(std::io::stdout().lock().write_all(&file.data)?)
+        }
+        (None, _) => bail!("clip holds {listing}; use --output FOLDER (or FILE)"),
     }
 }
 

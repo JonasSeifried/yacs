@@ -91,7 +91,7 @@ fn text_round_trip_via_argument_and_stdin() {
 }
 
 #[test]
-fn sends_text_files_as_text_and_refuses_other_files() {
+fn sends_text_files_as_text_and_other_files_as_files() {
     let relay = relay(&[]);
     let dir = TempDir::new().unwrap();
     let key = dir.path().join("id_ed25519.pub");
@@ -115,8 +115,41 @@ fn sends_text_files_as_text_and_refuses_other_files() {
 
     let binary = dir.path().join("data.bin");
     std::fs::write(&binary, [0, 159, 146, 150]).unwrap();
-    let err = stderr_of_failure(&mut yacs(&relay, &["send", binary.to_str().unwrap()]));
-    assert!(err.contains("isn't text or an image"), "{err}");
+    yacs(&relay, &["send", binary.to_str().unwrap()])
+        .assert()
+        .success();
+    // Piped stdout gets the bytes; a folder gets the file under its name.
+    let piped = yacs(&relay, &["recv"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(piped, [0, 159, 146, 150]);
+    let out = dir.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    yacs(&relay, &["recv", "-o", out.to_str().unwrap()])
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read(out.join("data.bin")).unwrap(),
+        [0, 159, 146, 150]
+    );
+    let err = stderr_of_failure(&mut yacs(&relay, &["recv", "-o", out.to_str().unwrap()]));
+    assert!(err.contains("already exists"), "{err}");
+
+    // --as-file keeps a text file a file.
+    yacs(&relay, &["send", "--as-file", key.to_str().unwrap()])
+        .assert()
+        .success();
+    let as_file = dir.path().join("key-copy.pub");
+    yacs(&relay, &["recv", "-o", as_file.to_str().unwrap()])
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read_to_string(as_file).unwrap(),
+        "ssh-ed25519 AAAAC3Nza me@server\n"
+    );
 
     let err = stderr_of_failure(&mut yacs(&relay, &["send", "hello"]));
     assert!(err.contains("no such file: hello"), "{err}");
