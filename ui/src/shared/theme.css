@@ -13,6 +13,7 @@
   --danger-soft: #fdeeee;
   --ok: #1f8a53;
   --focus: 0 0 0 3px rgb(91 77 224 / 30%);
+  --scrollbar: #c9c6d4;
   --radius: 10px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
@@ -35,6 +36,7 @@
     --danger-soft: #3a2224;
     --ok: #5fd197;
     --focus: 0 0 0 3px rgb(139 127 245 / 35%);
+    --scrollbar: #4a4656;
   }
 }
 
@@ -56,6 +58,11 @@ input,
 select {
   font: inherit;
   color: inherit;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar) transparent;
 }
 
 kbd {

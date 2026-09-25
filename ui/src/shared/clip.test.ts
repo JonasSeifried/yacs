@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { clipTitle, previewDocument, previewKind } from "./clip";
+import { clipIcon, clipTitle, previewDocument, previewKind } from "./clip";
 import type { ClipView } from "./types";
 
 function clip(fields: Partial<ClipView>): ClipView {
@@ -18,6 +18,22 @@ function clip(fields: Partial<ClipView>): ClipView {
 }
 
 const image = { mime: "image/png", size: 100, width: 1280, height: 720 };
+
+describe("clipIcon", () => {
+  it("tells links, formatted text and plain text apart", () => {
+    expect(clipIcon(clip({ text: " https://example.com/a?b=c \n" }))).toBe("link");
+    expect(clipIcon(clip({ text: "see https://example.com" }))).toBe("text");
+    expect(clipIcon(clip({ text: "Hello", html: "<b>Hello</b>" }))).toBe("formatted");
+    expect(clipIcon(clip({ rtf: true }))).toBe("formatted");
+  });
+
+  it("shows images and files", () => {
+    expect(clipIcon(clip({ image }))).toBe("image");
+    expect(clipIcon(clip({ text: "Word rendering", image }))).toBe("text");
+    expect(clipIcon(clip({ files: [{ name: "a.png", mime: "image/png", size: 1 }] }))).toBe("image");
+    expect(clipIcon(clip({ files: [{ name: "a.pdf", mime: "application/pdf", size: 1 }] }))).toBe("file");
+  });
+});
 
 describe("clipTitle", () => {
   it("collapses whitespace and caps long text", () => {

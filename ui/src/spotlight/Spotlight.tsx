@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { platform } from "../platform";
 import { EAGER_CONCURRENCY, loadsEagerly, runLimited } from "../shared/async";
-import { clipTitle, isImageMime, previewDocument, previewKind } from "../shared/clip";
+import { type ClipIcon, clipIcon, clipTitle, isImageMime, previewDocument, previewKind } from "../shared/clip";
 import { guessOs, modKey } from "../shared/hotkey";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
 import type { ClipMeta, ClipView, FileInfo, ServerConfig, Status, Transfer } from "../shared/types";
@@ -346,9 +346,11 @@ function ClipRow(props: {
   const ago = `${formatDuration(now - meta.created_at_ms)} ago`;
   let title: ReactNode;
   let detail = `${ago} · ${formatSize(meta.size)}`;
+  let icon: ClipIcon | "locked" = "locked";
   if (loaded?.state === "ok") {
     title = clipTitle(loaded.clip);
     detail = `${loaded.clip.deviceName} · ${ago}`;
+    icon = clipIcon(loaded.clip);
   } else if (loaded?.state === "error") {
     title = <span className="muted">Can't decrypt this clip</span>;
   } else if (loaded?.state === "gone") {
@@ -358,8 +360,13 @@ function ClipRow(props: {
   }
   return (
     <li ref={ref} className={selected ? "clip selected" : "clip"} onMouseDown={props.onSelect} onDoubleClick={props.onCopy}>
-      <span className="clip-title">{title}</span>
-      <span className="clip-meta">{detail}</span>
+      <span className="clip-icon">
+        <KindIcon kind={icon} />
+      </span>
+      <span className="clip-text">
+        <span className="clip-title">{title}</span>
+        <span className="clip-meta">{detail}</span>
+      </span>
     </li>
   );
 }
@@ -383,7 +390,8 @@ function Preview({ meta, loaded, now }: { meta: ClipMeta; loaded: Loaded | undef
   const formats = [files, clip.text !== null && "text", (clip.html !== null || clip.rtf) && "formatted", clip.image && "image"]
     .filter(Boolean)
     .join(", ");
-  const footer = `${expires} · ${formatSize(meta.size)} · ${formats}`;
+  const size = clip.image?.width && clip.image.height ? ` · ${clip.image.width}×${clip.image.height}` : "";
+  const footer = `${expires} · ${formatSize(meta.size)} · ${formats}${size}`;
   const kind = previewKind(clip);
   return (
     <PreviewShell footer={footer}>
@@ -501,6 +509,50 @@ function Empty({ title, detail, children }: { title: string; detail: string; chi
       <p className="empty-detail">{detail}</p>
       {children}
     </div>
+  );
+}
+
+/** Feather-style outlines, drawn at 16 px in the history list. */
+const KIND_PATHS: Record<ClipIcon | "locked", ReactNode> = {
+  text: <path d="M4 6h16M4 12h16M4 18h10" />,
+  formatted: (
+    <>
+      <path d="M4 20 9.5 5h1L16 20M6.2 14.5h7.6" />
+      <path d="M17 11h4M17 15.5h4M17 20h4" />
+    </>
+  ),
+  link: (
+    <>
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+    </>
+  ),
+  image: (
+    <>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="8.5" cy="8.5" r="1.5" />
+      <path d="m21 15-5-5L5 21" />
+    </>
+  ),
+  file: (
+    <>
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path d="M14 2v6h6" />
+    </>
+  ),
+  locked: (
+    <>
+      <rect x="4" y="11" width="16" height="10" rx="2" />
+      <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+    </>
+  ),
+};
+
+function KindIcon({ kind }: { kind: ClipIcon | "locked" }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {KIND_PATHS[kind]}
+    </svg>
   );
 }
 

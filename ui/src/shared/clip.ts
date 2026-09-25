@@ -30,6 +30,20 @@ function capped(text: string): string {
   return text.length > TITLE_CHARS ? `${text.slice(0, TITLE_CHARS)}…` : text;
 }
 
+export type ClipIcon = "text" | "link" | "formatted" | "image" | "file";
+
+/** The small icon in front of a clip in the history list. */
+export function clipIcon(clip: ClipView): ClipIcon {
+  if (clip.files.length) return clip.files.length === 1 && isImageMime(clip.files[0].mime) ? "image" : "file";
+  const text = clip.text?.trim();
+  if (text) {
+    if (/^https?:\/\/\S+$/i.test(text)) return "link";
+    return clip.html !== null || clip.rtf ? "formatted" : "text";
+  }
+  if (clip.image) return "image";
+  return clip.html !== null || clip.rtf ? "formatted" : "text";
+}
+
 export type PreviewKind = "files" | "html" | "text" | "image" | "none";
 
 /**
