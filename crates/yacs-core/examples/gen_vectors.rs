@@ -6,7 +6,11 @@
 //! ```
 
 use serde_json::json;
-use yacs_core::{Clip, ClipItem, Envelope, Image, Pairing, Payload, normalize_phrase};
+use sha2::{Digest, Sha256};
+use yacs_core::{
+    Clip, ClipItem, Envelope, Image, MIN_CHUNK_SIZE, Pairing, Payload, Stream, StreamFile,
+    normalize_phrase,
+};
 
 const PHRASES: &[&str] = &[
     "correct horse battery staple",
@@ -61,7 +65,55 @@ fn main() {
         })
         .collect();
 
-    let vectors =
-        json!({ "version": yacs_core::PROTOCOL_VERSION, "kdf": kdf, "envelopes": envelopes });
+    // Two files across three chunks: sealing is deterministic, so every
+    // client must produce these exact chunks. Full chunks are stored as
+    // SHA-256 hashes to keep the file small.
+    let stream = Stream {
+        salt: core::array::from_fn(|i| i as u8),
+        chunk_size: MIN_CHUNK_SIZE,
+        files: vec![
+            StreamFile {
+                name: "a.bin".into(),
+                mime: "application/octet-stream".into(),
+                size: u64::from(MIN_CHUNK_SIZE) + 100,
+            },
+            StreamFile {
+                name: "b.txt".into(),
+                mime: "text/plain".into(),
+                size: u64::from(MIN_CHUNK_SIZE),
+            },
+        ],
+    };
+    let plaintext = stream_plaintext(stream.total());
+    let cipher = stream.cipher(&pairing).unwrap();
+    let chunks: Vec<_> = (0..stream.chunk_count())
+        .map(|i| {
+            let start = (i * u64::from(stream.chunk_size)) as usize;
+            let chunk = plaintext[start..start + stream.chunk_len(i)].to_vec();
+            let sealed = cipher.seal(i, chunk).unwrap();
+            json!({
+                "sha256": hex::encode(Sha256::digest(&sealed)),
+                "hex": (sealed.len() <= 256).then(|| hex::encode(&sealed)),
+            })
+        })
+        .collect();
+    let streams = [json!({
+        "channel_id": pairing.channel_id.to_string(),
+        "key": hex::encode(pairing.key.as_bytes()),
+        "stream": stream,
+        "plaintext": "byte i is i * 31 % 251",
+        "chunks": chunks,
+    })];
+
+    let vectors = json!({
+        "version": yacs_core::PROTOCOL_VERSION,
+        "kdf": kdf,
+        "envelopes": envelopes,
+        "streams": streams,
+    });
     println!("{}", serde_json::to_string_pretty(&vectors).unwrap());
+}
+
+fn stream_plaintext(len: u64) -> Vec<u8> {
+    (0..len).map(|i| (i * 31 % 251) as u8).collect()
 }

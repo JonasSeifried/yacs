@@ -1,4 +1,14 @@
-import type { ClipMeta, ClipView, PhonePairing, Preferences, ServerConfig, Status } from "../shared/types";
+import type {
+  ClipMeta,
+  ClipView,
+  PhonePairing,
+  Preferences,
+  Sent,
+  ServerConfig,
+  Status,
+  Transfer,
+  TransferChanged,
+} from "../shared/types";
 import { tauriPlatform } from "./tauri";
 
 /**
@@ -17,10 +27,16 @@ export interface Platform {
   /** Decrypted; null if the clip expired or was deleted. */
   getClip(id: string): Promise<ClipView | null>;
   clipImage(id: string): Promise<Blob>;
-  /** Puts every format of the clip on the clipboard. The desktop then hides Spotlight. */
-  copyClip(id: string): Promise<void>;
-  /** Encrypts and sends what's on the clipboard right now. */
-  sendClipboard(ttlSecs: number): Promise<ClipView>;
+  /**
+   * Puts every format of the clip on the clipboard. False when its files are
+   * big: they download in the background first (see `onTransferChanged`).
+   */
+  copyClip(id: string): Promise<boolean>;
+  /** Encrypts and sends what's on the clipboard right now; big files upload in the background. */
+  sendClipboard(ttlSecs: number): Promise<Sent>;
+  /** The big upload or download in progress, if any. */
+  transferStatus(): Promise<Transfer | null>;
+  cancelTransfer(): Promise<void>;
   deleteClip(id: string): Promise<void>;
   setDefaultTtl(ttlSecs: number): Promise<void>;
   /** Contains the channel key: only fetch it when the user asks to see it. */
@@ -40,6 +56,8 @@ export interface Platform {
   onSettingsShown(handler: () => void): Promise<() => void>;
   /** The relay reported new or deleted clips (only sent while Spotlight is open). */
   onClipsChanged(handler: () => void): Promise<() => void>;
+  /** Progress of a big transfer, and how it ended. */
+  onTransferChanged(handler: (event: TransferChanged) => void): Promise<() => void>;
 }
 
 export const platform: Platform = tauriPlatform;

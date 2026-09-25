@@ -104,6 +104,7 @@ GET    /api/v1/channels/{channel_id}/clips/{id}       → 200 Envelope | 404   (
 DELETE /api/v1/channels/{channel_id}/clips/{id}
 DELETE /api/v1/channels/{channel_id}/clips            clear the whole history
 GET    /api/v1/channels/{channel_id}/events           SSE: { type: added | deleted | cleared, … } as clips change
+…      /api/v1/channels/{channel_id}/uploads…         chunked uploads of big files, see section 7
 GET    /healthz
 GET    /*                                             embedded PWA (rust-embed)
 ```
@@ -113,7 +114,7 @@ GET    /*                                             embedded PWA (rust-embed)
 - **Envelope responses** carry the metadata in `x-yacs-clip-id`, `x-yacs-created-at` and `x-yacs-expires-at` headers.
 - **Storage:** `data/{hex channel_id}/{ulid}.{expires_at_ms}.bin`. Hex, not base64url, so two ids can't collide on case-insensitive filesystems (macOS, Windows). Because the expiry is in the filename, the reaper never has to open a file. Writes go to a temp file first and are then renamed, so a clip is never half-written. The reaper runs on a `tokio::time::interval` (60 s) and deletes expired files and empty channel dirs.
 - **The server sees** each clip's size, creation time and expiry. Contents, formats and device names stay encrypted.
-- **Limits:** `DefaultBodyLimit`, `max_clips` per channel, total disk quota. No rate limiting: the access token keeps strangers out, the quotas bound disk use, and behind a reverse proxy per-IP limits would lump all clients together. If wanted, rate-limit in Caddy/Traefik. Expired-but-not-yet-reaped clips don't hold a history slot.
+- **Limits:** `DefaultBodyLimit` (`YACS_MAX_SIZE`, for single envelopes), `max_clips` per channel, total disk quota (chunked uploads count in full from their start, see section 7). No rate limiting: the access token keeps strangers out, the quotas bound disk use, and behind a reverse proxy per-IP limits would lump all clients together. If wanted, rate-limit in Caddy/Traefik. Expired-but-not-yet-reaped clips don't hold a history slot.
 - **Live updates:** `/events` is a server-sent event stream per channel (a `tokio::sync::broadcast` per listened-to channel, pruned by the reaper). Events carry only what the relay already knows (clip metadata, deleted ids); clients re-list after (re)connecting, since events sent while they were away are gone. A keep-alive comment every 20 s keeps proxies (nginx drops quiet upstreams after 60 s) from cutting the stream, and lets clients spot a dead connection after 60 s of silence; `X-Accel-Buffering: no` stops nginx from buffering it. Streams end on shutdown, so a restart doesn't wait on them. The desktop listens in the background while paired and prefetches new clips up to 4 MB, so Spotlight opens with them decrypted; the PWA listens while it's on screen and polls every 10 s only without a connection (e.g. relays before 0.2.0, which answer 404).
 - **Version:** `/config` reports the relay's version. The desktop, which updates itself, shows it in Settings with a hint when the relay is older than the newest release.
 - **Logging** shows the route pattern (`/api/v1/channels/{channel}/clips`), never the URI, because the URI contains the channel id.
@@ -128,7 +129,7 @@ GET    /*                                             embedded PWA (rust-embed)
   | `YACS_MAX_TTL` | `24h` |
   | `YACS_MAX_SIZE` | `20MB` |
   | `YACS_MAX_CLIPS_PER_CHANNEL` | `50` |
-  | `YACS_MAX_DISK` | `2GB` |
+  | `YACS_MAX_DISK` | `25GB` |
   | `YACS_ACCESS_TOKEN` | unset (open) |
 - **TLS:** terminate at a reverse proxy. `deploy/compose.yaml` runs the relay behind Caddy, which gets the certificate; its Caddyfile keeps the access log off because paths contain channel ids.
 - **No CORS needed.** The PWA is served from the same origin, and desktop makes its requests from Rust.
@@ -161,7 +162,7 @@ GET    /*                                             embedded PWA (rust-embed)
 **Flow**
 1. Hotkey pressed: show the window and at the same time `list_clips`. The newest clip, every clip up to 256 KB, and whichever clip you select are fetched and decrypted, so rows show a title and device. Rust caches decrypted clips in memory by ID (clips never change); entries go when the relay stops listing them, and the oldest go once the cache holds 256 MB.
 2. `↑/↓`: select a clip. `Enter` or `Ctrl+C`: Rust writes all formats of the selected clip to the clipboard, then the window hides and focus returns to the previous app. Double-click does the same.
-3. `Ctrl+V`: the keydown is intercepted. Rust reads the native clipboard (text, HTML, RTF, image; PNG is passed through untouched), encrypts, POSTs with the TTL from the dropdown, shows "Sent" with the new clip selected, then the window hides after 5 s (`Esc` hides at once, any other key keeps it open). Pressing `Ctrl+V` again in those 5 s hides instead of sending the same clipboard twice. Files copied in Finder/Explorer are sent as files (name, MIME type guessed from the extension, contents), several at once if several are copied; folders are refused (zip them). Their total is checked against the relay's `max_size` before anything is read, so a huge file fails right away. `↵` on a file clip saves the files to Downloads (reusing one that's already there with the same content, otherwise `name (1).ext`) and puts them on the clipboard as files, so they paste into Finder/Explorer or a mail. Names from other devices go through `File::safe_name` first (no path parts, no characters or names Windows rejects). A single image file is previewed as the picture.
+3. `Ctrl+V`: the keydown is intercepted. Rust reads the native clipboard (text, HTML, RTF, image; PNG is passed through untouched), encrypts, POSTs with the TTL from the dropdown, shows "Sent" with the new clip selected, then the window hides after 5 s (`Esc` hides at once, any other key keeps it open). Pressing `Ctrl+V` again in those 5 s hides instead of sending the same clipboard twice. Files copied in Finder/Explorer are sent as files (name, MIME type guessed from the extension, contents), several at once if several are copied; folders are refused (zip them). Their total is checked against the relay's limit for one clip before anything is read: bigger ones upload as chunks in the background (section 7), or fail right away on relays before 0.3.0. `↵` on a file clip saves the files to Downloads (reusing one that's already there with the same content, otherwise `name (1).ext`) and puts them on the clipboard as files, so they paste into Finder/Explorer or a mail. Names from other devices go through `File::safe_name` first (no path parts, no characters or names Windows rejects). A single image file is previewed as the picture.
 4. `Del` (macOS: `⌘⌫`, like Finder, so a stray Backspace can't delete): removes the selected clip from the server for every device.
 5. The preview is sanitized: HTML goes through DOMPurify (never rendered if DOMPurify reports it can't run) into an `<iframe sandbox srcdoc>` whose own CSP blocks every network request, so remote images can't signal that a clip was viewed. Images arrive as binary IPC and are shown as blob URLs. Text previews are capped at 20k characters and HTML at 512 KB; copy always writes the full clip.
 
@@ -203,61 +204,50 @@ Same `ui/src/mobile` with the `tauri.ts` adapter. Rust reuses `yacs-core` + `yac
 
 ## 7. Large files (chunked upload)
 
-Files through the relay (0.2.x) are one envelope each, held in memory on every side and capped by `YACS_MAX_SIZE` (20 MB). This is the next step: files of any size (multi-GB, phones included) through the same relay, never more than a few MB in memory anywhere. Direct device-to-device transfer (iroh, WebRTC) is dropped as overkill.
+Implemented for 0.3.0: files of any size (multi-GB, phones included) through the same relay, never more than a few MB in memory anywhere. Single-envelope files (0.2.x) stay for small ones. Direct device-to-device transfer (iroh, WebRTC) is dropped as overkill.
 
 **Naming:** we call this "v2" in chat, but it is **not** a 2.0 release; ship it as the normal next version.
 
-### Crypto (`yacs-core`, new `stream` module)
-The age payload construction (STREAM, Hoang–Reyhanitabar–Rogaway–Vizár), written directly on `chacha20poly1305` (already a dependency; no `aead-stream` crate, since we need random access by chunk index for parallel and retried uploads):
+### Crypto (`yacs-core::stream`)
+The age payload construction (STREAM, Hoang–Reyhanitabar–Rogaway–Vizár), written directly on `chacha20poly1305` (no `aead-stream` crate, since uploads need random access by chunk index for parallel and retried chunks):
 - Per clip, the sender picks a random 32-byte `salt`. `file_key = HKDF-SHA256(ikm = channel key, salt, info = "yacs/v1/stream" || channel_id)`.
-- The clip's files are **concatenated into one stream** and cut into chunks of `chunk_size` plaintext bytes (**4 MiB**). Chunk `i` is ChaCha20-Poly1305 under `file_key` with nonce `i as 11-byte big-endian || last` (`last` = `0x01` on the final chunk, else `0x00`), AAD = `version || channel_id`. Ciphertext = chunk + 16-byte tag.
-- The final chunk may be short but is never empty (unless the whole stream is empty). Reordering fails (index in the nonce), truncation fails (last flag), mixing clips fails (key per salt). The receiver also checks the decrypted total against the header.
-- **Never re-encrypt chunk `i` of a salt with different data** (nonce reuse breaks ChaCha20-Poly1305). A restarted upload gets a new salt; resuming is only within the running process.
-- Shared test vectors for the stream, run native and wasm, like the existing ones.
+- The clip's files are **concatenated into one stream** and cut into chunks of `chunk_size` plaintext bytes (**4 MiB**; receivers accept 64 KiB to 16 MiB). Chunk `i` is ChaCha20-Poly1305 under `file_key` with nonce `i as 11-byte big-endian || last` (`last` = `0x01` on the final chunk, else `0x00`), AAD = `version || channel_id`. Sealed chunk = chunk + 16-byte tag.
+- The final chunk may be short but is never empty (unless the whole stream is empty: then it's the only chunk). Reordering fails (index in the nonce), truncation fails (last flag), mixing clips fails (key per salt). Receivers also check every chunk's length against the header.
+- **Never re-encrypt chunk `i` of a salt with different data** (nonce reuse breaks ChaCha20-Poly1305). Senders seal each chunk once and keep the sealed bytes for retries; a restarted upload gets a new salt.
+- Shared test vectors (`streams` in `tests/vectors.json`: SHA-256 of each sealed chunk, the short one in full), run native and wasm.
 
 ### Payload
-The clip itself stays a normal sealed envelope (the "header", small, fits the existing single-envelope route and limit). A new item describes the files in the stream:
+The clip itself stays a normal sealed envelope (the "header": small, fits the single-envelope route and limit). One appended variant describes the files:
 ```rust
-ClipItem::StreamFile(StreamFile { name, mime, offset: u64, size: u64 })   // appended variant
-// plus, once per clip, the stream parameters:
-ClipItem::Stream(Stream { salt: [u8; 32], chunk_size: u32, total: u64 })
+ClipItem::Stream(Stream { salt: [u8; 32], chunk_size: u32, files: Vec<StreamFile { name, mime, size: u64 }> })
 ```
-(Exact shape is up to the implementation; the constraint is append-only variants, see `payload.rs`.) Older clients can't decode it and show "Can't decrypt this clip", as with `File`.
+Offsets follow from the sizes. Other items (text) can sit next to it. Older clients can't decode it and show "Can't decrypt this clip", as with `File`.
 
-**Which path:** files whose total is at most `min(8 MiB, relay max_size)` keep using `ClipItem::File` in one envelope (instant previews, prefetch). Bigger ones are chunked when the relay supports it (`/config` gains `chunked: { max_chunk_bytes }`; absent = older relay → single envelope with its limit, as now).
+**Which path:** files whose total is at most `ServerConfig::inline_file_limit()` (= `min(8 MiB, max_size − 64 KiB)` when the relay takes chunks) go in the envelope as `ClipItem::File` (instant previews, prefetch). Bigger ones are chunked when `/config` has `chunked: { max_chunk_bytes }`; without it (relays before 0.3.0) they're refused with a hint to update the relay.
 
 ### Relay
 ```
-POST   /api/v1/channels/{c}/uploads?ttl=…   body: header envelope; header Upload-Length: total ciphertext bytes
-                                            → 201 { id }   (quota reserved for Upload-Length now)
-PUT    /api/v1/channels/{c}/uploads/{id}/chunks/{i}   body: one chunk (≤ max_chunk_bytes + 16), idempotent
-GET    /api/v1/channels/{c}/uploads/{id}              → { received: [i, …] }   (retry what's missing)
-POST   /api/v1/channels/{c}/uploads/{id}/complete     → 201 ClipMeta   (all chunks present, sizes right; only now listed + `added` event)
-DELETE /api/v1/channels/{c}/uploads/{id}              abort
-GET    /api/v1/channels/{c}/clips/{id}                → the header envelope, as today
-GET    /api/v1/channels/{c}/clips/{id}/chunks/{i}     → one chunk (immutable, cacheable)
+POST   /api/v1/channels/{c}/uploads?ttl=&length=&chunk_size=   body: header envelope → 201 { id }
+PUT    /api/v1/channels/{c}/uploads/{id}/chunks/{i}            body: sealed chunk i, any order, repeatable → 204
+GET    /api/v1/channels/{c}/uploads/{id}                       → { received: [i, …] }
+POST   /api/v1/channels/{c}/uploads/{id}/complete              → 201 ClipMeta (409 if chunks are missing)
+DELETE /api/v1/channels/{c}/uploads/{id}                       abort
+GET    /api/v1/channels/{c}/clips/{id}                         → the header envelope, as today
+GET    /api/v1/channels/{c}/clips/{id}/chunks/{i}              → sealed chunk i (immutable, cacheable)
 ```
-- Plain per-chunk PUTs (the S3 multipart model), not tus: simpler, parallel, and each retry is one small request.
-- Chunk handlers stream the body to a temp file (`Body::into_data_stream`), counting bytes, then rename; a route-specific limit instead of `DefaultBodyLimit`.
-- **Storage:** `data/{channel}/{ulid}.uploading/` (`header.bin`, `00000000`, …), renamed to `{ulid}.{expires_at_ms}.d/` on completion; the TTL starts then. The reaper also removes expired `.d` dirs and uploads idle for more than 24 h. `max_clips` counts completed clips (eviction removes the whole dir); at most 4 open uploads per channel.
-- `ClipMeta.size` is the total (header + chunks), so lists show the real size.
-- **Limits:** no per-file limit; the disk quota (`YACS_MAX_DISK`, checked against the reservation) is the only cap. `YACS_MAX_SIZE` keeps limiting single envelopes. The 2 GB default quota is low for this; decide with the user whether to raise the default.
-- **Proxies:** 4 MiB chunks pass Cloudflare (100 MB per request, 100 s per request) and our `deploy/nginx.conf` (`client_max_body_size 25m`). Document that a hand-written nginx config needs `client_max_body_size` ≥ 5m (its default is 1m).
+- `length` is the sealed size of all chunks and `chunk_size` the sealed size of each but the last, so the relay knows how many chunks to expect and how long each must be; it rejects anything else (413 too long, 400 too short). Plain per-chunk PUTs (the S3 multipart model), not tus: simpler, parallel, and each retry is one small request.
+- Chunk PUTs stream the body to `N.part` in the upload's dir (route without `DefaultBodyLimit`, counted by hand, 256 KiB write buffer), then rename it into place.
+- **Storage:** open uploads live in `data/.tmp/{upload id}.up/` (`header.bin`, `00000000`, …) and are tracked in memory: a restart drops them with the rest of `.tmp`, and senders start over. `complete` renames the dir to `{channel}/{ulid}.{expires_at_ms}.{size}.d/` under a **new** ULID, so a long upload sorts as the newest clip, and the TTL starts then. The reaper also removes expired `.d` dirs, uploads idle for 24 h, and orphaned `.up` dirs. `max_clips` counts completed clips (eviction removes the whole dir); at most 4 open uploads per channel (429 beyond).
+- `ClipMeta.size` is the total (header + chunks) and `ClipMeta.chunked` is set, also as `x-yacs-size` / `x-yacs-chunked` headers on the header's GET.
+- **Limits:** no per-file limit; the disk quota (`YACS_MAX_DISK`, now **25 GB** by default) is the only cap, and an upload reserves its full size at `POST` (507 when it doesn't fit). `YACS_MAX_SIZE` keeps limiting single envelopes.
+- **Proxies:** 4 MiB chunks pass Cloudflare (100 MB per request, 100 s per request) and our `deploy/nginx.conf` (`client_max_body_size 25m`). The README says a hand-written nginx config needs `client_max_body_size` ≥ 5m (its default is 1m). Caddy doesn't compress chunks.
 
 ### Clients
-- **`yacs-client`:** `upload(files, ttl, progress)`: 3 chunks in flight, retry with backoff, resume missing chunks via `GET …/uploads/{id}`; `download(clip, file, writer, progress)` streaming chunk by chunk. Never the whole file in memory.
-- **CLI:** `yacs send big.iso` picks the chunked path by size, with a progress line on stderr; `yacs recv -o` streams to disk.
-- **Desktop:** ⌘V with big files uploads in the background with progress in Spotlight (it can hide; a finished upload shows up like any clip). Big clips are never prefetched: the preview shows names and sizes from the header; ↵ streams them into Downloads with progress, then puts them on the clipboard.
-- **PWA upload:** in a Web Worker: `file.slice()` → `arrayBuffer()` → WASM `seal_chunk` → `PUT` with a `Uint8Array` body (streaming request bodies don't work in Safari). Progress bar plus the hint **"Keep this screen open until the upload finishes"**: iOS pauses background pages; retries carry on when the page is visible again, a reload starts over. Android's share target receives big files too.
-- **PWA download:** a service worker route streams the decrypted file as a `Response` with `Content-Disposition: attachment` (Chrome; Safari since 15.4, reportedly broken in iOS 18.2–18.3). The key goes to the service worker per download via `postMessage`, never stored there. iOS fallback, chosen by user agent: a worker writes the decrypted file into OPFS (`createSyncAccessHandle`), then the page shares or downloads `getFile()`, and deletes it afterwards. Never build a multi-GB `Blob` in memory (iOS kills the tab). Unverified: whether OPFS-backed files stay out of RAM on iOS and whether service-worker downloads work from a home-screen app. **The user tests on iPhone and Android after the release.**
-
-### Order
-1. `yacs-core` stream + vectors (native + wasm).
-2. Relay routes, storage, reaper, quota reservation + integration tests (out-of-order and repeated chunks, `complete` with a missing chunk, stale-upload cleanup, eviction of chunked clips).
-3. `yacs-client` + CLI, with an e2e test sending a few hundred MB and checking memory stays bounded.
-4. Desktop send/receive with progress.
-5. PWA upload (worker + hint), then PWA download (Android/desktop browsers), then the iOS fallback.
-6. Docs (README limits, proxy note), release; then device testing by the user.
+- **`yacs-client`:** `push_stream(clip, LocalFiles, ttl, progress, cancel)`: 3 chunks in flight, each read from disk and sealed on the blocking pool, retried with backoff (network errors, 5xx, 408, 429); on failure or cancel the upload is `DELETE`d so the quota frees at once. `fetch_stream(id, stream, sink, progress)`: 3 chunks ahead, in order, each read into an exactly sized buffer and opened on the blocking pool, written to a `Sink` file by file. Peak memory stays around 30 MB either way (buffers that grow while filling bloated it to the file's size).
+- **CLI:** `yacs send big.iso` picks the chunked path by size (anything over the inline limit is sent as a file, even text), with a progress line on stderr; Ctrl+C aborts the upload. `yacs recv -o` streams to `name.part`, then renames; piped stdout works too. `yacs info` says whether the relay takes big files. The e2e test sends 200 MB and checks each process peaks below 50 MB (`wait4`).
+- **Desktop:** ⌘V with big files starts a background upload (`transfers.rs`, one transfer at a time) with a progress bar and Cancel in Spotlight, which may hide meanwhile; the finished clip shows up like any clip. Big clips are never prefetched beyond their header: the preview lists names and sizes; ↵ downloads them into Downloads (`name.part`, then a free name) with progress, puts them on the clipboard and hides Spotlight. The paths are remembered, so ↵ again doesn't download again.
+- **PWA upload:** in a module Web Worker: `file.slice()` → `arrayBuffer()` → WASM `StreamCipher.seal` → `PUT` with a `Uint8Array` body (streaming request bodies don't work in Safari). Progress bar plus the hint **"Keep this screen open until the upload finishes"**, and a screen wake lock while it runs: iOS pauses background pages; retries carry on when the page is visible again (about four minutes of attempts per chunk), a reload starts over. Android's share target receives big files too.
+- **PWA download:** a download worker fetches and opens the chunks and hands them, one per pull, through a `MessagePort` to the service worker, which answers a hidden iframe's `/download/{token}` with a streamed `Content-Disposition: attachment` response (always `application/octet-stream`). The key never reaches the service worker; the page registers each download with it and waits for an ack, so an older service worker without the route falls back. iOS (chosen by user agent) and pages without a service worker: the worker writes the decrypted file into OPFS (`createSyncAccessHandle`), then a **Share** tap (iOS needs a fresh gesture) hands `getFile()` to the share sheet; the OPFS copy goes after sharing, or at the next start. Last resort: a Blob in memory, refused above 1 GB. Never a multi-GB `Blob` otherwise. Verified in Chromium: uploads, cancel (relay gets the `DELETE`), service-worker and OPFS downloads byte for byte. Unverified: whether OPFS-backed files stay out of RAM on iOS and whether service-worker downloads work from a home-screen app. **The user tests on iPhone and Android after the release.**
 
 ## 8. Roadmap
 
@@ -271,7 +261,7 @@ This reorders the original roadmap: crypto and the protocol come first, so the U
 | **3: Desktop clipboard** ✅ (verified Mac ↔ PC) | Core UX | `clipboard-rs` multi-format read/write, history list + keyboard navigation, Ctrl+C / Ctrl+V / Del, TTL dropdown, sanitized preview | Rich text from Word/browser and screenshots round-trip between Mac and PC |
 | **4: PWA + release (v1.0)** ✅ (v0.1.1: phones pair via QR over HTTPS, relay on a VPS behind nginx, desktop self-update verified) | Mobile + ship | `yacs-wasm`, mobile UI, embedded PWA, QR pairing, Dockerfile + compose (Caddy or nginx), signed desktop builds, updater | A phone can pair via QR and copy/send; `docker compose up` works on a VPS |
 | **5: v1.x** | Breadth | ✅ SSE live updates (0.2.0) and the relay version in desktop Settings; ✅ CLI for servers: `yacs pair` saves the pairing (from the desktop's link or the phrase), `yacs send FILE`, static release binaries, `yacs update` (signed), `yacs relay update` (Docker compose); the desktop apps bundle `yacs` and put it on the PATH on request (macOS, Windows); ✅ Linux desktop (0.2.3); files through the relay, up to its size limit | |
-| **6: Large files** | Any size through the relay | Chunked, streamed uploads and downloads on every client (section 7) | A multi-GB file goes phone ↔ desktop through the relay, memory stays flat |
+| **6: Large files** ✅ (0.3.0; device testing pending) | Any size through the relay | Chunked, streamed uploads and downloads on every client (section 7) | A multi-GB file goes phone ↔ desktop through the relay, memory stays flat |
 | **7: Native mobile** (later) | Tauri mobile | Native clipboard plugins + share extensions | |
 
 ### Note on P2P

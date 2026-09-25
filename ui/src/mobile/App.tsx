@@ -4,14 +4,16 @@ import {
   LiveUnsupported,
   type StoredPairing,
   WebClient,
+  forgetDownloads,
   generatePhrase,
   pair,
   saveDeviceName,
   storedPairing,
   unpair,
 } from "../platform/web";
-import { EAGER_BYTES, EAGER_CONCURRENCY, runLimited } from "../shared/async";
+import { EAGER_CONCURRENCY, loadsEagerly, runLimited } from "../shared/async";
 import { clipTitle, isImageMime, previewDocument, previewKind } from "../shared/clip";
+import { inlineFileLimit, streamTotal } from "../shared/stream";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
 import type { ClipItem, ClipMeta, ServerConfig } from "../shared/types";
 import { canCopy, canSave, copyClip, fileItem, pick, readClipboard, savable, shareFiles } from "./clipboard";
@@ -323,6 +325,8 @@ function useLiveUpdates(client: WebClient, onChange: () => void) {
 // ── Home: send + history ─────────────────────────────────────────────────
 
 type List = { state: "loading" } | { state: "ok"; clips: ClipMeta[] } | { state: "error"; message: string };
+/** A big upload or download in progress. */
+type Progress = { done: number; total: number; cancel: () => void };
 type Loaded = { state: "loading" } | { state: "ok"; clip: Decrypted } | { state: "gone" } | { state: "error"; message: string };
 type Toast = { kind: "ok" | "error"; text: string };
 
@@ -336,8 +340,15 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
   const [toast, setToast] = useState<Toast | null>(null);
   const [settings, setSettings] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const [upload, setUpload] = useState<Progress | null>(null);
   const requested = useRef(new Set<string>());
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  useWakeLock(upload !== null);
+
+  // Files a closed app downloaded but never shared.
+  useEffect(() => {
+    forgetDownloads();
+  }, []);
 
   const notify = useCallback((kind: Toast["kind"], text: string) => {
     clearTimeout(toastTimer.current);
@@ -374,7 +385,7 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
       setLoaded((l) => Object.fromEntries(Object.entries(l).filter(([id]) => ids.has(id))));
       if (listed[0]) load(listed[0].id);
       runLimited(
-        listed.filter((c) => c.size <= EAGER_BYTES).map((c) => () => load(c.id)),
+        listed.filter(loadsEagerly).map((c) => () => load(c.id)),
         EAGER_CONCURRENCY,
       );
     } catch (e) {
@@ -406,8 +417,20 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
     localStorage.setItem(TTL_KEY, String(secs));
   };
 
-  const send = async (items: ClipItem[]) => {
-    const sent = await client.send(items, ttl);
+  const send = async (items: ClipItem[], bigFiles: File[] = []) => {
+    let sent: Decrypted;
+    if (bigFiles.length && config) {
+      const controller = new AbortController();
+      setUpload({ done: 0, total: 0, cancel: () => controller.abort() });
+      try {
+        const progress = (done: number, total: number) => setUpload((u) => u && { ...u, done, total });
+        sent = await client.sendBig(items, bigFiles, ttl, config, progress, controller.signal);
+      } finally {
+        setUpload(null);
+      }
+    } else {
+      sent = await client.send(items, ttl);
+    }
     const id = sent.view.meta.id;
     requested.current.add(id);
     setLoaded((l) => ({ ...l, [id]: { state: "ok", clip: sent } }));
@@ -438,7 +461,8 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
       <Composer
         ttl={ttl}
         ttlChoices={ttlChoices(ttl, config?.max_ttl_secs)}
-        maxBytes={config?.max_size_bytes ?? null}
+        config={config}
+        upload={upload}
         onTtl={changeTtl}
         onSend={send}
         onError={(text) => notify("error", text)}
@@ -467,6 +491,8 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
             onCopied={() => notify("ok", "Copied")}
             onDelete={() => remove(meta.id)}
             onError={(text) => notify("error", text)}
+            onSaved={(text) => notify("ok", text)}
+            client={client}
           />
         ))}
       </section>
@@ -480,10 +506,12 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
 function Composer(props: {
   ttl: number;
   ttlChoices: { secs: number; label: string }[];
-  /** The relay's limit per clip, once known. */
-  maxBytes: number | null;
+  /** The relay's limits, once known. */
+  config: ServerConfig | null;
+  upload: Progress | null;
   onTtl: (secs: number) => void;
-  onSend: (items: ClipItem[]) => Promise<void>;
+  /** `bigFiles` go as chunks. */
+  onSend: (items: ClipItem[], bigFiles?: File[]) => Promise<void>;
   onError: (text: string) => void;
 }) {
   const [text, setText] = useState("");
@@ -515,12 +543,12 @@ function Composer(props: {
     })().catch(() => {});
   }, []);
 
-  const run = async (items: () => Promise<ClipItem[]>) => {
+  const run = async (items: () => Promise<ClipItem[]>, bigFiles: File[] = []) => {
     setBusy(true);
     try {
       const got = await items();
-      if (got.length === 0) throw new Error("Nothing to send: the clipboard is empty.");
-      await props.onSend(got);
+      if (got.length === 0 && bigFiles.length === 0) throw new Error("Nothing to send: the clipboard is empty.");
+      await props.onSend(got, bigFiles);
       setText("");
       setFiles([]);
     } catch (e) {
@@ -531,8 +559,14 @@ function Composer(props: {
   };
 
   const total = files.reduce((sum, f) => sum + f.size, 0);
-  const tooLarge = props.maxBytes !== null && total > props.maxBytes;
+  const limit = props.config ? inlineFileLimit(props.config) : null;
+  // Too big for the clip itself: the files go as chunks, if the relay takes them.
+  const big = limit !== null && total > limit;
+  const tooLarge = big && !props.config?.chunked;
+  // Until the relay's limits are known, it's unclear whether files go as chunks.
+  const waiting = files.length > 0 && props.config === null;
   const drafted = text.trim() !== "" || files.length > 0;
+  const textItems = (): ClipItem[] => (text.trim() ? [{ Text: text }] : []);
   return (
     <section className="card composer">
       {drafted ? (
@@ -550,21 +584,26 @@ function Composer(props: {
           )}
           {tooLarge && (
             <p className="error small">
-              {formatSize(total)} is more than this relay takes per clip ({formatSize(props.maxBytes!)}).
+              {formatSize(total)} is more than this relay takes per clip ({formatSize(limit!)}). Update the relay to
+              send bigger files.
             </p>
           )}
-          <button
-            className="primary"
-            disabled={busy || tooLarge}
-            onClick={() =>
-              run(async () => [
-                ...(text.trim() ? [{ Text: text }] : []),
-                ...(await Promise.all(files.map(fileItem))),
-              ])
-            }
-          >
-            {busy ? "Sending…" : "Send"}
-          </button>
+          {props.upload ? (
+            <TransferProgress verb="Sending" progress={props.upload}>
+              Keep this screen open until the upload finishes.
+            </TransferProgress>
+          ) : (
+            <button
+              className="primary"
+              disabled={busy || tooLarge || waiting}
+              onClick={() =>
+                big ? run(async () => textItems(), files)
+                : run(async () => [...textItems(), ...(await Promise.all(files.map(fileItem)))])
+              }
+            >
+              {busy ? "Sending…" : "Send"}
+            </button>
+          )}
         </>
       ) : (
         <button className="primary" disabled={busy} onClick={() => run(readClipboard)}>
@@ -584,6 +623,7 @@ function Composer(props: {
         {drafted && (
           <button
             className="ghost"
+            disabled={busy}
             onClick={() => {
               setText("");
               setFiles([]);
@@ -626,8 +666,14 @@ function ClipCard(props: {
   onCopied: () => void;
   onDelete: () => void;
   onError: (text: string) => void;
+  onSaved: (text: string) => void;
+  client: WebClient;
 }) {
   const { meta, loaded, now, open } = props;
+  const [download, setDownload] = useState<Progress | null>(null);
+  /** Downloaded files waiting for a tap to share them (iOS wants a fresh one). */
+  const [ready, setReady] = useState<File[] | null>(null);
+  useWakeLock(download !== null);
   const ago = `${formatDuration(now - meta.created_at_ms)} ago`;
   const expires = `expires in ${formatDuration(meta.expires_at_ms - now)}`;
   const decrypted = loaded?.state === "ok" ? loaded.clip : null;
@@ -644,6 +690,40 @@ function ClipCard(props: {
     if (!decrypted) return;
     copyClip(decrypted.clip).then(props.onCopied, (e) => props.onError(errorText(e)));
   };
+
+  const stream = decrypted ? pick(decrypted.clip, "Stream") : undefined;
+  /** Chunked files, one after another. */
+  const fetchFiles = async () => {
+    if (!stream) return;
+    const controller = new AbortController();
+    const total = streamTotal(stream);
+    setDownload({ done: 0, total, cancel: () => controller.abort() });
+    const files: File[] = [];
+    let before = 0;
+    try {
+      for (const [i, info] of stream.files.entries()) {
+        const progress = (done: number) => setDownload((d) => d && { ...d, done: before + done });
+        const file = await props.client.download(meta.id, stream, i, progress, controller.signal);
+        if (file) files.push(file);
+        before += info.size;
+      }
+      if (files.length) setReady(files);
+      else props.onSaved(stream.files.length === 1 ? "Saved to your downloads" : `${stream.files.length} files saved to your downloads`);
+    } catch (e) {
+      if (!controller.signal.aborted) props.onError(errorText(e));
+      forgetDownloads(meta.id);
+    } finally {
+      setDownload(null);
+    }
+  };
+  const share = (files: File[]) =>
+    shareFiles(files)
+      .then((done) => {
+        setReady(null);
+        // A browser download may still be reading them; the next start cleans up then.
+        if (done) forgetDownloads(meta.id);
+      })
+      .catch((e) => props.onError(errorText(e)));
 
   return (
     <article className={open ? "card clip open" : "card clip"} onClick={open ? undefined : props.onOpen}>
@@ -663,6 +743,12 @@ function ClipCard(props: {
             ) : (
               <ClipPreview clip={loaded.clip} />
             )}
+            {download && (
+              <TransferProgress verb="Downloading" progress={download}>
+                Keep this screen open until the download finishes.
+              </TransferProgress>
+            )}
+            {ready && <p className="muted small">Downloaded. Tap Share to save it to Files or Photos, or send it to an app.</p>}
           </div>
           <div className="clip-actions">
             {(!decrypted || canCopy(decrypted.clip)) && (
@@ -670,12 +756,16 @@ function ClipCard(props: {
                 Copy
               </button>
             )}
-            {decrypted && canSave(decrypted.clip) && (
+            {decrypted && canSave(decrypted.clip) && !download && (
               <button
                 className={canCopy(decrypted.clip) ? "ghost" : "primary"}
-                onClick={() => shareFiles(savable(decrypted.clip, `yacs-${meta.id}`)).catch((e) => props.onError(errorText(e)))}
+                onClick={() =>
+                  ready ? share(ready)
+                  : stream ? fetchFiles()
+                  : shareFiles(savable(decrypted.clip, `yacs-${meta.id}`)).catch((e) => props.onError(errorText(e)))
+                }
               >
-                Save / Share
+                {ready ? "Share" : stream ? `Download ${formatSize(streamTotal(stream))}` : "Save / Share"}
               </button>
             )}
             <button className="ghost danger" onClick={props.onDelete}>
@@ -764,6 +854,55 @@ function SettingsSheet(props: { stored: StoredPairing; onClose: () => void; onCh
 
 function Screen({ children }: { children: ReactNode }) {
   return <main className="screen">{children}</main>;
+}
+
+function TransferProgress(props: { verb: string; progress: Progress; children: ReactNode }) {
+  const { done, total, cancel } = props.progress;
+  const percent = total > 0 ? Math.floor((done / total) * 100) : 0;
+  return (
+    <div className="transfer">
+      <div className="transfer-text">
+        <span>
+          {props.verb} · {percent}%
+        </span>
+        <span className="muted">
+          {formatSize(done)} of {formatSize(total)}
+        </span>
+        <button className="link" onClick={cancel}>
+          Cancel
+        </button>
+      </div>
+      <div className="transfer-track">
+        <div className="transfer-fill" style={{ width: `${percent}%` }} />
+      </div>
+      <p className="muted small">{props.children}</p>
+    </div>
+  );
+}
+
+/** Keeps the screen on while `active`: phones pause pages whose screen turns off. */
+function useWakeLock(active: boolean) {
+  useEffect(() => {
+    if (!active || !("wakeLock" in navigator)) return;
+    let lock: WakeLockSentinel | null = null;
+    let stopped = false;
+    const acquire = async () => {
+      if (stopped || document.visibilityState !== "visible") return;
+      try {
+        lock = await navigator.wakeLock.request("screen");
+      } catch {
+        // Not allowed right now; the transfer goes on regardless.
+      }
+    };
+    acquire();
+    // The lock goes when the page is hidden; take it again on return.
+    document.addEventListener("visibilitychange", acquire);
+    return () => {
+      stopped = true;
+      document.removeEventListener("visibilitychange", acquire);
+      lock?.release().catch(() => {});
+    };
+  }, [active]);
 }
 
 function useObjectUrl(blob: Blob | null) {

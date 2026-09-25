@@ -1,10 +1,10 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { platform } from "../platform";
-import { EAGER_BYTES, EAGER_CONCURRENCY, runLimited } from "../shared/async";
+import { EAGER_CONCURRENCY, loadsEagerly, runLimited } from "../shared/async";
 import { clipTitle, isImageMime, previewDocument, previewKind } from "../shared/clip";
 import { guessOs, modKey } from "../shared/hotkey";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
-import type { ClipMeta, ClipView, FileInfo, ServerConfig, Status } from "../shared/types";
+import type { ClipMeta, ClipView, FileInfo, ServerConfig, Status, Transfer } from "../shared/types";
 
 type List = { state: "loading" } | { state: "ok"; clips: ClipMeta[] } | { state: "error"; message: string };
 type Loaded = { state: "loading" } | { state: "ok"; clip: ClipView } | { state: "gone" } | { state: "error"; message: string };
@@ -22,6 +22,8 @@ export function Spotlight() {
   const [ttl, setTtl] = useState(15 * 60);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
+  /** A big upload or download running in the background. */
+  const [transfer, setTransfer] = useState<Transfer | null>(null);
   /** Just sent: another ⌘V would send the same clipboard again, so it closes instead. */
   const [sent, setSent] = useState(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -66,7 +68,7 @@ export function Spotlight() {
       setLoaded((l) => Object.fromEntries(Object.entries(l).filter(([id]) => ids.has(id))));
       if (listed[0]) load(listed[0].id);
       runLimited(
-        listed.filter((c) => c.size <= EAGER_BYTES).map((c) => () => load(c.id)),
+        listed.filter(loadsEagerly).map((c) => () => load(c.id)),
         EAGER_CONCURRENCY,
       );
     } catch (e) {
@@ -77,6 +79,7 @@ export function Spotlight() {
   const refresh = useCallback(async () => {
     const s = await platform.status();
     setStatus(s);
+    platform.transferStatus().then(setTransfer, () => {});
     setTtl(s.defaultTtlSecs);
     if (!s.paired) return;
     platform.serverConfig().then(setConfig, () => {});
@@ -97,6 +100,14 @@ export function Spotlight() {
       platform.onStatusChanged(refresh),
       // Live updates from the relay: keeps the chosen expiry and selection.
       platform.onClipsChanged(reloadList),
+      platform.onTransferChanged(({ transfer, finished }) => {
+        setTransfer(transfer);
+        if (!finished) return;
+        setNotice({ kind: finished.ok ? "ok" : "error", text: finished.message });
+        if (finished.ok && finished.direction === "upload") reloadList();
+        // The files are on the clipboard now: paste them where you were.
+        if (finished.ok && finished.direction === "download") platform.hideSpotlight();
+      }),
     ];
     return () => subscriptions.forEach((s) => s.then((unsubscribe) => unsubscribe()));
   }, [refresh, reloadList, cancelHide]);
@@ -115,8 +126,8 @@ export function Spotlight() {
     if (!selected || busy) return;
     setBusy(true);
     try {
-      await platform.copyClip(selected.id);
-      platform.hideSpotlight(); // paste right away in the app that was in front
+      // Big files download first; the transfer bar shows how far.
+      if (await platform.copyClip(selected.id)) platform.hideSpotlight(); // paste right away in the app that was in front
     } catch (e) {
       setNotice({ kind: "error", text: String(e) });
     } finally {
@@ -129,7 +140,14 @@ export function Spotlight() {
     setBusy(true);
     setNotice({ kind: "ok", text: "Encrypting and sending…" });
     try {
-      const clip = await platform.sendClipboard(ttl);
+      const { clip, upload } = await platform.sendClipboard(ttl);
+      if (!clip) {
+        // Big files: they upload in the background and show up when done.
+        setTransfer(upload);
+        setNotice(null);
+        setBusy(false);
+        return;
+      }
       const id = clip.meta.id;
       requested.current.add(id);
       setLoaded((l) => ({ ...l, [id]: { state: "ok", clip } }));
@@ -267,6 +285,7 @@ export function Spotlight() {
         ) : null}
       </section>
 
+      {transfer && <TransferBar transfer={transfer} />}
       {notice && <div className={`notice ${notice.kind}`}>{notice.text}</div>}
 
       <footer className="panel-footer">
@@ -366,7 +385,7 @@ function Preview({ meta, loaded, now }: { meta: ClipMeta; loaded: Loaded | undef
         </pre>
       )}
       {kind === "image" && <ImagePreview id={meta.id} />}
-      {kind === "files" && <FilesPreview id={meta.id} files={clip.files} />}
+      {kind === "files" && <FilesPreview id={meta.id} files={clip.files} chunked={meta.chunked === true} />}
       {kind === "none" && <p className="preview-note">Rich text without a preview. Copy it to paste with formatting.</p>}
     </PreviewShell>
   );
@@ -406,9 +425,10 @@ function ImagePreview({ id }: { id: string }) {
   return url ? <img className="preview-image" src={url} alt="" /> : <p className="preview-note">Loading image…</p>;
 }
 
-/** An image file is shown; the rest are listed. */
-function FilesPreview({ id, files }: { id: string; files: FileInfo[] }) {
-  const image = files.length === 1 && isImageMime(files[0].mime);
+/** An image file is shown; the rest are listed. Chunked files aren't fetched until ↵. */
+function FilesPreview({ id, files, chunked }: { id: string; files: FileInfo[]; chunked: boolean }) {
+  const image = !chunked && files.length === 1 && isImageMime(files[0].mime);
+  const them = files.length === 1 ? "it" : "them";
   return (
     <div className="preview-files">
       {image && <ImagePreview id={id} />}
@@ -420,7 +440,34 @@ function FilesPreview({ id, files }: { id: string; files: FileInfo[] }) {
           </li>
         ))}
       </ul>
-      <p className="muted small">↵ saves {files.length === 1 ? "it" : "them"} to Downloads and puts {files.length === 1 ? "it" : "them"} on the clipboard.</p>
+      <p className="muted small">
+        {chunked ? `↵ downloads ${them} to Downloads, then puts ${them} on the clipboard.`
+        : `↵ saves ${them} to Downloads and puts ${them} on the clipboard.`}
+      </p>
+    </div>
+  );
+}
+
+function TransferBar({ transfer }: { transfer: Transfer }) {
+  const { direction, label, done, total } = transfer;
+  const percent = total > 0 ? Math.floor((done / total) * 100) : 100;
+  const verb = direction === "upload" ? "Sending" : "Downloading";
+  return (
+    <div className="transfer">
+      <div className="transfer-text">
+        <span className="transfer-label">
+          {verb} {label}
+        </span>
+        <span className="muted">
+          {percent}% · {formatSize(done)} of {formatSize(total)}
+        </span>
+        <button className="link" onClick={() => platform.cancelTransfer()} tabIndex={-1}>
+          Cancel
+        </button>
+      </div>
+      <div className="transfer-track">
+        <div className="transfer-fill" style={{ width: `${percent}%` }} />
+      </div>
     </div>
   );
 }

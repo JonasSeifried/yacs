@@ -25,7 +25,8 @@ pub struct Config {
     #[arg(long, env = "YACS_MAX_TTL", default_value = "24h", value_parser = humantime::parse_duration)]
     pub max_ttl: Duration,
 
-    /// Largest accepted clip (encrypted size).
+    /// Largest clip sent in one piece (encrypted size). Big files go as
+    /// chunks, which only the disk quota limits.
     #[arg(long, env = "YACS_MAX_SIZE", default_value = "20MB")]
     pub max_size: ByteSize,
 
@@ -33,8 +34,9 @@ pub struct Config {
     #[arg(long, env = "YACS_MAX_CLIPS_PER_CHANNEL", default_value_t = 50)]
     pub max_clips_per_channel: usize,
 
-    /// Total disk space for all channels. New clips are refused when it's full.
-    #[arg(long, env = "YACS_MAX_DISK", default_value = "2GB")]
+    /// Total disk space for all channels, uploads in progress included. New
+    /// clips are refused when it's full.
+    #[arg(long, env = "YACS_MAX_DISK", default_value = "25GB")]
     pub max_disk: ByteSize,
 
     /// If set, clients must send `Authorization: Bearer <token>`.
@@ -88,6 +90,7 @@ mod tests {
         assert_eq!(c.max_ttl, Duration::from_secs(24 * 3600));
         assert_eq!(c.max_size, ByteSize::mb(20));
         assert_eq!(c.max_clips_per_channel, 50);
+        assert_eq!(c.max_disk, ByteSize::gb(25));
         assert_eq!(c.access_token, None);
     }
 

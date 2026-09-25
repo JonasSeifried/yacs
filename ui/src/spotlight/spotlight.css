@@ -239,6 +239,52 @@ html[data-os="macos"] .panel {
   color: var(--ok);
 }
 
+.transfer {
+  padding: 8px 18px 9px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 12.5px;
+}
+
+.transfer-text {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.transfer-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.transfer-text button.link {
+  margin-left: auto;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.transfer-text button.link:hover {
+  text-decoration: underline;
+}
+
+.transfer-track {
+  margin-top: 6px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.transfer-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.25s ease-out;
+}
+
 .notice.error {
   background: var(--danger-soft);
 }

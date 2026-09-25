@@ -19,7 +19,7 @@ services:
       YACS_DEFAULT_TTL: ${YACS_DEFAULT_TTL:-15m}
       YACS_MAX_TTL: ${YACS_MAX_TTL:-24h}
       YACS_MAX_SIZE: ${YACS_MAX_SIZE:-20MB}
-      YACS_MAX_DISK: ${YACS_MAX_DISK:-2GB}
+      YACS_MAX_DISK: ${YACS_MAX_DISK:-25GB}
     volumes:
       - yacs-data:/data
 

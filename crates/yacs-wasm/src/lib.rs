@@ -4,9 +4,11 @@
 //!
 //! Clips cross into JS through serde, so a clip looks like
 //! `{ created_at_ms, device_name, items: [{ Text: "…" }, { Image: { mime, data: Uint8Array } }] }`.
+//! Big files are a `{ Stream: { salt: Uint8Array, chunk_size, files: [{ name, mime, size }] } }`
+//! item, whose chunks a [`WasmStreamCipher`] seals and opens one at a time.
 
 use wasm_bindgen::prelude::*;
-use yacs_core::{Clip, Envelope, Payload};
+use yacs_core::{Clip, Envelope, Payload, Stream, StreamCipher, StreamFile};
 
 #[wasm_bindgen(js_name = Pairing)]
 pub struct WasmPairing(yacs_core::Pairing);
@@ -46,6 +48,42 @@ impl WasmPairing {
     pub fn open(&self, envelope: &[u8]) -> Result<JsValue, JsError> {
         let Payload::Clip(clip) = Envelope::from_bytes(envelope)?.open(&self.0)?;
         Ok(serde_wasm_bindgen::to_value(&clip)?)
+    }
+
+    /// For a clip's `Stream` item: seals the chunks to upload, or opens the
+    /// downloaded ones.
+    #[wasm_bindgen(js_name = streamCipher)]
+    pub fn stream_cipher(&self, stream: JsValue) -> Result<WasmStreamCipher, JsError> {
+        let stream: Stream = serde_wasm_bindgen::from_value(stream)?;
+        Ok(WasmStreamCipher(stream.cipher(&self.0)?))
+    }
+}
+
+/// A new `Stream` item for `files` (`[{ name, mime, size }]`, in the order
+/// their bytes follow each other), with a fresh salt.
+#[wasm_bindgen(js_name = newStream)]
+pub fn new_stream(files: JsValue, chunk_size: u32) -> Result<JsValue, JsError> {
+    let files: Vec<StreamFile> = serde_wasm_bindgen::from_value(files)?;
+    let mut stream = Stream::new(files)?;
+    stream.chunk_size = chunk_size;
+    Ok(serde_wasm_bindgen::to_value(&stream)?)
+}
+
+#[wasm_bindgen(js_name = StreamCipher)]
+pub struct WasmStreamCipher(StreamCipher);
+
+#[wasm_bindgen(js_class = StreamCipher)]
+impl WasmStreamCipher {
+    /// Chunk `index` (exactly its plaintext length) to upload. Seal each
+    /// chunk once: sealing it again with other bytes would reuse a nonce.
+    pub fn seal(&self, index: u32, chunk: Vec<u8>) -> Result<Vec<u8>, JsError> {
+        Ok(self.0.seal(index.into(), chunk)?)
+    }
+
+    /// Chunk `index` as downloaded, decrypted. Throws if it was tampered
+    /// with, reordered or cut short.
+    pub fn open(&self, index: u32, chunk: Vec<u8>) -> Result<Vec<u8>, JsError> {
+        Ok(self.0.open(index.into(), chunk)?)
     }
 }
 

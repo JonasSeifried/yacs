@@ -4,10 +4,13 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use yacs_client::Client;
+use yacs_client::{Client, stream_of};
 use yacs_core::api::ClipMeta;
+
+use crate::content::Content;
 use yacs_core::{Clip, ClipItem, Pairing, Payload};
 
+mod big;
 mod config;
 mod content;
 mod relay;
@@ -18,6 +21,7 @@ Examples:
   yacs pair                          pair once; paste the link from the desktop app
   yacs send ~/.ssh/id_ed25519.pub    a text file arrives as text, an image as an image
   yacs send report.pdf               other files arrive as files
+  yacs send disk.iso                 big files too, in chunks, with a progress line
   cat notes.txt | yacs send
   yacs send --text \"hello\"
   yacs recv > clip.txt
@@ -153,24 +157,32 @@ async fn run(cli: Cli) -> Result<()> {
             as_file,
             ttl,
         } => {
-            let (item, what) = match (text, file) {
-                (Some(text), _) => content::from_text(text),
-                (None, Some(path)) => content::from_file(&path, as_file)?,
-                (None, None) => content::from_stdin()?,
-            };
             let device_name = cli
                 .device_name
                 .unwrap_or_else(|| gethostname::gethostname().to_string_lossy().into_owned());
+            let (item, what) = match (text, file) {
+                (Some(text), _) => content::from_text(text),
+                (None, Some(path)) => {
+                    let config = client.config().await?;
+                    match content::from_file(&path, as_file, config.inline_file_limit())? {
+                        Content::Inline(item, what) => (item, what),
+                        Content::Big(path, file) => {
+                            let (meta, what) =
+                                big::send(&client, &config, path, file, device_name, ttl).await?;
+                            print_sent(&what, &meta);
+                            return Ok(());
+                        }
+                    }
+                }
+                (None, None) => content::from_stdin()?,
+            };
             let clip = Clip {
                 created_at_ms: now_ms() as i64,
                 device_name,
                 items: vec![item],
             };
             let meta = client.push(&Payload::Clip(clip), ttl).await?;
-            eprintln!(
-                "sent {what}, expires in {}",
-                human_duration(meta.expires_at_ms.saturating_sub(meta.created_at_ms))
-            );
+            print_sent(&what, &meta);
         }
         Command::List => print_list(&client.list().await?),
         Command::Recv { id, output } => {
@@ -178,10 +190,13 @@ async fn run(cli: Cli) -> Result<()> {
                 Some(id) => client.get(id).await?,
                 None => client.latest().await?,
             };
-            let Some((_, Payload::Clip(clip))) = found else {
+            let Some((meta, Payload::Clip(clip))) = found else {
                 bail!("no clip found");
             };
-            write_clip(&clip, output.as_deref())?;
+            match stream_of(&clip) {
+                Some(stream) => big::recv(&client, &meta.id, stream, output.as_deref()).await?,
+                None => write_clip(&clip, output.as_deref())?,
+            }
         }
         Command::Delete { id } => {
             if !client.delete(&id).await? {
@@ -195,11 +210,25 @@ async fn run(cli: Cli) -> Result<()> {
             println!("relay        {server} ({version})");
             println!("default ttl  {}", human_duration(c.default_ttl_secs * 1000));
             println!("max ttl      {}", human_duration(c.max_ttl_secs * 1000));
-            println!("max size     {}", human_size(c.max_size_bytes));
+            println!("max clip     {}", human_size(c.max_size_bytes));
             println!("history      {} clips", c.max_clips);
+            match &c.chunked {
+                Some(chunked) => println!(
+                    "big files    yes, in chunks of {}",
+                    human_size(chunked.chunk_size().into())
+                ),
+                None => println!("big files    no (relays from 0.3.0 take them)"),
+            }
         }
     }
     Ok(())
+}
+
+fn print_sent(what: &str, meta: &ClipMeta) {
+    eprintln!(
+        "sent {what}, expires in {}",
+        human_duration(meta.expires_at_ms.saturating_sub(meta.created_at_ms))
+    );
 }
 
 const NOT_PAIRED: &str = "not paired: run `yacs pair` (or set YACS_SERVER and YACS_PHRASE)";
@@ -487,7 +516,8 @@ fn human_size(bytes: u64) -> String {
     match bytes {
         0..1000 => format!("{bytes} B"),
         1000..1_000_000 => format!("{:.1} KB", bytes as f64 / 1e3),
-        _ => format!("{:.1} MB", bytes as f64 / 1e6),
+        1_000_000..1_000_000_000 => format!("{:.1} MB", bytes as f64 / 1e6),
+        _ => format!("{:.1} GB", bytes as f64 / 1e9),
     }
 }
 

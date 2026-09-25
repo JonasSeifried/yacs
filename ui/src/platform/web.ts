@@ -3,12 +3,16 @@
 // The pairing is kept in localStorage; the page's CSP allows no third-party
 // scripts that could read it.
 
-import init, { Pairing, generatePhrase as wasmGeneratePhrase } from "../wasm/yacs";
+import init, { Pairing, newStream, generatePhrase as wasmGeneratePhrase } from "../wasm/yacs";
+import type { DownloadMessage, DownloadMode, DownloadRequest } from "../mobile/download.worker";
+import { OPFS_DIR } from "../mobile/download.worker";
+import type { UploadMessage, UploadRequest } from "../mobile/upload.worker";
 import { SseParser } from "../shared/sse";
-import type { ChannelEvent, Clip, ClipItem, ClipMeta, ClipView, ServerConfig } from "../shared/types";
+import { chunkSizeFor } from "../shared/stream";
+import type { ChannelEvent, Clip, ClipItem, ClipMeta, ClipView, ServerConfig, StreamInfo } from "../shared/types";
+import { API, relayRequest } from "./relay";
 
 const STORAGE_KEY = "yacs.pairing";
-const API = "/api/v1";
 /** The relay sends a keep-alive every 20 s; this much silence means the connection is dead. */
 const LIVE_IDLE_MS = 60_000;
 
@@ -27,6 +31,8 @@ export interface Decrypted {
   view: ClipView;
   clip: Clip;
 }
+
+export type OnProgress = (done: number, total: number) => void;
 
 let wasm: Promise<unknown> | null = null;
 const ready = () => (wasm ??= init());
@@ -108,6 +114,104 @@ export class WebClient {
     return this.remember(meta, clip);
   }
 
+  /**
+   * `items` with `files` too big for the clip: the files upload in a worker,
+   * as chunks, and the clip is listed once they're all in.
+   */
+  async sendBig(
+    items: ClipItem[],
+    files: File[],
+    ttlSecs: number,
+    config: ServerConfig,
+    onProgress: OnProgress,
+    signal: AbortSignal,
+  ): Promise<Decrypted> {
+    if (!config.chunked) throw new Error("This relay only takes smaller files. Update it to send big ones.");
+    await ready();
+    const described = files.map((f) => ({ name: f.name || "file", mime: f.type || "application/octet-stream", size: f.size }));
+    const stream = newStream(described, chunkSizeFor(config.chunked)) as StreamInfo;
+    const clip: Clip = {
+      created_at_ms: Date.now(),
+      device_name: this.stored.deviceName,
+      items: [...items, { Stream: stream }],
+    };
+    const request: UploadRequest = { type: "start", secret: this.stored.secret, token: this.stored.token, clip, files, ttlSecs };
+    const worker = new Worker(new URL("../mobile/upload.worker.ts", import.meta.url), { type: "module" });
+    try {
+      const meta = await new Promise<ClipMeta>((resolve, reject) => {
+        signal.addEventListener("abort", () => worker.postMessage({ type: "cancel" }), { once: true });
+        worker.onerror = () => reject(new Error("The upload stopped unexpectedly."));
+        worker.onmessage = ({ data }: MessageEvent<UploadMessage>) => {
+          if (data.type === "progress") onProgress(data.done, data.total);
+          else if (data.type === "done") resolve(data.meta);
+          else reject(new Error(data.message));
+        };
+        worker.postMessage(request);
+      });
+      return this.remember(meta, clip);
+    } finally {
+      worker.terminate();
+    }
+  }
+
+  /**
+   * One file of a chunked clip, decrypted in a worker. Resolves to the file
+   * for the page to share or save (iOS, and browsers without the service
+   * worker), or to null when the browser is saving it already.
+   */
+  async download(id: string, stream: StreamInfo, file: number, onProgress: OnProgress, signal: AbortSignal): Promise<File | null> {
+    const { name, size } = stream.files[file];
+    const mode = downloadMode();
+    const request: DownloadRequest = {
+      type: "start",
+      secret: this.stored.secret,
+      token: this.stored.token,
+      clipId: id,
+      stream,
+      file,
+      mode,
+    };
+    const transfer: Transferable[] = [];
+    let saving: (() => void) | undefined;
+    if (mode === "port") {
+      const started = await streamThroughServiceWorker(name, size);
+      if (started) {
+        request.port = started.port;
+        transfer.push(started.port);
+        saving = started.save;
+      } else {
+        request.mode = hasOpfs() ? "opfs" : "memory";
+      }
+    }
+
+    const worker = new Worker(new URL("../mobile/download.worker.ts", import.meta.url), { type: "module" });
+    // A service worker streaming a response may be stopped when it looks idle.
+    const keepAlive = setInterval(() => navigator.serviceWorker?.controller?.postMessage({ type: "keepalive" }), 20_000);
+    try {
+      const done = await new Promise<DownloadMessage & { type: "done" }>((resolve, reject) => {
+        signal.addEventListener("abort", () => worker.postMessage({ type: "cancel" }), { once: true });
+        worker.onerror = () => reject(new Error("The download stopped unexpectedly."));
+        worker.onmessage = ({ data }: MessageEvent<DownloadMessage>) => {
+          if (data.type === "progress") onProgress(data.done, data.total);
+          else if (data.type === "done") resolve(data);
+          else reject(new Error(data.message));
+        };
+        worker.postMessage(request, transfer);
+        saving?.();
+      });
+      if (done.name) {
+        const dir = await (await navigator.storage.getDirectory()).getDirectoryHandle(OPFS_DIR);
+        const stored = await (await dir.getFileHandle(done.name)).getFile();
+        return new File([stored], name, { type: stream.files[file].mime });
+      }
+      if (done.blob) return new File([done.blob], name, { type: stream.files[file].mime });
+      return null;
+    } finally {
+      clearInterval(keepAlive);
+      worker.terminate();
+    }
+  }
+
   async send(items: ClipItem[], ttlSecs: number): Promise<Decrypted> {
     const clip: Clip = { created_at_ms: Date.now(), device_name: this.stored.deviceName, items };
     const envelope = (await this.pairing).seal(clip);
@@ -167,32 +271,69 @@ export class WebClient {
     return `${API}/channels/${(await this.pairing).channelId}/clips`;
   }
 
-  private async request(url: string, init: RequestInit = {}, okStatuses: number[] = []): Promise<Response> {
-    const headers = new Headers(init.headers);
-    if (this.stored.token) headers.set("authorization", `Bearer ${this.stored.token}`);
-    let res: Response;
-    try {
-      res = await fetch(url, { ...init, headers, cache: "no-store" });
-    } catch {
-      throw new Error("Can't reach the relay. Check your connection.");
+  private request(url: string, init: RequestInit = {}, okStatuses: number[] = []): Promise<Response> {
+    return relayRequest(url, this.stored.token, init, okStatuses);
+  }
+}
+
+/**
+ * The service worker streams downloads straight into the browser's
+ * downloads, except on iOS, where that's unreliable (and in a home screen
+ * app, unknown); there the file goes through OPFS and the share sheet.
+ */
+function downloadMode(): DownloadMode {
+  if (!isIos() && navigator.serviceWorker?.controller) return "port";
+  return hasOpfs() ? "opfs" : "memory";
+}
+
+function hasOpfs(): boolean {
+  return typeof navigator.storage?.getDirectory === "function";
+}
+
+export function isIos(ua = navigator.userAgent): boolean {
+  return /iPad|iPhone/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+}
+
+/**
+ * Registers a download with the service worker. Returns the port the
+ * download worker feeds and `save`, which starts the browser's download; or
+ * null if the service worker doesn't answer (an older one is still active).
+ */
+async function streamThroughServiceWorker(name: string, size: number): Promise<{ port: MessagePort; save: () => void } | null> {
+  const sw = navigator.serviceWorker?.controller;
+  if (!sw) return null;
+  const data = new MessageChannel();
+  const ack = new MessageChannel();
+  const token = crypto.randomUUID();
+  const ready = new Promise<boolean>((resolve) => {
+    ack.port1.onmessage = () => resolve(true);
+    setTimeout(() => resolve(false), 3000);
+  });
+  sw.postMessage({ type: "download", token, name, size }, [data.port1, ack.port2]);
+  if (!(await ready)) return null;
+  const save = () => {
+    const frame = Object.assign(document.createElement("iframe"), { hidden: true, src: `/download/${token}` });
+    document.body.append(frame);
+    // Long enough for the browser to take over the download.
+    setTimeout(() => frame.remove(), 60_000);
+  };
+  return { port: data.port2, save };
+}
+
+/**
+ * Removes downloaded files from OPFS once they're shared: those of one clip,
+ * or all of them (left over when the app was closed before sharing).
+ */
+export async function forgetDownloads(clipId?: string) {
+  try {
+    const root = await navigator.storage.getDirectory();
+    if (clipId === undefined) return await root.removeEntry(OPFS_DIR, { recursive: true });
+    const dir = await root.getDirectoryHandle(OPFS_DIR);
+    for await (const name of (dir as unknown as { keys(): AsyncIterable<string> }).keys()) {
+      if (name.startsWith(`${clipId}-`)) await dir.removeEntry(name);
     }
-    if (res.ok || okStatuses.includes(res.status)) return res;
-    switch (res.status) {
-      case 401:
-        throw new Error("The relay rejected the access token.");
-      case 413:
-        throw new Error("This clip is too large for the relay.");
-      case 507:
-        throw new Error("The relay's storage is full.");
-    }
-    const body = await res.text();
-    let message = body;
-    try {
-      message = JSON.parse(body).error ?? body;
-    } catch {
-      // not JSON
-    }
-    throw new Error(`Relay error ${res.status}: ${message || res.statusText}`);
+  } catch {
+    // none, or no OPFS
   }
 }
 
@@ -221,7 +362,8 @@ export function clipView(meta: ClipMeta, clip: Clip): ClipView {
     else if ("Html" in item) view.html ??= item.Html;
     else if ("Rtf" in item) view.rtf = true;
     else if ("Image" in item) view.image ??= { mime: item.Image.mime, size: item.Image.data.length, width: null, height: null };
-    else view.files.push({ name: item.File.name, mime: item.File.mime, size: item.File.data.length });
+    else if ("File" in item) view.files.push({ name: item.File.name, mime: item.File.mime, size: item.File.data.length });
+    else view.files.push(...item.Stream.files);
   }
   return view;
 }

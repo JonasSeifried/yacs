@@ -1,7 +1,10 @@
 //! Talks to a YACS relay on behalf of one paired channel. Encrypts before
 //! sending and decrypts after receiving, so callers only see plaintext clips.
 
+mod chunks;
 mod sse;
+
+pub use chunks::{LocalFiles, Progress, Sink, stream_of};
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -9,8 +12,8 @@ use std::time::Duration;
 use reqwest::header::{self, HeaderMap};
 use reqwest::{RequestBuilder, Response, StatusCode, Url};
 use yacs_core::api::{
-    ChannelEvent, ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody, HEADER_CLIP_ID, HEADER_CREATED_AT,
-    HEADER_EXPIRES_AT, ServerConfig,
+    ChannelEvent, ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody, HEADER_CHUNKED, HEADER_CLIP_ID,
+    HEADER_CREATED_AT, HEADER_EXPIRES_AT, HEADER_SIZE, ServerConfig,
 };
 use yacs_core::{Envelope, Pairing, Payload};
 
@@ -28,14 +31,20 @@ pub enum Error {
     StorageFull,
     #[error("rate limited by the server, try again shortly")]
     RateLimited,
+    #[error("too many uploads are running on this channel; try again when one is done")]
+    TooManyUploads,
     #[error("server error {status}: {message}")]
     Server { status: u16, message: String },
     #[error("the server sent a malformed response")]
     BadResponse,
     #[error("the live update connection went quiet")]
     Stalled,
+    #[error("cancelled")]
+    Cancelled,
     #[error(transparent)]
     Protocol(#[from] yacs_core::Error),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -50,6 +59,7 @@ pub struct Client {
     stream_http: reqwest::Client,
     events_url: Url,
     clips_url: Url,
+    uploads_url: Url,
     config_url: Url,
     token: Option<String>,
     pairing: Pairing,
@@ -79,6 +89,7 @@ impl Client {
             stream_http: builder().build()?,
             events_url: api(&format!("channels/{}/events", pairing.channel_id))?,
             clips_url: api(&format!("channels/{}/clips", pairing.channel_id))?,
+            uploads_url: api(&format!("channels/{}/uploads", pairing.channel_id))?,
             config_url: api("config")?,
             token: token.filter(|t| !t.is_empty()),
             pairing,
@@ -234,12 +245,16 @@ impl Events {
     }
 }
 
-fn meta_from_headers(headers: &HeaderMap, size: u64) -> Option<ClipMeta> {
+/// `body_len` is the size for relays that don't say (before 0.3.0).
+fn meta_from_headers(headers: &HeaderMap, body_len: u64) -> Option<ClipMeta> {
     let get = |name: &str| headers.get(name)?.to_str().ok();
     Some(ClipMeta {
         id: get(HEADER_CLIP_ID)?.to_owned(),
         created_at_ms: get(HEADER_CREATED_AT)?.parse().ok()?,
         expires_at_ms: get(HEADER_EXPIRES_AT)?.parse().ok()?,
-        size,
+        size: get(HEADER_SIZE)
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(body_len),
+        chunked: get(HEADER_CHUNKED) == Some("1"),
     })
 }

@@ -8,8 +8,14 @@ use clap::Parser;
 use http_body_util::BodyExt;
 use tempfile::TempDir;
 use tower::ServiceExt;
-use yacs_core::api::{ChannelEvent, ClipMeta, HEADER_CLIP_ID, ServerConfig};
-use yacs_core::{ChannelId, ChannelKey, Clip, ClipItem, Envelope, Pairing, Payload};
+use yacs_core::api::{
+    ChannelEvent, ChunkedConfig, ClipMeta, HEADER_CHUNKED, HEADER_CLIP_ID, HEADER_SIZE,
+    ServerConfig, UploadCreated, UploadStatus,
+};
+use yacs_core::{
+    CHUNK_TAG_LEN, ChannelId, ChannelKey, Clip, ClipItem, Envelope, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE,
+    Pairing, Payload,
+};
 use yacs_server::{AppState, Config, Events, ManualClock, Store, router};
 
 const START_MS: u64 = 1_758_600_000_000;
@@ -109,6 +115,38 @@ impl TestApp {
         self.call(Method::DELETE, uri, &[], vec![]).await
     }
 
+    async fn put(&self, uri: &str, body: Vec<u8>) -> Res {
+        self.call(Method::PUT, uri, &[], body).await
+    }
+
+    /// Starts an upload of `length` sealed bytes in chunks of [`CHUNK`].
+    async fn start_upload(&self, channel: &str, length: u64) -> String {
+        let res = self
+            .post(&upload_uri(channel, length, CHUNK), envelope("header"))
+            .await;
+        assert_eq!(
+            res.status,
+            StatusCode::CREATED,
+            "{}",
+            String::from_utf8_lossy(&res.body)
+        );
+        res.json::<UploadCreated>().id
+    }
+
+    /// Uploads every chunk of `data` and completes it.
+    async fn upload(&self, channel: &str, data: &[u8]) -> ClipMeta {
+        let id = self.start_upload(channel, data.len() as u64).await;
+        for (i, chunk) in data.chunks(CHUNK as usize).enumerate() {
+            let res = self.put(&chunk_uri(channel, &id, i), chunk.to_vec()).await;
+            assert_eq!(res.status, StatusCode::NO_CONTENT);
+        }
+        let res = self
+            .post(&format!("{}/complete", uploads(channel, &id)), vec![])
+            .await;
+        assert_eq!(res.status, StatusCode::CREATED);
+        res.json()
+    }
+
     async fn create(&self, channel: &str, ttl: Option<&str>) -> ClipMeta {
         let uri = match ttl {
             Some(ttl) => format!("{}?ttl={ttl}", clips(channel)),
@@ -204,6 +242,26 @@ fn clips(channel: &str) -> String {
     format!("/api/v1/channels/{channel}/clips")
 }
 
+/// Sealed bytes per chunk, the smallest the relay takes.
+const CHUNK: u64 = MIN_CHUNK_SIZE as u64 + CHUNK_TAG_LEN as u64;
+
+fn upload_uri(channel: &str, length: u64, chunk_size: u64) -> String {
+    format!("/api/v1/channels/{channel}/uploads?length={length}&chunk_size={chunk_size}")
+}
+
+fn uploads(channel: &str, id: &str) -> String {
+    format!("/api/v1/channels/{channel}/uploads/{id}")
+}
+
+fn chunk_uri(channel: &str, id: &str, index: usize) -> String {
+    format!("{}/chunks/{index}", uploads(channel, id))
+}
+
+/// The relay never decrypts chunks, so any bytes do.
+fn sealed(len: u64) -> Vec<u8> {
+    (0..len).map(|i| (i % 251) as u8).collect()
+}
+
 fn envelope(text: &str) -> Vec<u8> {
     let pairing = Pairing {
         channel_id: ChannelId::from_bytes([1; 32]),
@@ -229,6 +287,9 @@ async fn reports_config() {
             max_size_bytes: 20_000_000,
             max_clips: 50,
             version: Some(env!("CARGO_PKG_VERSION").into()),
+            chunked: Some(ChunkedConfig {
+                max_chunk_bytes: u64::from(MAX_CHUNK_SIZE),
+            }),
         }
     );
 }
@@ -572,4 +633,255 @@ async fn event_streams_need_the_token_and_end_on_shutdown() {
     assert_eq!(listener.status, StatusCode::OK);
     app.events.close();
     assert_eq!(listener.next().await, None);
+}
+
+#[tokio::test]
+async fn chunked_upload_round_trip() {
+    let app = app(&[]).await;
+    let ch = channel(1);
+    let data = sealed(2 * CHUNK + 100);
+    let parts: Vec<&[u8]> = data.chunks(CHUNK as usize).collect();
+    let mut listener = app.listen(&ch, &[]).await;
+
+    let id = app.start_upload(&ch, data.len() as u64).await;
+    // Any order, and repeating a chunk is fine.
+    for i in [2, 0, 0] {
+        let res = app.put(&chunk_uri(&ch, &id, i), parts[i].to_vec()).await;
+        assert_eq!(res.status, StatusCode::NO_CONTENT);
+    }
+    let status: UploadStatus = app.get(&uploads(&ch, &id)).await.json();
+    assert_eq!(status.received, [0, 2]);
+    let complete = format!("{}/complete", uploads(&ch, &id));
+    assert_eq!(
+        app.post(&complete, vec![]).await.status,
+        StatusCode::CONFLICT
+    );
+    // Not listed until it's complete.
+    assert!(app.list(&ch).await.is_empty());
+
+    app.put(&chunk_uri(&ch, &id, 1), parts[1].to_vec()).await;
+    app.clock.advance(MINUTE);
+    let res = app.post(&complete, vec![]).await;
+    assert_eq!(res.status, StatusCode::CREATED);
+    let meta: ClipMeta = res.json();
+    let header = envelope("header");
+    assert!(meta.chunked);
+    assert_eq!(meta.size, header.len() as u64 + data.len() as u64);
+    assert_eq!(meta.created_at_ms, START_MS + 60_000);
+    assert_eq!(meta.expires_at_ms, START_MS + 60_000 + 15 * 60_000);
+    assert_eq!(app.list(&ch).await, std::slice::from_ref(&meta));
+    assert_eq!(
+        listener.next().await,
+        Some(ChannelEvent::Added { clip: meta.clone() })
+    );
+    assert_eq!(app.store.used_bytes(), meta.size);
+    // The upload is gone.
+    assert_eq!(
+        app.get(&uploads(&ch, &id)).await.status,
+        StatusCode::NOT_FOUND
+    );
+
+    let clip = format!("{}/{}", clips(&ch), meta.id);
+    let res = app.get(&clip).await;
+    assert_eq!(res.body.len(), header.len());
+    assert_eq!(res.headers[HEADER_SIZE], meta.size.to_string().as_str());
+    assert_eq!(res.headers[HEADER_CHUNKED], "1");
+    for (i, part) in parts.iter().enumerate() {
+        let res = app.get(&format!("{clip}/chunks/{i}")).await;
+        assert_eq!(res.status, StatusCode::OK);
+        assert_eq!(res.body, *part);
+        assert_eq!(
+            res.headers[header::CACHE_CONTROL],
+            "private, max-age=900, immutable"
+        );
+    }
+    assert_eq!(
+        app.get(&format!("{clip}/chunks/3")).await.status,
+        StatusCode::NOT_FOUND
+    );
+    // A clip without chunks has none to give.
+    let plain = app.create(&ch, None).await;
+    let res = app.get(&format!("{}/{}", clips(&ch), plain.id)).await;
+    assert_eq!(res.headers[HEADER_CHUNKED], "0");
+    let res = app
+        .get(&format!("{}/{}/chunks/0", clips(&ch), plain.id))
+        .await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+
+    assert_eq!(app.delete(&clip).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(app.store.used_bytes(), plain.size);
+    assert_eq!(app.files(), 1);
+}
+
+#[tokio::test]
+async fn rejects_bad_uploads_and_chunks() {
+    let app = app(&[]).await;
+    let ch = channel(1);
+    for (length, chunk_size) in [
+        (CHUNK, CHUNK - 1),
+        (CHUNK, u64::from(MAX_CHUNK_SIZE) + 17),
+        (15, CHUNK),
+        // The last chunk would be just a tag.
+        (CHUNK + 16, CHUNK),
+    ] {
+        let res = app
+            .post(&upload_uri(&ch, length, chunk_size), envelope("h"))
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{length} {chunk_size}");
+    }
+    let res = app
+        .post(&upload_uri(&ch, CHUNK, CHUNK), b"junk".to_vec())
+        .await;
+    assert_eq!(res.status, StatusCode::BAD_REQUEST);
+
+    let id = app.start_upload(&ch, CHUNK + 20).await;
+    let put = |i: usize, len: u64| {
+        let (app, uri) = (&app, chunk_uri(&ch, &id, i));
+        async move { app.put(&uri, sealed(len)).await }
+    };
+    assert_eq!(put(2, 20).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        put(0, CHUNK + 1).await.status,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(put(0, CHUNK - 1).await.status, StatusCode::BAD_REQUEST);
+    assert_eq!(put(1, 21).await.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(put(1, 20).await.status, StatusCode::NO_CONTENT);
+    // Nothing half-written is left behind.
+    assert_eq!(app.files(), 2);
+
+    let other = channel(2);
+    let res = app.put(&chunk_uri(&other, &id, 0), sealed(CHUNK)).await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        app.get(&uploads(&other, &id)).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let res = app
+        .post(&format!("{}/complete", uploads(&other, &id)), vec![])
+        .await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        app.delete(&uploads(&other, &id)).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let unknown = ulid_like();
+    let res = app.put(&chunk_uri(&ch, &unknown, 0), sealed(CHUNK)).await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+
+    assert_eq!(
+        app.delete(&uploads(&ch, &id)).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(put(0, CHUNK).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(app.store.used_bytes(), 0);
+    assert_eq!(app.files(), 0);
+}
+
+fn ulid_like() -> String {
+    "01K5ZZZZZZZZZZZZZZZZZZZZZZ".into()
+}
+
+#[tokio::test]
+async fn uploads_reserve_the_quota_up_front() {
+    // One upload of four chunks fits, and nothing else.
+    let length = 4 * CHUNK;
+    let disk = format!("{}B", length + 100);
+    let app = app(&["--max-size", "100B", "--max-disk", &disk]).await;
+    let ch = channel(1);
+    let id = app.start_upload(&ch, length).await;
+    let header = envelope("header").len() as u64;
+    assert_eq!(app.store.used_bytes(), length + header);
+
+    let res = app
+        .post(&upload_uri(&ch, length, CHUNK), envelope("h"))
+        .await;
+    assert_eq!(res.status, StatusCode::INSUFFICIENT_STORAGE);
+    let res = app.post(&clips(&ch), envelope("hi")).await;
+    assert_eq!(res.status, StatusCode::INSUFFICIENT_STORAGE);
+
+    app.delete(&uploads(&ch, &id)).await;
+    assert_eq!(app.store.used_bytes(), 0);
+    app.create(&ch, None).await;
+}
+
+#[tokio::test]
+async fn limits_open_uploads_per_channel() {
+    let app = app(&[]).await;
+    let ch = channel(1);
+    let mut ids = Vec::new();
+    for _ in 0..yacs_server::store::MAX_OPEN_UPLOADS {
+        ids.push(app.start_upload(&ch, CHUNK).await);
+    }
+    let res = app
+        .post(&upload_uri(&ch, CHUNK, CHUNK), envelope("h"))
+        .await;
+    assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS);
+    // Other channels have their own.
+    app.start_upload(&channel(2), CHUNK).await;
+    // A finished upload makes room.
+    app.put(&chunk_uri(&ch, &ids[0], 0), sealed(CHUNK)).await;
+    app.post(&format!("{}/complete", uploads(&ch, &ids[0])), vec![])
+        .await;
+    app.start_upload(&ch, CHUNK).await;
+}
+
+#[tokio::test]
+async fn reaper_drops_idle_uploads_and_expired_chunked_clips() {
+    let app = app(&[]).await;
+    let ch = channel(1);
+    let clip = app.upload(&ch, &sealed(CHUNK + 50)).await;
+    let idle = app.start_upload(&ch, 2 * CHUNK).await;
+    app.put(&chunk_uri(&ch, &idle, 0), sealed(CHUNK)).await;
+    let busy = app.start_upload(&ch, 2 * CHUNK).await;
+    let files = app.files();
+
+    let hour = 60 * MINUTE;
+    app.clock.advance(23 * hour);
+    app.put(&chunk_uri(&ch, &busy, 0), sealed(CHUNK)).await;
+    app.clock.advance(hour);
+    let now = START_MS + 24 * 3_600_000;
+    // The clip expired after 15 minutes; `idle` got nothing for a day.
+    assert_eq!(app.store.reap(now).await.unwrap(), 1);
+    assert_eq!(
+        app.get(&uploads(&ch, &idle)).await.status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(app.get(&uploads(&ch, &busy)).await.status, StatusCode::OK);
+    // Left: `busy`'s header and first chunk.
+    assert_eq!(app.files(), files - (clip_files(&clip) + 2) + 1);
+    let header = envelope("header").len() as u64;
+    assert_eq!(app.store.used_bytes(), header + 2 * CHUNK);
+}
+
+/// Header plus chunks.
+fn clip_files(meta: &ClipMeta) -> usize {
+    1 + (meta.size - envelope("header").len() as u64).div_ceil(CHUNK) as usize
+}
+
+#[tokio::test]
+async fn eviction_removes_chunked_clips_whole() {
+    let app = app(&["--max-clips-per-channel", "1"]).await;
+    let ch = channel(1);
+    app.upload(&ch, &sealed(3 * CHUNK)).await;
+    assert_eq!(app.files(), 4);
+    app.clock.advance(Duration::from_millis(1));
+    let newest = app.create(&ch, None).await;
+    assert_eq!(app.list(&ch).await, std::slice::from_ref(&newest));
+    assert_eq!(app.files(), 1);
+    assert_eq!(app.store.used_bytes(), newest.size);
+}
+
+#[tokio::test]
+async fn restart_keeps_chunked_clips_and_drops_uploads() {
+    let app = app(&[]).await;
+    let ch = channel(1);
+    let meta = app.upload(&ch, &sealed(CHUNK + 1000)).await;
+    app.start_upload(&ch, CHUNK).await;
+
+    let reopened = Store::open(app.dir.path(), 50, 1 << 30).await.unwrap();
+    assert_eq!(reopened.used_bytes(), meta.size);
+    let id: ChannelId = ch.parse().unwrap();
+    assert_eq!(reopened.list(&id, START_MS).await.unwrap(), vec![meta]);
+    assert_eq!(app.files(), 3);
 }

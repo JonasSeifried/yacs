@@ -97,7 +97,8 @@ async fn listen(app: AppHandle, client: Arc<Client>, wake: Arc<Notify>) {
 async fn handle(app: &AppHandle, client: &Client, event: ChannelEvent) {
     let state = app.state::<AppState>();
     match event {
-        ChannelEvent::Added { clip } if clip.size <= PREFETCH_BYTES => {
+        // A chunked clip is only its small header here.
+        ChannelEvent::Added { clip } if clip.size <= PREFETCH_BYTES || clip.chunked => {
             // Before telling Spotlight, so it finds the clip in the cache.
             if let Err(e) = clips::load(client, &state.clips, &clip.id).await {
                 tracing::debug!(error = %e, "prefetch failed");

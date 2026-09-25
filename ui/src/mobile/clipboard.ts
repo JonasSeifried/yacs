@@ -87,7 +87,7 @@ export async function fileItem(file: File): Promise<ClipItem> {
 }
 
 export function canSave(clip: Clip): boolean {
-  return clip.items.some((i) => "File" in i || "Image" in i);
+  return clip.items.some((i) => "File" in i || "Image" in i || "Stream" in i);
 }
 
 /** The clip's files, or its image, as files to save. Copies the bytes: build them on demand. */
@@ -102,16 +102,19 @@ export function savable(clip: Clip, name: string): File[] {
   return [new File([image.data as Uint8Array<ArrayBuffer>], `${name}.${ext}`, { type: image.mime })];
 }
 
-/** Share sheet where available (save to Photos or Files, send to an app), else downloads. */
-export async function shareFiles(files: File[]) {
-  if (files.length === 0) return;
+/**
+ * Share sheet where available (save to Photos or Files, send to an app),
+ * else downloads. Resolves to whether the share sheet is done with them.
+ */
+export async function shareFiles(files: File[]): Promise<boolean> {
+  if (files.length === 0) return true;
   if (navigator.canShare?.({ files })) {
     try {
       await navigator.share({ files });
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) throw e;
     }
-    return;
+    return true;
   }
   for (const file of files) {
     const url = URL.createObjectURL(file);
@@ -119,9 +122,10 @@ export async function shareFiles(files: File[]) {
     a.click();
     setTimeout(() => URL.revokeObjectURL(url), 10_000);
   }
+  return false;
 }
 
-type Kind = "Text" | "Html" | "Rtf" | "Image" | "File";
+type Kind = "Text" | "Html" | "Rtf" | "Image" | "File" | "Stream";
 type Value<K extends Kind> = Extract<ClipItem, Record<K, unknown>>[K];
 
 export function pick<K extends Kind>(clip: Clip, kind: K): Value<K> | undefined {

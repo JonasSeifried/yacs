@@ -3,7 +3,7 @@
 
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::wasm_bindgen_test;
-use yacs_wasm::{WasmPairing, generate_phrase};
+use yacs_wasm::{WasmPairing, generate_phrase, new_stream};
 
 const PHRASE: &str = "tundra velvet anchor pickle orbit meadow";
 
@@ -62,4 +62,35 @@ fn rejects_bad_input() {
     assert!(pairing.open(&[1, 2, 3]).is_err());
     assert!(pairing.seal(JsValue::from_str("not a clip")).is_err());
     assert_eq!(generate_phrase().unwrap().split(' ').count(), 6);
+}
+
+#[wasm_bindgen_test]
+fn streams_seal_and_open_chunks() {
+    let pairing = WasmPairing::from_phrase(PHRASE).unwrap();
+    let files = js_sys::JSON::parse(
+        r#"[{"name": "a.bin", "mime": "application/octet-stream", "size": 70000}]"#,
+    )
+    .unwrap();
+    let stream = new_stream(files, 65536).unwrap();
+    let salt = js_sys::Reflect::get(&stream, &"salt".into()).unwrap();
+    assert!(salt.is_instance_of::<js_sys::Uint8Array>());
+
+    // Through a clip and back, as the header travels.
+    let clip = clip();
+    let item = js_sys::Object::new();
+    js_sys::Reflect::set(&item, &"Stream".into(), &stream).unwrap();
+    js_sys::Reflect::set(&clip, &"items".into(), &js_sys::Array::of1(&item)).unwrap();
+    let opened = pairing.open(&pairing.seal(clip).unwrap()).unwrap();
+    let items = js_sys::Reflect::get(&opened, &"items".into()).unwrap();
+    let back = js_sys::Reflect::get(&js_sys::Array::from(&items).get(0), &"Stream".into()).unwrap();
+
+    let sealer = pairing.stream_cipher(stream).unwrap();
+    let opener = pairing.stream_cipher(back).unwrap();
+    let sealed = sealer.seal(1, vec![7; 70000 - 65536]).unwrap();
+    assert_eq!(
+        opener.open(1, sealed.clone()).unwrap(),
+        vec![7; 70000 - 65536]
+    );
+    assert!(opener.open(0, sealed).is_err());
+    assert!(sealer.seal(0, vec![1; 10]).is_err());
 }

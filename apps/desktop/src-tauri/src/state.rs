@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use yacs_client::Client;
@@ -14,6 +15,9 @@ pub struct AppState {
     client: Mutex<Option<Arc<Client>>>,
     /// Decrypted clips of the current pairing.
     pub clips: Mutex<ClipCache>,
+    /// Where big files were downloaded to, by clip id, so copying the clip
+    /// again doesn't download them again.
+    pub downloaded: Mutex<HashMap<String, Vec<PathBuf>>>,
     /// Why the saved hotkey couldn't be registered, shown in Settings.
     pub hotkey_error: Mutex<Option<String>>,
 }
@@ -47,6 +51,7 @@ impl AppState {
             settings: Mutex::new(settings),
             client: Mutex::new(client),
             clips: Mutex::new(ClipCache::new(CACHE_BYTES)),
+            downloaded: Mutex::default(),
             hotkey_error: Mutex::new(None),
         }
     }
@@ -63,5 +68,6 @@ impl AppState {
     pub fn set_client(&self, client: Option<Client>) {
         *self.client.lock().expect("client lock poisoned") = client.map(Arc::new);
         self.clips.lock().expect("clip cache lock poisoned").clear();
+        self.downloaded.lock().expect("lock poisoned").clear();
     }
 }

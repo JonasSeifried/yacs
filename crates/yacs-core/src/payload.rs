@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::stream::Stream;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Payload {
@@ -30,6 +31,10 @@ pub enum ClipItem {
     Image(Image),
     /// A copied file. One clip can carry several.
     File(File),
+    /// Files too big for one envelope: their names and sizes, and how to
+    /// decrypt their chunks, which the relay stores next to the clip. At
+    /// most one per clip.
+    Stream(Stream),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,53 +63,61 @@ impl File {
     /// no characters Windows rejects, no reserved device names, not hidden,
     /// and short enough (keeping the extension).
     pub fn safe_name(&self) -> String {
-        let base = self.name.rsplit(['/', '\\']).next().unwrap_or_default();
-        let cleaned: String = base
-            .chars()
-            .map(|c| match c {
-                '<' | '>' | ':' | '"' | '|' | '?' | '*' => '_',
-                c if c.is_control() => '_',
-                c => c,
-            })
-            .collect();
-        let mut name = cleaned
-            .trim_start_matches(['.', ' '])
-            .trim_end_matches(['.', ' '])
-            .to_owned();
-        if name.is_empty() {
-            name = "file".into();
-        }
-        let stem = name.split('.').next().unwrap_or_default();
-        const RESERVED: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
-        let reserved = RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
-            || (stem.len() == 4
-                && (stem[..3].eq_ignore_ascii_case("COM")
-                    || stem[..3].eq_ignore_ascii_case("LPT"))
-                && stem.as_bytes()[3].is_ascii_digit());
-        if reserved {
-            name.insert(0, '_');
-        }
-        if name.len() > MAX_NAME_BYTES {
-            let ext = match name.rfind('.') {
-                Some(dot) if name.len() - dot <= 16 => name[dot..].to_owned(),
-                _ => String::new(),
-            };
-            let mut cut = MAX_NAME_BYTES - ext.len();
-            while !name.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            name = format!("{}{ext}", &name[..cut]);
-        }
-        name
+        safe_file_name(&self.name)
     }
 
     /// Whether browsers and the desktop can show it as a picture.
     pub fn is_image(&self) -> bool {
-        matches!(
-            self.mime.as_str(),
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp"
-        )
+        is_image_mime(&self.mime)
     }
+}
+
+/// See [`File::safe_name`].
+pub(crate) fn safe_file_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or_default();
+    let cleaned: String = base
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '|' | '?' | '*' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let mut name = cleaned
+        .trim_start_matches(['.', ' '])
+        .trim_end_matches(['.', ' '])
+        .to_owned();
+    if name.is_empty() {
+        name = "file".into();
+    }
+    let stem = name.split('.').next().unwrap_or_default();
+    const RESERVED: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+    let reserved = RESERVED.iter().any(|r| stem.eq_ignore_ascii_case(r))
+        || (stem.len() == 4
+            && (stem[..3].eq_ignore_ascii_case("COM") || stem[..3].eq_ignore_ascii_case("LPT"))
+            && stem.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        name.insert(0, '_');
+    }
+    if name.len() > MAX_NAME_BYTES {
+        let ext = match name.rfind('.') {
+            Some(dot) if name.len() - dot <= 16 => name[dot..].to_owned(),
+            _ => String::new(),
+        };
+        let mut cut = MAX_NAME_BYTES - ext.len();
+        while !name.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        name = format!("{}{ext}", &name[..cut]);
+    }
+    name
+}
+
+pub(crate) fn is_image_mime(mime: &str) -> bool {
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp"
+    )
 }
 
 impl Payload {
@@ -140,6 +153,15 @@ mod tests {
                     mime: "application/pdf".into(),
                     data: b"%PDF-1.7".to_vec(),
                 }),
+                ClipItem::Stream(Stream {
+                    salt: [9; 32],
+                    chunk_size: crate::DEFAULT_CHUNK_SIZE,
+                    files: vec![crate::StreamFile {
+                        name: "disk.iso".into(),
+                        mime: "application/x-iso9660-image".into(),
+                        size: 5_000_000_000,
+                    }],
+                }),
             ],
         })
     }
@@ -166,6 +188,20 @@ mod tests {
             items: vec![ClipItem::Text("x".into())],
         });
         assert_eq!(text.to_bytes(), [0, 2, 1, b'a', 1, 0, 1, b'x']);
+    }
+
+    /// The salt is a byte string (no per-byte varints), and the variant comes after `File`.
+    #[test]
+    fn stream_encoding() {
+        let item = ClipItem::Stream(Stream {
+            salt: [0xff; 32],
+            chunk_size: 1,
+            files: vec![],
+        });
+        let bytes = postcard::to_allocvec(&item).unwrap();
+        assert_eq!(bytes[0], 5);
+        assert_eq!(bytes[1], 32);
+        assert_eq!(bytes.len(), 1 + 1 + 32 + 1 + 1);
     }
 
     #[test]

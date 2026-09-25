@@ -1,4 +1,4 @@
-/** Durations and sizes for list rows: "2 min", "3 h", "85 B". */
+/** Durations and sizes for list rows: "2 min", "3 h", "85 B", "4.7 GB". */
 
 export const TTL_OPTIONS = [
   { secs: 5 * 60, label: "5 minutes" },
@@ -39,5 +39,6 @@ export function formatDuration(ms: number): string {
 export function formatSize(bytes: number): string {
   if (bytes < 1000) return `${bytes} B`;
   if (bytes < 1_000_000) return `${(bytes / 1000).toFixed(1)} KB`;
-  return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  if (bytes < 1_000_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
 }

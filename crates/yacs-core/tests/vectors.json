@@ -81,5 +81,75 @@
       "phrase": "tundra velvet anchor pickle orbit meadow"
     }
   ],
-  "version": 1
+  "version": 1,
+  "streams": [
+    {
+      "channel_id": "sD92fYor09GumXgF4Jf80RRCMM5QTU78Ko0ipESaWYo",
+      "chunks": [
+        {
+          "hex": null,
+          "sha256": "165b3bb370e95f155db10d9506865790112c057cd2496fab2a108db2fa9b9915"
+        },
+        {
+          "hex": null,
+          "sha256": "c4b4724f1bc055134fc34fa4c178713dbb34d822de65c15da4f622a22dfc9237"
+        },
+        {
+          "hex": "4687c436b7bfe9c557b6626b169fd644cd86836467bef4aaa89bcda9cd2db637bd303481779e97d534a89275d384fe027d6c8f8a2a72fcee5dbc7fa12b33a4a1baf27c6ca3d14757d550a75bd2bab3509e6800e424e1d4a7f818466db94f333011a146536288769b50eed25f5711783f7cf5ab74",
+          "sha256": "d90598947fbcbe5b0c8422d090e2f47fd7ce44a46ce86d70e99259f30a7620c0"
+        }
+      ],
+      "key": "42b889c18c87629dd1b8c73347800946d95000101c807155a05c5fd4f5be99fc",
+      "plaintext": "byte i is i * 31 % 251",
+      "stream": {
+        "chunk_size": 65536,
+        "files": [
+          {
+            "mime": "application/octet-stream",
+            "name": "a.bin",
+            "size": 65636
+          },
+          {
+            "mime": "text/plain",
+            "name": "b.txt",
+            "size": 65536
+          }
+        ],
+        "salt": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17,
+          18,
+          19,
+          20,
+          21,
+          22,
+          23,
+          24,
+          25,
+          26,
+          27,
+          28,
+          29,
+          30,
+          31
+        ]
+      }
+    }
+  ]
 }

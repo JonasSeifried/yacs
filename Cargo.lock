@@ -6509,6 +6509,7 @@ dependencies = [
  "dirs 6.0.0",
  "gethostname",
  "humantime",
+ "libc",
  "mime_guess",
  "minisign-verify",
  "reqwest",
@@ -6528,8 +6529,11 @@ dependencies = [
 name = "yacs-client"
 version = "0.2.4"
 dependencies = [
+ "bytes",
+ "futures-util",
  "reqwest",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "yacs-core",
@@ -6606,6 +6610,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
  "tower",
  "tower-http 0.7.1",
  "tracing",

@@ -13,6 +13,7 @@ mod settings;
 mod state;
 #[cfg(test)]
 mod test_support;
+mod transfers;
 mod tray;
 mod update;
 mod windows;
@@ -71,6 +72,7 @@ pub fn run() {
             app.manage(state);
             app.manage(update::Updates::default());
             app.manage(live::Live::default());
+            app.manage(transfers::Transfers::default());
             live::restart(app.handle());
 
             windows::create(app.handle())?;
@@ -100,6 +102,8 @@ pub fn run() {
             commands::clip_image,
             commands::copy_clip,
             commands::send_clipboard,
+            commands::transfer_status,
+            commands::cancel_transfer,
             commands::delete_clip,
             commands::set_default_ttl,
             commands::phone_pairing,

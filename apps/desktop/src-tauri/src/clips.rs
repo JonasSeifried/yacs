@@ -46,7 +46,21 @@ impl Entry {
         self.clip
             .items
             .iter()
-            .any(|item| matches!(item, ClipItem::File(_)))
+            .any(|item| matches!(item, ClipItem::File(_) | ClipItem::Stream(_)))
+    }
+
+    /// Bytes this entry holds in memory: a chunked clip's files aren't here.
+    fn cached_bytes(&self) -> u64 {
+        if !self.meta.chunked {
+            return self.meta.size;
+        }
+        let items = self.clip.items.iter().map(|item| match item {
+            ClipItem::Text(s) | ClipItem::Html(s) | ClipItem::Rtf(s) => s.len(),
+            ClipItem::Image(image) => image.data.len(),
+            ClipItem::File(file) => file.data.len(),
+            ClipItem::Stream(stream) => stream.files.iter().map(|f| f.name.len() + 64).sum(),
+        });
+        items.sum::<usize>() as u64
     }
 }
 
@@ -77,7 +91,7 @@ impl ClipCache {
         let id = entry.meta.id.clone();
         self.remove(&id);
         let entry = Arc::new(entry);
-        self.bytes += entry.meta.size;
+        self.bytes += entry.cached_bytes();
         self.entries.insert(id.clone(), entry.clone());
         self.order.push_back(id);
         while self.bytes > self.limit && self.order.len() > 1 {
@@ -89,7 +103,7 @@ impl ClipCache {
 
     pub fn remove(&mut self, id: &str) {
         if let Some(entry) = self.entries.remove(id) {
-            self.bytes -= entry.meta.size;
+            self.bytes -= entry.cached_bytes();
             self.order.retain(|o| o != id);
         }
     }
@@ -138,11 +152,8 @@ pub async fn send(
     items: Vec<ClipItem>,
     ttl: Duration,
 ) -> Result<Arc<Entry>, String> {
-    let created_at_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as i64);
     let payload = Payload::Clip(Clip {
-        created_at_ms,
+        created_at_ms: now_ms(),
         device_name,
         items,
     });
@@ -152,6 +163,13 @@ pub async fn send(
         .map_err(|e| e.to_string())?;
     let Payload::Clip(clip) = payload;
     Ok(lock(cache).insert(Entry { meta, clip }))
+}
+
+/// For `Clip::created_at_ms`.
+pub fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
 }
 
 fn lock(cache: &Mutex<ClipCache>) -> std::sync::MutexGuard<'_, ClipCache> {
@@ -180,7 +198,7 @@ pub struct ClipView {
 pub struct FileView {
     pub name: String,
     pub mime: String,
-    pub size: usize,
+    pub size: u64,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -233,8 +251,15 @@ impl From<&Entry> for ClipView {
                 ClipItem::File(file) => view.files.push(FileView {
                     name: file.name.clone(),
                     mime: file.mime.clone(),
-                    size: file.data.len(),
+                    size: file.data.len() as u64,
                 }),
+                ClipItem::Stream(stream) => {
+                    view.files.extend(stream.files.iter().map(|file| FileView {
+                        name: file.name.clone(),
+                        mime: file.mime.clone(),
+                        size: file.size,
+                    }));
+                }
                 _ => {}
             }
         }
@@ -256,6 +281,7 @@ mod tests {
                 created_at_ms: 1,
                 expires_at_ms: 2,
                 size,
+                chunked: false,
             },
             clip: Clip {
                 created_at_ms: 1,
@@ -362,6 +388,30 @@ mod tests {
         assert_eq!(view.image, None);
         assert!(entry.has_files());
         assert_eq!(entry.image(), Some(&[1u8, 2, 3][..]));
+    }
+
+    #[test]
+    fn chunked_clips_list_their_files_and_cost_little_cache() {
+        let stream = yacs_core::Stream {
+            salt: [0; 32],
+            chunk_size: yacs_core::DEFAULT_CHUNK_SIZE,
+            files: vec![yacs_core::StreamFile {
+                name: "disk.iso".into(),
+                mime: "application/octet-stream".into(),
+                size: 5_000_000_000,
+            }],
+        };
+        let mut chunked = entry("a", 5_000_000_100, vec![ClipItem::Stream(stream)]);
+        chunked.meta.chunked = true;
+        let view = ClipView::from(&chunked);
+        assert_eq!(view.files[0].size, 5_000_000_000);
+        assert!(chunked.has_files());
+        assert_eq!(chunked.image(), None);
+
+        let mut cache = ClipCache::new(1000);
+        cache.insert(entry("small", 500, vec![]));
+        cache.insert(chunked);
+        assert!(cache.get("small").is_some() && cache.get("a").is_some());
     }
 
     #[tokio::test]

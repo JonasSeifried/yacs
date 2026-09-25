@@ -2,9 +2,11 @@
 
 **Yet Another Clipboard Service**: copy on one device, paste on another. End-to-end encrypted, self-hosted, no accounts.
 
-- **Desktop** (macOS, Windows, Linux): press `⌘⇧Space` / `Ctrl+Shift+Space` for a Spotlight-style panel. `⌘V` sends your clipboard; `↵` copies a clip back, with every format it had (text, HTML, RTF, images). Copied files are sent too, and arrive in Downloads and on the clipboard.
+- **Desktop** (macOS, Windows, Linux): press `⌘⇧Space` / `Ctrl+Shift+Space` for a Spotlight-style panel. `⌘V` sends your clipboard; `↵` copies a clip back, with every format it had (text, HTML, RTF, images). Copied files are sent too, of any size, and arrive in Downloads and on the clipboard.
 - **Phone**: a web app served by your relay. Scan a QR code from the desktop and it's paired; add it to the home screen to use it like an app.
 - **Relay**: one small server that stores encrypted clips until they expire (15 minutes by default). It can't read them.
+
+Big files (a video, a disk image) go through the relay in encrypted 4 MB chunks, so no device ever holds a whole file in memory. The phone app shows progress; keep its screen on until an upload or download is done, since phones pause apps in the background.
 
 ## How it's private
 
@@ -36,14 +38,14 @@ docker compose -f compose.nginx.yaml up -d
 | `YACS_ACCESS_TOKEN` | unset | Clients must send it. Set it whenever the relay is reachable from the internet. |
 | `YACS_DEFAULT_TTL` | `15m` | Expiry when a client doesn't choose one. |
 | `YACS_MAX_TTL` | `24h` | Longest expiry a client may choose (`7d` shows up in the apps once allowed). |
-| `YACS_MAX_SIZE` | `20MB` | Largest clip, sent files included. |
+| `YACS_MAX_SIZE` | `20MB` | Largest clip sent in one piece. Bigger files go in chunks, which only `YACS_MAX_DISK` limits. |
 | `YACS_MAX_CLIPS_PER_CHANNEL` | `50` | History length; the oldest clip goes first. |
-| `YACS_MAX_DISK` | `2GB` | Total storage for all channels. |
+| `YACS_MAX_DISK` | `25GB` | Total storage for all channels. An upload counts in full from its start. |
 | `YACS_BIND` / `YACS_DATA_DIR` | `0.0.0.0:8080` / `./data` | Set by the Docker image to `/data`. |
 | `YACS_VERSION` | `latest` | Compose only: image tag to run, e.g. `0.1.0`. |
 | `YACS_PORT` | `8080` | `compose.nginx.yaml` only: the localhost port nginx proxies to. |
 
-Without Docker: `cargo build --release -p yacs-server` (after building the web app, see below) gives a single binary; put it behind any HTTPS reverse proxy. Keep that proxy's access log off or path-free: request paths contain channel ids.
+Without Docker: `cargo build --release -p yacs-server` (after building the web app, see below) gives a single binary; put it behind any HTTPS reverse proxy. Keep that proxy's access log off or path-free: request paths contain channel ids. The proxy must accept request bodies above `YACS_MAX_SIZE`, and at least 5 MB for the chunks of big files (nginx: `client_max_body_size 25m`; its default of 1 MB is too small). Cloudflare's limits are fine.
 
 ## Pairing
 
@@ -84,6 +86,7 @@ On a Mac or Windows PC with the desktop app, use Settings → Command line → *
 ```sh
 yacs send ~/.ssh/id_ed25519.pub   # text files arrive as text, images as images
 yacs send report.pdf              # other files as files (--as-file for any file)
+yacs send disk.iso                # big files too, in chunks, with a progress line
 some-command | yacs send          # or send stdin; the final newline is dropped
 yacs send --text "hello"
 yacs recv > clip.txt              # the newest clip; `yacs list` shows the others

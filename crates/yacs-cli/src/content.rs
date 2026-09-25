@@ -2,59 +2,85 @@
 //! Receiving machines put text and images on the clipboard, and save files.
 
 use std::io::{IsTerminal, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use yacs_core::{ClipItem, File, Image};
+use yacs_core::{ClipItem, File, Image, StreamFile};
 
-/// The item, and a short description for the "sent …" line. Text and
-/// images are sent as such unless `as_file`; everything else as a file.
-pub fn from_file(path: &Path, as_file: bool) -> Result<(ClipItem, String)> {
+pub enum Content {
+    /// Goes into the clip, with a short description for the "sent …" line.
+    Inline(ClipItem, String),
+    /// Too big for that: sent in chunks, straight from disk.
+    Big(PathBuf, StreamFile),
+}
+
+/// Text and images are sent as such unless `as_file`, everything else as a
+/// file. Files over `inline_limit` bytes are always [`Content::Big`] files.
+pub fn from_file(path: &Path, as_file: bool, inline_limit: u64) -> Result<Content> {
     if path == Path::new("-") {
-        return from_stdin();
+        let (item, label) = from_stdin()?;
+        return Ok(Content::Inline(item, label));
     }
-    let data = match std::fs::read(path) {
-        Ok(data) => data,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => bail!(
+    let not_found = |e: std::io::Error| match e.kind() {
+        std::io::ErrorKind::NotFound => anyhow::anyhow!(
             "no such file: {}\n(to send text, use --text \"…\" or pipe it in)",
             path.display()
         ),
-        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        _ => anyhow::Error::new(e).context(format!("reading {}", path.display())),
     };
+    let metadata = std::fs::metadata(path).map_err(not_found)?;
+    if metadata.is_dir() {
+        bail!("{} is a folder; send a zip of it", path.display());
+    }
     let name = path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
     );
+    if metadata.len() > inline_limit {
+        let file = StreamFile {
+            mime: mime(path),
+            name,
+            size: metadata.len(),
+        };
+        return Ok(Content::Big(path.to_owned(), file));
+    }
+    let data = std::fs::read(path).map_err(not_found)?;
+    let (item, label) = small_file(path, name, data, as_file);
+    Ok(Content::Inline(item, label))
+}
+
+fn small_file(path: &Path, name: String, data: Vec<u8>, as_file: bool) -> (ClipItem, String) {
     let label = format!("{name} ({})", crate::human_size(data.len() as u64));
     if as_file {
-        return Ok((file(path, name, data), label));
+        return (file(path, name, data), label);
     }
     if let Some(mime) = image_type(&data) {
-        let size = data.len();
-        return Ok((
-            ClipItem::Image(Image {
-                mime: mime.into(),
-                data,
-            }),
-            format!("{name} ({})", crate::human_size(size as u64)),
-        ));
+        let item = ClipItem::Image(Image {
+            mime: mime.into(),
+            data,
+        });
+        return (item, label);
     }
     let text = match String::from_utf8(data) {
         Ok(text) => text,
-        Err(e) => return Ok((file(path, name, e.into_bytes()), label)),
+        Err(e) => return (file(path, name, e.into_bytes()), label),
     };
     let text = without_final_newline(text);
     let label = format!("{name} ({})", crate::human_size(text.len() as u64));
-    Ok((ClipItem::Text(text), label))
+    (ClipItem::Text(text), label)
 }
 
 fn file(path: &Path, name: String, data: Vec<u8>) -> ClipItem {
-    let mime = mime_guess::from_path(path).first_or_octet_stream();
     ClipItem::File(File {
         name,
-        mime: mime.essence_str().to_owned(),
+        mime: mime(path),
         data,
     })
+}
+
+fn mime(path: &Path) -> String {
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    mime.essence_str().to_owned()
 }
 
 pub fn from_stdin() -> Result<(ClipItem, String)> {
@@ -130,18 +156,16 @@ mod tests {
             std::fs::write(&path, data).unwrap();
             path
         };
+        let inline = |path: &Path, as_file| match from_file(path, as_file, 100).unwrap() {
+            Content::Inline(item, label) => (item, label),
+            Content::Big(..) => panic!("not inline"),
+        };
         let notes = path("notes.txt", b"hi\n");
-        assert_eq!(
-            from_file(&notes, false).unwrap().0,
-            ClipItem::Text("hi".into())
-        );
+        assert_eq!(inline(&notes, false).0, ClipItem::Text("hi".into()));
         let png = path("shot.png", b"\x89PNG\r\n\x1a\n");
-        assert!(matches!(
-            from_file(&png, false).unwrap().0,
-            ClipItem::Image(_)
-        ));
+        assert!(matches!(inline(&png, false).0, ClipItem::Image(_)));
 
-        let (item, label) = from_file(&path("report.pdf", b"%PDF\xff"), false).unwrap();
+        let (item, label) = inline(&path("report.pdf", b"%PDF\xff"), false);
         let ClipItem::File(file) = item else {
             panic!("{item:?}")
         };
@@ -152,13 +176,22 @@ mod tests {
         assert_eq!(file.data, b"%PDF\xff");
         assert_eq!(label, "report.pdf (5 B)");
 
-        let ClipItem::File(file) = from_file(&notes, true).unwrap().0 else {
+        let ClipItem::File(file) = inline(&notes, true).0 else {
             panic!()
         };
         assert_eq!(
             (file.mime.as_str(), &file.data[..]),
             ("text/plain", &b"hi\n"[..])
         );
+
+        // Over the limit, even text is a file, sent in chunks.
+        let big = path("log.txt", &[b'x'; 101]);
+        let Content::Big(at, file) = from_file(&big, false, 100).unwrap() else {
+            panic!("not big")
+        };
+        assert_eq!(at, big);
+        assert_eq!((file.name.as_str(), file.size), ("log.txt", 101));
+        assert!(from_file(dir.path(), false, 100).is_err());
     }
 
     #[test]

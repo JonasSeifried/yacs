@@ -92,7 +92,7 @@ fn cipher(pairing: &Pairing) -> XChaCha20Poly1305 {
     XChaCha20Poly1305::new(&Key::from(*pairing.key.as_bytes()))
 }
 
-fn aad(channel_id: &ChannelId) -> [u8; 33] {
+pub(crate) fn aad(channel_id: &ChannelId) -> [u8; 33] {
     let mut aad = [0u8; 33];
     aad[0] = PROTOCOL_VERSION;
     aad[1..].copy_from_slice(channel_id.as_bytes());

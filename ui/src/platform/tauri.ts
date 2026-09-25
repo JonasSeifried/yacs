@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import type { TransferChanged } from "../shared/types";
 import type { Platform } from ".";
 
 export const tauriPlatform: Platform = {
@@ -17,6 +18,8 @@ export const tauriPlatform: Platform = {
   },
   copyClip: (id) => invoke("copy_clip", { id }),
   sendClipboard: (ttlSecs) => invoke("send_clipboard", { ttlSecs }),
+  transferStatus: () => invoke("transfer_status"),
+  cancelTransfer: () => invoke("cancel_transfer"),
   deleteClip: (id) => invoke("delete_clip", { id }),
   setDefaultTtl: (ttlSecs) => invoke("set_default_ttl", { ttlSecs }),
   phonePairing: () => invoke("phone_pairing"),
@@ -30,4 +33,5 @@ export const tauriPlatform: Platform = {
   onStatusChanged: (handler) => listen("status-changed", handler),
   onSettingsShown: (handler) => listen("settings-shown", handler),
   onClipsChanged: (handler) => listen("clips-changed", handler),
+  onTransferChanged: (handler) => listen<TransferChanged>("transfer-changed", (e) => handler(e.payload)),
 };

@@ -20,6 +20,9 @@ export default defineConfig(({ mode }) => {
       strictPort: true,
       proxy: { "/api": process.env.YACS_DEV_RELAY ?? "http://127.0.0.1:8080" },
     },
+    // Module workers: the upload and download workers load the WASM core,
+    // whose glue finds its .wasm file through `import.meta.url`.
+    worker: { format: "es" },
     build: {
       target: "es2022",
       outDir: web ? "dist/web" : "dist/desktop",

@@ -233,6 +233,97 @@ fn access_token_is_sent_and_enforced() {
         .success();
 }
 
+/// Big files go in chunks, and neither side holds them in memory.
+#[test]
+fn big_files_stream_through_the_relay() {
+    const SIZE: usize = 200 * 1024 * 1024;
+    let relay = relay(&[]);
+    // A saved pairing: with a phrase, Argon2id's 64 MiB would be the peak.
+    saved(&relay, &["pair"])
+        .write_stdin(pair_link(&relay, None))
+        .assert()
+        .success();
+    let dir = TempDir::new().unwrap();
+    let big = dir.path().join("disk.img");
+    // Not all the same byte, so misplaced chunks would show.
+    let block: Vec<u8> = (0..1024 * 1024).map(|i: u32| (i % 253) as u8).collect();
+    let mut data = Vec::with_capacity(SIZE);
+    for i in 0..SIZE / block.len() {
+        data.extend_from_slice(&block);
+        data[i * block.len()] = i as u8;
+    }
+    std::fs::write(&big, &data).unwrap();
+
+    let sent = measured(&relay, &["send", big.to_str().unwrap()]);
+    assert!(sent.starts_with("sent disk.img (209.7 MB)"), "{sent}");
+
+    let list = stdout(&mut saved(&relay, &["list"]));
+    assert!(list.contains("209.7 MB"), "{list}");
+
+    let out = dir.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let received = measured(&relay, &["recv", "-o", out.to_str().unwrap()]);
+    assert!(received.contains("saved"), "{received}");
+    assert!(std::fs::read(out.join("disk.img")).unwrap() == data);
+    assert!(!out.join("disk.img.part").exists());
+
+    // Piped, as with small files.
+    let piped = saved(&relay, &["recv"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .len();
+    assert_eq!(piped, SIZE);
+}
+
+/// Runs `yacs` with the saved pairing, checks it succeeded and peaked below
+/// 50 MiB of memory, and returns its stderr.
+// On Unix, `wait4` reaps the child: its rusage is the point.
+#[cfg_attr(unix, allow(clippy::zombie_processes))]
+fn measured(relay: &Relay, args: &[&str]) -> String {
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_yacs"))
+        .env_clear()
+        .env("YACS_CONFIG", relay.home.path().join("cli.json"))
+        .env("YACS_DEVICE_NAME", "e2e")
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut stderr, &mut text).unwrap();
+        text
+    });
+
+    #[cfg(unix)]
+    {
+        let pid = child.id() as libc::pid_t;
+        let mut status = 0;
+        let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+        assert_eq!(unsafe { libc::wait4(pid, &mut status, 0, &mut usage) }, pid);
+        let stderr = reader.join().unwrap();
+        assert!(
+            libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+            "{args:?} failed: {stderr}"
+        );
+        // Bytes on macOS, KiB on Linux.
+        let peak = match cfg!(target_os = "macos") {
+            true => usage.ru_maxrss as u64,
+            false => usage.ru_maxrss as u64 * 1024,
+        };
+        assert!(peak < 50 << 20, "{args:?} peaked at {} MiB", peak >> 20);
+        stderr
+    }
+    #[cfg(not(unix))]
+    {
+        assert!(child.wait().unwrap().success());
+        reader.join().unwrap()
+    }
+}
+
 #[test]
 fn info_shows_server_limits() {
     let relay = relay(&["--max-ttl", "7d"]);
@@ -244,6 +335,10 @@ fn info_shows_server_limits() {
     assert!(info.contains("default ttl  15m"), "{info}");
     assert!(info.contains("max ttl      7d"), "{info}");
     assert!(info.contains("history      50 clips"), "{info}");
+    assert!(
+        info.contains("big files    yes, in chunks of 4.2 MB"),
+        "{info}"
+    );
 }
 
 #[test]

@@ -5,7 +5,10 @@ export interface ClipMeta {
   id: string;
   created_at_ms: number;
   expires_at_ms: number;
+  /** Everything stored, chunks included. */
   size: number;
+  /** The files are stored as chunks next to the clip, which stays small. */
+  chunked?: boolean;
 }
 
 /** A decrypted clip, as the desktop's `ClipView` (Rust) shows it. */
@@ -50,6 +53,30 @@ export interface ServerConfig {
   max_clips: number;
   /** Missing from relays before 0.2.0. */
   version?: string;
+  /** Set when the relay takes big files as chunks (0.3.0 and later). */
+  chunked?: { max_chunk_bytes: number };
+}
+
+/** A big upload or download running in the background (desktop). */
+export interface Transfer {
+  direction: "upload" | "download";
+  /** "disk.iso" or "3 files". */
+  label: string;
+  done: number;
+  total: number;
+}
+
+/** The desktop's `transfer-changed` event. */
+export interface TransferChanged {
+  transfer: Transfer | null;
+  /** Set once, when a transfer ends. */
+  finished: { direction: Transfer["direction"]; ok: boolean; message: string } | null;
+}
+
+/** What `sendClipboard` did: sent a clip, or started uploading big files. */
+export interface Sent {
+  clip: ClipView | null;
+  upload: Transfer | null;
 }
 
 export type Os = "macos" | "windows" | "linux";
@@ -109,7 +136,16 @@ export type ClipItem =
   | { Html: string }
   | { Rtf: string }
   | { Image: { mime: string; data: Uint8Array } }
-  | { File: { name: string; mime: string; data: Uint8Array } };
+  | { File: { name: string; mime: string; data: Uint8Array } }
+  | { Stream: StreamInfo };
+
+/** `yacs_core::Stream`: files too big for the clip, stored as chunks. */
+export interface StreamInfo {
+  salt: Uint8Array;
+  /** Plaintext bytes per chunk. */
+  chunk_size: number;
+  files: { name: string; mime: string; size: number }[];
+}
 
 /** `yacs_core::Clip`: a decrypted clip with every format it carries. */
 export interface Clip {
