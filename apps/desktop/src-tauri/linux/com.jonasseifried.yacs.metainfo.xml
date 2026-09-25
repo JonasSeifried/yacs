@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metadata: what software centers (GNOME Software, KDE Discover,
+     App Center) show for the installed app, e.g. its license and links. -->
+<component type="desktop-application">
+  <id>com.jonasseifried.yacs</id>
+  <name>YACS</name>
+  <summary>End-to-end encrypted clipboard sync</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-only</project_license>
+  <developer id="com.jonasseifried">
+    <name>Jonas Seifried</name>
+  </developer>
+  <description>
+    <p>
+      Yet Another Clipboard Service: copy on one device, paste on another.
+      End-to-end encrypted, self-hosted, no accounts.
+    </p>
+    <p>
+      A shortcut opens a Spotlight-style panel that sends your clipboard or
+      copies a clip back, with every format it had (text, HTML, RTF, images).
+      Clips go through a relay you host, which stores them encrypted until
+      they expire and can't read them.
+    </p>
+  </description>
+  <launchable type="desktop-id">YACS.desktop</launchable>
+  <url type="homepage">https://github.com/JonasSeifried/yacs</url>
+  <url type="vcs-browser">https://github.com/JonasSeifried/yacs</url>
+  <url type="bugtracker">https://github.com/JonasSeifried/yacs/issues</url>
+  <categories>
+    <category>Utility</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+</component>

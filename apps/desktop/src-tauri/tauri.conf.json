@@ -24,13 +24,37 @@
     "license": "AGPL-3.0-only",
     "licenseFile": "../../../LICENSE",
     "shortDescription": "End-to-end encrypted clipboard sync",
+    "longDescription": "Copy on one device, paste on another. End-to-end encrypted, self-hosted, no accounts.",
+    "publisher": "Jonas Seifried",
+    "copyright": "Copyright © 2026 Jonas Seifried",
+    "homepage": "https://github.com/JonasSeifried/yacs",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/share/doc/yacs/copyright": "linux/copyright",
+          "/usr/share/doc/yacs/LICENSE": "../../../LICENSE",
+          "/usr/share/metainfo/com.jonasseifried.yacs.metainfo.xml": "linux/com.jonasseifried.yacs.metainfo.xml"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/share/licenses/yacs/LICENSE": "../../../LICENSE",
+          "/usr/share/metainfo/com.jonasseifried.yacs.metainfo.xml": "linux/com.jonasseifried.yacs.metainfo.xml"
+        }
+      },
+      "appimage": {
+        "files": {
+          "/usr/share/metainfo/com.jonasseifried.yacs.metainfo.xml": "linux/com.jonasseifried.yacs.metainfo.xml"
+        }
+      }
+    }
   },
   "plugins": {
     "updater": {
