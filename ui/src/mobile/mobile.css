@@ -424,3 +424,10 @@ button.icon {
 .transfer .small {
   margin: 0;
 }
+
+.update {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}

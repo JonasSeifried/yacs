@@ -151,6 +151,7 @@ pub async fn send(
     device_name: String,
     items: Vec<ClipItem>,
     ttl: Duration,
+    progress: Option<Arc<dyn Fn(u64, u64) + Send + Sync>>,
 ) -> Result<Arc<Entry>, String> {
     let payload = Payload::Clip(Clip {
         created_at_ms: now_ms(),
@@ -158,7 +159,7 @@ pub async fn send(
         items,
     });
     let meta = client
-        .push(&payload, Some(ttl))
+        .push_reporting(&payload, Some(ttl), progress)
         .await
         .map_err(|e| e.to_string())?;
     let Payload::Clip(clip) = payload;
@@ -421,15 +422,23 @@ mod tests {
 
         let cache = Mutex::new(ClipCache::new(CACHE_BYTES));
         let items = vec![ClipItem::Text("hi".into())];
+        let reported = Arc::new(Mutex::new(Vec::new()));
+        let progress = {
+            let reported = reported.clone();
+            Arc::new(move |done, total| reported.lock().unwrap().push((done, total)))
+        };
         let sent = send(
             &client,
             &cache,
             "PC".into(),
             items.clone(),
             Duration::from_secs(60),
+            Some(progress),
         )
         .await
         .unwrap();
+        let reported = reported.lock().unwrap().clone();
+        assert_eq!(reported.last(), Some(&(sent.meta.size, sent.meta.size)));
         assert_eq!(sent.clip.items, items);
         assert!(sent.meta.expires_at_ms - sent.meta.created_at_ms <= 60_000);
 

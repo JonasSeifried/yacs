@@ -45,8 +45,13 @@ export function guessDeviceName(ua = navigator.userAgent): string {
  * storage, so a pairing made here doesn't carry over to one.
  */
 export function isIosBrowserTab(ua = navigator.userAgent): boolean {
-  const ios = /iPad|iPhone/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const ios = isIos(ua);
   const standalone =
     (navigator as { standalone?: boolean }).standalone === true || matchMedia("(display-mode: standalone)").matches;
   return ios && !standalone;
+}
+
+/** iPhone and iPad, including iPads that claim to be a Mac. */
+export function isIos(ua = navigator.userAgent): boolean {
+  return /iPad|iPhone/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }

@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { TransferChanged } from "../shared/types";
 import type { Platform } from ".";
@@ -17,7 +17,11 @@ export const tauriPlatform: Platform = {
     return new Blob([bytes]);
   },
   copyClip: (id) => invoke("copy_clip", { id }),
-  sendClipboard: (ttlSecs) => invoke("send_clipboard", { ttlSecs }),
+  sendClipboard: (ttlSecs, onProgress) => {
+    const channel = new Channel<{ done: number; total: number }>();
+    channel.onmessage = ({ done, total }) => onProgress(done, total);
+    return invoke("send_clipboard", { ttlSecs, onProgress: channel });
+  },
   transferStatus: () => invoke("transfer_status"),
   cancelTransfer: () => invoke("cancel_transfer"),
   deleteClip: (id) => invoke("delete_clip", { id }),

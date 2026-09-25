@@ -31,23 +31,52 @@ export async function relayRequest(
     throw new RelayError("Can't reach the relay. Check your connection.", true);
   }
   if (res.ok || okStatuses.includes(res.status)) return res;
-  const transient = res.status >= 500 || res.status === 408;
-  switch (res.status) {
+  throw relayError(res.status, await res.text(), res.statusText);
+}
+
+function relayError(status: number, body: string, statusText = ""): RelayError {
+  switch (status) {
     case 401:
-      throw new RelayError("The relay rejected the access token.", false, 401);
+      return new RelayError("The relay rejected the access token.", false, 401);
     case 413:
-      throw new RelayError("This clip is too large for the relay.", false, 413);
+      return new RelayError("This clip is too large for the relay.", false, 413);
     case 507:
-      throw new RelayError("The relay's storage is full.", false, 507);
+      return new RelayError("The relay's storage is full.", false, 507);
   }
-  const body = await res.text();
   let message = body;
   try {
     message = JSON.parse(body).error ?? body;
   } catch {
     // not JSON
   }
-  throw new RelayError(`Relay error ${res.status}: ${message || res.statusText}`, transient, res.status);
+  const transient = status >= 500 || status === 408;
+  return new RelayError(`Relay error ${status}: ${message || statusText}`, transient, status);
+}
+
+/**
+ * POSTs `body` like `relayRequest`, reporting how much of it went out:
+ * `fetch` can't, `XMLHttpRequest` can. Resolves to the response text.
+ */
+export function relayUpload(
+  url: string,
+  token: string | null,
+  body: Uint8Array<ArrayBuffer>,
+  onProgress: (sent: number, total: number) => void,
+  signal: AbortSignal,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("content-type", "application/octet-stream");
+    if (token) xhr.setRequestHeader("authorization", `Bearer ${token}`);
+    xhr.upload.onprogress = (e) => onProgress(e.loaded, e.total || body.length);
+    xhr.onload = () =>
+      xhr.status >= 200 && xhr.status < 300 ? resolve(xhr.responseText) : reject(relayError(xhr.status, xhr.responseText, xhr.statusText));
+    xhr.onerror = () => reject(new RelayError("Can't reach the relay. Check your connection.", true));
+    xhr.onabort = () => reject(new DOMException("Sending cancelled.", "AbortError"));
+    signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    xhr.send(body);
+  });
 }
 
 /** Attempts per chunk. With the backoff below, about four minutes of trying. */

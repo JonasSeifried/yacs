@@ -3,6 +3,7 @@
 // files are saved or shared instead.
 
 import { isImageMime } from "../shared/clip";
+import { isIos } from "./link";
 import type { Clip, ClipItem } from "../shared/types";
 
 const CLIPBOARD_NEEDS_HTTPS =
@@ -103,18 +104,21 @@ export function savable(clip: Clip, name: string): File[] {
 }
 
 /**
- * Share sheet where available (save to Photos or Files, send to an app),
- * else downloads. Resolves to whether the share sheet is done with them.
+ * On iOS the share sheet (it's how you save to Photos or Files), elsewhere a
+ * download, which is what Android users expect; Chrome on Android also
+ * refuses to share many file types ("Permission denied"), and then it's a
+ * download too. Resolves to whether the share sheet is done with them.
  */
 export async function shareFiles(files: File[]): Promise<boolean> {
   if (files.length === 0) return true;
-  if (navigator.canShare?.({ files })) {
+  if (isIos() && navigator.canShare?.({ files })) {
     try {
       await navigator.share({ files });
+      return true;
     } catch (e) {
-      if (!(e instanceof DOMException && e.name === "AbortError")) throw e;
+      if (e instanceof DOMException && e.name === "AbortError") return true;
+      if (!(e instanceof DOMException && e.name === "NotAllowedError")) throw e;
     }
-    return true;
   }
   for (const file of files) {
     const url = URL.createObjectURL(file);

@@ -6,11 +6,12 @@
 import init, { Pairing, newStream, generatePhrase as wasmGeneratePhrase } from "../wasm/yacs";
 import type { DownloadMessage, DownloadMode, DownloadRequest } from "../mobile/download.worker";
 import { OPFS_DIR } from "../mobile/download.worker";
+import { isIos } from "../mobile/link";
 import type { UploadMessage, UploadRequest } from "../mobile/upload.worker";
 import { SseParser } from "../shared/sse";
 import { chunkSizeFor } from "../shared/stream";
 import type { ChannelEvent, Clip, ClipItem, ClipMeta, ClipView, ServerConfig, StreamInfo } from "../shared/types";
-import { API, relayRequest } from "./relay";
+import { API, relayRequest, relayUpload } from "./relay";
 
 const STORAGE_KEY = "yacs.pairing";
 /** The relay sends a keep-alive every 20 s; this much silence means the connection is dead. */
@@ -108,9 +109,18 @@ export class WebClient {
       id: res.headers.get("x-yacs-clip-id") ?? id,
       created_at_ms: Number(res.headers.get("x-yacs-created-at")),
       expires_at_ms: Number(res.headers.get("x-yacs-expires-at")),
-      size: envelope.length,
+      // Chunks included; relays before 0.3.0 don't say.
+      size: Number(res.headers.get("x-yacs-size") ?? envelope.length),
+      chunked: res.headers.get("x-yacs-chunked") === "1",
     };
-    const clip = (await this.pairing).open(envelope) as Clip;
+    let clip: Clip;
+    try {
+      clip = (await this.pairing).open(envelope) as Clip;
+    } catch (e) {
+      // A kind of clip this build doesn't know yet.
+      if (String(e).includes("malformed")) throw new Error("This clip needs a newer YACS. Close and reopen the app to update it.");
+      throw e;
+    }
     return this.remember(meta, clip);
   }
 
@@ -212,13 +222,19 @@ export class WebClient {
     }
   }
 
-  async send(items: ClipItem[], ttlSecs: number): Promise<Decrypted> {
+  /** In one request; `onProgress` hears how much of it went out. */
+  async send(items: ClipItem[], ttlSecs: number, onProgress?: OnProgress, signal?: AbortSignal): Promise<Decrypted> {
     const clip: Clip = { created_at_ms: Date.now(), device_name: this.stored.deviceName, items };
-    const envelope = (await this.pairing).seal(clip);
-    const res = await this.request(`${await this.clipsUrl()}?ttl=${Math.max(1, Math.round(ttlSecs))}`, {
+    const envelope = (await this.pairing).seal(clip) as Uint8Array<ArrayBuffer>;
+    const url = `${await this.clipsUrl()}?ttl=${Math.max(1, Math.round(ttlSecs))}`;
+    if (onProgress) {
+      const body = await relayUpload(url, this.stored.token, envelope, onProgress, signal ?? new AbortController().signal);
+      return this.remember(JSON.parse(body), clip);
+    }
+    const res = await this.request(url, {
       method: "POST",
       headers: { "content-type": "application/octet-stream" },
-      body: envelope as Uint8Array<ArrayBuffer>,
+      body: envelope,
     });
     return this.remember(await res.json(), clip);
   }
@@ -288,10 +304,6 @@ function downloadMode(): DownloadMode {
 
 function hasOpfs(): boolean {
   return typeof navigator.storage?.getDirectory === "function";
-}
-
-export function isIos(ua = navigator.userAgent): boolean {
-  return /iPad|iPhone/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
 }
 
 /**

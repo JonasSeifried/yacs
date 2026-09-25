@@ -17,10 +17,20 @@ import { inlineFileLimit, streamTotal } from "../shared/stream";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
 import type { ClipItem, ClipMeta, ServerConfig } from "../shared/types";
 import { canCopy, canSave, copyClip, fileItem, pick, readClipboard, savable, shareFiles } from "./clipboard";
-import { type PairLink, forgetPairLink, guessDeviceName, isIosBrowserTab, pairLinkFromCode, parsePairLink } from "./link";
+import {
+  type PairLink,
+  forgetPairLink,
+  guessDeviceName,
+  isIos,
+  isIosBrowserTab,
+  pairLinkFromCode,
+  parsePairLink,
+} from "./link";
 import { canScan, qrDecoder } from "./qr";
 
 const TTL_KEY = "yacs.ttl";
+/** Sends bigger than this show a progress bar; smaller ones are over in a blink. */
+const PROGRESS_BYTES = 256 * 1024;
 /** While the app is open without a live connection, look for new clips this often. */
 const POLL_MS = 10_000;
 const LIVE_RETRY_MIN_MS = 1_000;
@@ -341,9 +351,11 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
   const [settings, setSettings] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [upload, setUpload] = useState<Progress | null>(null);
+  const [drafted, setDrafted] = useState(false);
+  const outdated = useOutdated(config, upload === null && !drafted);
   const requested = useRef(new Set<string>());
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  useWakeLock(upload !== null);
+  useTransfer(upload !== null);
 
   // Files a closed app downloaded but never shared.
   useEffect(() => {
@@ -417,20 +429,22 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
     localStorage.setItem(TTL_KEY, String(secs));
   };
 
-  const send = async (items: ClipItem[], bigFiles: File[] = []) => {
-    let sent: Decrypted;
-    if (bigFiles.length && config) {
-      const controller = new AbortController();
-      setUpload({ done: 0, total: 0, cancel: () => controller.abort() });
-      try {
-        const progress = (done: number, total: number) => setUpload((u) => u && { ...u, done, total });
-        sent = await client.sendBig(items, bigFiles, ttl, config, progress, controller.signal);
-      } finally {
-        setUpload(null);
-      }
-    } else {
-      sent = await client.send(items, ttl);
+  /** Shows the progress bar while `work` runs. */
+  const withProgress = async (work: (progress: (done: number, total: number) => void, signal: AbortSignal) => Promise<Decrypted>) => {
+    const controller = new AbortController();
+    setUpload({ done: 0, total: 0, cancel: () => controller.abort() });
+    try {
+      return await work((done, total) => setUpload((u) => u && { ...u, done, total }), controller.signal);
+    } finally {
+      setUpload(null);
     }
+  };
+
+  const send = async (items: ClipItem[], bigFiles: File[] = []) => {
+    const sent =
+      bigFiles.length && config ? await withProgress((progress, signal) => client.sendBig(items, bigFiles, ttl, config, progress, signal))
+      : itemBytes(items) > PROGRESS_BYTES ? await withProgress((progress, signal) => client.send(items, ttl, progress, signal))
+      : await client.send(items, ttl);
     const id = sent.view.meta.id;
     requested.current.add(id);
     setLoaded((l) => ({ ...l, [id]: { state: "ok", clip: sent } }));
@@ -458,11 +472,21 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
         </button>
       </header>
 
+      {outdated && (
+        <div className="card update">
+          <span>There's a new version of YACS.</span>
+          <button className="primary" onClick={() => location.reload()}>
+            Reload
+          </button>
+        </div>
+      )}
+
       <Composer
         ttl={ttl}
         ttlChoices={ttlChoices(ttl, config?.max_ttl_secs)}
         config={config}
         upload={upload}
+        onDrafted={setDrafted}
         onTtl={changeTtl}
         onSend={send}
         onError={(text) => notify("error", text)}
@@ -509,6 +533,8 @@ function Composer(props: {
   /** The relay's limits, once known. */
   config: ServerConfig | null;
   upload: Progress | null;
+  /** Whether there's something typed or picked, which a reload would lose. */
+  onDrafted: (drafted: boolean) => void;
   onTtl: (secs: number) => void;
   /** `bigFiles` go as chunks. */
   onSend: (items: ClipItem[], bigFiles?: File[]) => Promise<void>;
@@ -566,6 +592,8 @@ function Composer(props: {
   // Until the relay's limits are known, it's unclear whether files go as chunks.
   const waiting = files.length > 0 && props.config === null;
   const drafted = text.trim() !== "" || files.length > 0;
+  const { onDrafted } = props;
+  useEffect(() => onDrafted(drafted), [drafted, onDrafted]);
   const textItems = (): ClipItem[] => (text.trim() ? [{ Text: text }] : []);
   return (
     <section className="card composer">
@@ -673,7 +701,7 @@ function ClipCard(props: {
   const [download, setDownload] = useState<Progress | null>(null);
   /** Downloaded files waiting for a tap to share them (iOS wants a fresh one). */
   const [ready, setReady] = useState<File[] | null>(null);
-  useWakeLock(download !== null);
+  useTransfer(download !== null);
   const ago = `${formatDuration(now - meta.created_at_ms)} ago`;
   const expires = `expires in ${formatDuration(meta.expires_at_ms - now)}`;
   const decrypted = loaded?.state === "ok" ? loaded.clip : null;
@@ -748,7 +776,11 @@ function ClipCard(props: {
                 Keep this screen open until the download finishes.
               </TransferProgress>
             )}
-            {ready && <p className="muted small">Downloaded. Tap Share to save it to Files or Photos, or send it to an app.</p>}
+            {ready && (
+              <p className="muted small">
+                {isIos() ? "Downloaded. Tap Share to save it to Files or Photos, or send it to an app." : "Downloaded. Tap Save to keep it."}
+              </p>
+            )}
           </div>
           <div className="clip-actions">
             {(!decrypted || canCopy(decrypted.clip)) && (
@@ -765,7 +797,10 @@ function ClipCard(props: {
                   : shareFiles(savable(decrypted.clip, `yacs-${meta.id}`)).catch((e) => props.onError(errorText(e)))
                 }
               >
-                {ready ? "Share" : stream ? `Download ${formatSize(streamTotal(stream))}` : "Save / Share"}
+                {ready ? (isIos() ? "Share" : "Save")
+                : stream ? `Download ${formatSize(streamTotal(stream))}`
+                : isIos() ? "Save / Share"
+                : "Save"}
               </button>
             )}
             <button className="ghost danger" onClick={props.onDelete}>
@@ -880,8 +915,21 @@ function TransferProgress(props: { verb: string; progress: Progress; children: R
   );
 }
 
-/** Keeps the screen on while `active`: phones pause pages whose screen turns off. */
-function useWakeLock(active: boolean) {
+/** Uploads and downloads running now; the app doesn't reload itself during one. */
+let transfers = 0;
+
+/**
+ * For a transfer while `active`: counts it, and keeps the screen on, since
+ * phones pause pages whose screen turns off.
+ */
+function useTransfer(active: boolean) {
+  useEffect(() => {
+    if (!active) return;
+    transfers++;
+    return () => {
+      transfers--;
+    };
+  }, [active]);
   useEffect(() => {
     if (!active || !("wakeLock" in navigator)) return;
     let lock: WakeLockSentinel | null = null;
@@ -903,6 +951,46 @@ function useWakeLock(active: boolean) {
       lock?.release().catch(() => {});
     };
   }, [active]);
+}
+
+/**
+ * Whether the relay runs another version than this page: the phone kept an
+ * old copy of the app (a home screen app can stay open for days), which may
+ * not read newer clips. Reloads by itself once per version when `idle` and
+ * on screen; otherwise the page offers a Reload button.
+ */
+function useOutdated(config: ServerConfig | null, idle: boolean): boolean {
+  const relay = config?.version;
+  const outdated = relay !== undefined && relay !== __APP_VERSION__;
+  useEffect(() => {
+    if (!outdated || !idle || import.meta.env.DEV) return;
+    const key = "yacs.reloadedFor";
+    const reload = () => {
+      if (document.visibilityState !== "visible" || transfers > 0) return;
+      try {
+        // Once: if the reload didn't help (a cache in the way), don't loop.
+        if (sessionStorage.getItem(key) === relay) return;
+        sessionStorage.setItem(key, relay);
+      } catch {
+        return;
+      }
+      location.reload();
+    };
+    reload();
+    document.addEventListener("visibilitychange", reload);
+    return () => document.removeEventListener("visibilitychange", reload);
+  }, [outdated, idle, relay]);
+  return outdated;
+}
+
+/** Roughly what a clip's items weigh on the wire. */
+function itemBytes(items: ClipItem[]): number {
+  return items.reduce((sum, item) => {
+    if ("Image" in item) return sum + item.Image.data.length;
+    if ("File" in item) return sum + item.File.data.length;
+    if ("Text" in item) return sum + item.Text.length;
+    return sum;
+  }, 0);
 }
 
 function useObjectUrl(blob: Blob | null) {

@@ -12,6 +12,8 @@ type Notice = { kind: "ok" | "error"; text: string };
 
 /** How long "Sent" stays up before Spotlight gets out of the way. */
 const SENT_HIDE_MS = 5000;
+/** Sends bigger than this show a progress bar; smaller ones are over in a blink. */
+const SENDING_BAR_BYTES = 256 * 1024;
 
 export function Spotlight() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -24,6 +26,8 @@ export function Spotlight() {
   const [busy, setBusy] = useState(false);
   /** A big upload or download running in the background. */
   const [transfer, setTransfer] = useState<Transfer | null>(null);
+  /** How far sending the clipboard got, once it's big enough to show. */
+  const [sending, setSending] = useState<{ done: number; total: number } | null>(null);
   /** Just sent: another ⌘V would send the same clipboard again, so it closes instead. */
   const [sent, setSent] = useState(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -140,7 +144,10 @@ export function Spotlight() {
     setBusy(true);
     setNotice({ kind: "ok", text: "Encrypting and sending…" });
     try {
-      const { clip, upload } = await platform.sendClipboard(ttl);
+      const { clip, upload } = await platform.sendClipboard(ttl, (done, total) => {
+        if (total > SENDING_BAR_BYTES) setSending({ done, total });
+      });
+      setSending(null);
       if (!clip) {
         // Big files: they upload in the background and show up when done.
         setTransfer(upload);
@@ -157,6 +164,7 @@ export function Spotlight() {
       setSent(true);
       hideAfter(SENT_HIDE_MS);
     } catch (e) {
+      setSending(null);
       setNotice({ kind: "error", text: String(e) });
       setBusy(false);
     }
@@ -285,8 +293,12 @@ export function Spotlight() {
         ) : null}
       </section>
 
-      {transfer && <TransferBar transfer={transfer} />}
-      {notice && <div className={`notice ${notice.kind}`}>{notice.text}</div>}
+      {transfer && <TransferBar transfer={transfer} onCancel={() => platform.cancelTransfer()} />}
+      {sending ? (
+        <TransferBar transfer={{ direction: "upload", label: "clipboard", ...sending }} />
+      ) : (
+        notice && <div className={`notice ${notice.kind}`}>{notice.text}</div>
+      )}
 
       <footer className="panel-footer">
         {paired && (
@@ -448,7 +460,7 @@ function FilesPreview({ id, files, chunked }: { id: string; files: FileInfo[]; c
   );
 }
 
-function TransferBar({ transfer }: { transfer: Transfer }) {
+function TransferBar({ transfer, onCancel }: { transfer: Transfer; onCancel?: () => void }) {
   const { direction, label, done, total } = transfer;
   const percent = total > 0 ? Math.floor((done / total) * 100) : 100;
   const verb = direction === "upload" ? "Sending" : "Downloading";
@@ -461,9 +473,11 @@ function TransferBar({ transfer }: { transfer: Transfer }) {
         <span className="muted">
           {percent}% · {formatSize(done)} of {formatSize(total)}
         </span>
-        <button className="link" onClick={() => platform.cancelTransfer()} tabIndex={-1}>
-          Cancel
-        </button>
+        {onCancel && (
+          <button className="link" onClick={onCancel} tabIndex={-1}>
+            Cancel
+          </button>
+        )}
       </div>
       <div className="transfer-track">
         <div className="transfer-fill" style={{ width: `${percent}%` }} />

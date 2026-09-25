@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tauri::ipc::Response;
+use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 use yacs_client::{Client, LocalFiles, stream_of};
@@ -321,6 +321,7 @@ pub async fn send_clipboard(
     app: AppHandle,
     state: State<'_, AppState>,
     ttl_secs: u64,
+    on_progress: Channel<SendProgress>,
 ) -> CmdResult<Sent> {
     let client = client(&state)?;
     let config = client.config().await.map_err(|e| e.to_string())?;
@@ -356,10 +357,38 @@ pub async fn send_clipboard(
                 .map_err(|e| e.to_string())??
         }
     };
-    let entry = clips::send(&client, &state.clips, device_name, items, ttl).await?;
+    let progress = reporter(on_progress);
+    let entry = clips::send(
+        &client,
+        &state.clips,
+        device_name,
+        items,
+        ttl,
+        Some(progress),
+    )
+    .await?;
     Ok(Sent {
         clip: Some(ClipView::from(&*entry)),
         upload: None,
+    })
+}
+
+#[derive(Clone, Serialize)]
+pub struct SendProgress {
+    done: u64,
+    total: u64,
+}
+
+/// Progress to Spotlight, ten times a second at most (and when it's done).
+fn reporter(channel: Channel<SendProgress>) -> Arc<dyn Fn(u64, u64) + Send + Sync> {
+    let last = std::sync::Mutex::new(None::<std::time::Instant>);
+    Arc::new(move |done, total| {
+        let mut last = last.lock().expect("lock poisoned");
+        if done < total && last.is_some_and(|t| t.elapsed() < Duration::from_millis(100)) {
+            return;
+        }
+        *last = Some(std::time::Instant::now());
+        let _ = channel.send(SendProgress { done, total });
     })
 }
 

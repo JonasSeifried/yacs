@@ -7,6 +7,7 @@ mod sse;
 pub use chunks::{LocalFiles, Progress, Sink, stream_of};
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::header::{self, HeaderMap};
@@ -111,11 +112,39 @@ impl Client {
 
     /// Encrypt and upload. `ttl: None` uses the server default; the server clamps it to its max.
     pub async fn push(&self, payload: &Payload, ttl: Option<Duration>) -> Result<ClipMeta> {
+        self.push_reporting(payload, ttl, None).await
+    }
+
+    /// Like [`push`](Self::push), telling `progress` how many bytes of the
+    /// upload went out, and of how many.
+    pub async fn push_reporting(
+        &self,
+        payload: &Payload,
+        ttl: Option<Duration>,
+        progress: Option<Arc<dyn Fn(u64, u64) + Send + Sync>>,
+    ) -> Result<ClipMeta> {
         let body = Envelope::seal(&self.pairing, payload)?.to_bytes();
+        let len = body.len();
+        let body = match progress {
+            None => reqwest::Body::from(body),
+            Some(progress) => {
+                // Handed out a piece at a time: each piece asked for means the
+                // one before it is on its way.
+                const PIECE: usize = 64 * 1024;
+                let bytes = bytes::Bytes::from(body);
+                let pieces = (0..len).step_by(PIECE).map(move |start| {
+                    let end = (start + PIECE).min(len);
+                    progress(end as u64, len as u64);
+                    Ok::<_, std::io::Error>(bytes.slice(start..end))
+                });
+                reqwest::Body::wrap_stream(futures_util::stream::iter(pieces))
+            }
+        };
         let mut req = self
             .http
             .post(self.clips_url.clone())
             .header(header::CONTENT_TYPE, ENVELOPE_CONTENT_TYPE)
+            .header(header::CONTENT_LENGTH, len)
             .body(body);
         if let Some(ttl) = ttl {
             req = req.query(&[("ttl", ttl.as_secs().max(1))]);

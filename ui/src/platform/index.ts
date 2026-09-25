@@ -32,8 +32,11 @@ export interface Platform {
    * big: they download in the background first (see `onTransferChanged`).
    */
   copyClip(id: string): Promise<boolean>;
-  /** Encrypts and sends what's on the clipboard right now; big files upload in the background. */
-  sendClipboard(ttlSecs: number): Promise<Sent>;
+  /**
+   * Encrypts and sends what's on the clipboard right now, telling
+   * `onProgress` how much went out; big files upload in the background.
+   */
+  sendClipboard(ttlSecs: number, onProgress: (done: number, total: number) => void): Promise<Sent>;
   /** The big upload or download in progress, if any. */
   transferStatus(): Promise<Transfer | null>;
   cancelTransfer(): Promise<void>;
