@@ -10,7 +10,6 @@ use crate::error::{Error, Result};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Payload {
     Clip(Clip),
-    // v2: P2pOffer { .. } for large-file transfers.
 }
 
 /// One copy action: every format the source clipboard offered for it.

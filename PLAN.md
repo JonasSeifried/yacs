@@ -1,13 +1,13 @@
 # YACS: Implementation Plan
 
-Self-hostable, end-to-end encrypted clipboard sync. Rust monorepo: Axum relay, Tauri v2 desktop, PWA for mobile (v1), native Tauri mobile (v2).
+Self-hostable, end-to-end encrypted clipboard sync. Rust monorepo: Axum relay, Tauri v2 desktop, PWA for mobile, native Tauri mobile later.
 
 ## 1. Decisions
 
 | Topic | Decision |
 | --- | --- |
 | Desktop v1 | macOS + Windows. Linux since 0.2.3 (AppImage, .deb, .rpm; on Wayland, bind `yacs-desktop --toggle` since global hotkeys are blocked there). |
-| Mobile | v1: PWA served by the relay. v2: Tauri mobile app with native clipboard plugins and share extensions. Both share one UI codebase. |
+| Mobile | Now: PWA served by the relay. Later: Tauri mobile app with native clipboard plugins and share extensions. Both share one UI codebase. |
 | Pairing | Shared phrase, focus on self-hosting. Low-cost hardening: the app generates the phrase by default, and Argon2id is used for key derivation. Accounts only if a public hosted version happens later. |
 | Hotkey UX | `CommandOrControl+Shift+Space` (⌘⇧Space on macOS, Ctrl+Shift+Space on Windows) opens Spotlight with a preview of the latest remote clip. `Ctrl+C` copies the preview to the local clipboard. `Ctrl+V` sends the local clipboard. `Esc` or losing focus closes it. |
 | Server model | Short history: each channel keeps every clip until its TTL expires (capped per channel). Reading doesn't delete, so 3+ devices work. |
@@ -21,7 +21,7 @@ yacs/
 ├─ Cargo.toml                  # workspace
 ├─ crates/
 │  ├─ yacs-core/               # protocol types + crypto. No OS/tokio deps, must build for wasm32
-│  ├─ yacs-client/             # HTTP client (reqwest), used by desktop + CLI (+ Tauri mobile in v2)
+│  ├─ yacs-client/             # HTTP client (reqwest), used by desktop + CLI (+ Tauri mobile later)
 │  ├─ yacs-server/             # Axum relay, also serves the PWA
 │  ├─ yacs-cli/                # `yacs`: servers and scripts (`yacs pair`, `yacs send FILE`, `yacs relay update`), Wayland fallback later
 │  └─ yacs-wasm/               # wasm-bindgen wrapper around yacs-core for the PWA
@@ -71,7 +71,6 @@ root   ── HKDF-SHA256(info="yacs/v1/key")                      → enc_key (
 // plaintext (serialized with postcard, binary, no base64 bloat)
 enum Payload {
     Clip(Clip),
-    // v2: P2pOffer { .. }  (large-file transfer handshake)
 }
 struct Clip {
     created_at_ms: i64,             // set by the sender (no clock in WASM core)
@@ -90,7 +89,7 @@ enum ClipItem {
 struct Envelope { version: u8, nonce: [u8; 24], ciphertext: Vec<u8> }
 ```
 - Cipher: **XChaCha20-Poly1305**. The 24-byte random nonce is safe to generate randomly, and the implementation is pure Rust, so it builds for WASM. AAD = `version || channel_id`.
-- The payload type sits **inside** the ciphertext, so the server only sees opaque bytes and their size. V2 signaling gets its own endpoint and does not need a visible `type` field.
+- The payload type sits **inside** the ciphertext, so the server only sees opaque bytes and their size. New kinds of payload never need a visible `type` field.
 - Default max size is 20 MB and configurable.
 
 ## 4. Relay server (`yacs-server`)
@@ -180,7 +179,7 @@ GET    /*                                             embedded PWA (rust-embed)
 
 ## 6. Mobile
 
-### v1: PWA (served by the relay)
+### PWA (served by the relay)
 - **Pairing via QR:** desktop Settings → *Pair another device* shows `https://your-server/#pair=v1.<channel id>.<key>[&token=…]`. It carries the *derived* pairing (`Pairing::to_secret` in `yacs-core`), not the phrase: the desktop never stores the phrase, and the phone skips Argon2id. Everything is in the URL fragment, which browsers never send, so it never reaches the server or its logs; the app removes it from the address bar as soon as it's read. The PWA can also scan the code itself (BarcodeDetector, or jsQR loaded on demand), which iOS needs: a home screen app has its own storage, so a pairing made in the browser tab doesn't carry over, and the camera app only opens the browser. Typing the phrase works too (Argon2id in WASM, about a second on a phone).
 - **Storage:** the pairing lives in `localStorage`. The page's CSP only runs scripts from the relay itself, so no third-party script can read it.
 - **HTTPS required** for the clipboard API, the service worker and installing. Over plain `http://` (except `localhost`) you can still type, pick images and receive; the desktop's QR dialog warns about it.
@@ -189,7 +188,7 @@ GET    /*                                             embedded PWA (rust-embed)
 - **Service worker:** caches only the app shell (hashed assets forever, the page network-first). It never touches `/api`, so nothing decrypted is ever cached.
 - **Build:** `yacs-wasm` via `wasm-pack` (`pnpm --filter @yacs/ui wasm`), then `vite build --mode web` into `ui/dist/web`, which `yacs-server` embeds with `rust-embed` (read from disk in debug builds). The desktop build is `--mode desktop` and doesn't need WASM.
 
-### v2: Tauri mobile
+### Later: Tauri mobile
 Same `ui/src/mobile` with the `tauri.ts` adapter. Rust reuses `yacs-core` + `yacs-client` directly (no WASM). Tauri's clipboard plugin is text-only on mobile, so rich formats need a small custom plugin: Swift `UIPasteboard` / Kotlin `ClipboardManager`. Adds an iOS Share Extension + Android share intent.
 
 | Capability | PWA | Tauri mobile + native plugin |
@@ -202,7 +201,65 @@ Same `ui/src/mobile` with the `tauri.ts` adapter. Rust reuses `yacs-core` + `yac
 | Background sync / notifications | ❌ (iOS) | ✅ push possible |
 | Distribution | a URL | store review |
 
-## 7. Roadmap
+## 7. Large files (chunked upload)
+
+Files through the relay (0.2.x) are one envelope each, held in memory on every side and capped by `YACS_MAX_SIZE` (20 MB). This is the next step: files of any size (multi-GB, phones included) through the same relay, never more than a few MB in memory anywhere. Direct device-to-device transfer (iroh, WebRTC) is dropped as overkill.
+
+**Naming:** we call this "v2" in chat, but it is **not** a 2.0 release; ship it as the normal next version.
+
+### Crypto (`yacs-core`, new `stream` module)
+The age payload construction (STREAM, Hoang–Reyhanitabar–Rogaway–Vizár), written directly on `chacha20poly1305` (already a dependency; no `aead-stream` crate, since we need random access by chunk index for parallel and retried uploads):
+- Per clip, the sender picks a random 32-byte `salt`. `file_key = HKDF-SHA256(ikm = channel key, salt, info = "yacs/v1/stream" || channel_id)`.
+- The clip's files are **concatenated into one stream** and cut into chunks of `chunk_size` plaintext bytes (**4 MiB**). Chunk `i` is ChaCha20-Poly1305 under `file_key` with nonce `i as 11-byte big-endian || last` (`last` = `0x01` on the final chunk, else `0x00`), AAD = `version || channel_id`. Ciphertext = chunk + 16-byte tag.
+- The final chunk may be short but is never empty (unless the whole stream is empty). Reordering fails (index in the nonce), truncation fails (last flag), mixing clips fails (key per salt). The receiver also checks the decrypted total against the header.
+- **Never re-encrypt chunk `i` of a salt with different data** (nonce reuse breaks ChaCha20-Poly1305). A restarted upload gets a new salt; resuming is only within the running process.
+- Shared test vectors for the stream, run native and wasm, like the existing ones.
+
+### Payload
+The clip itself stays a normal sealed envelope (the "header", small, fits the existing single-envelope route and limit). A new item describes the files in the stream:
+```rust
+ClipItem::StreamFile(StreamFile { name, mime, offset: u64, size: u64 })   // appended variant
+// plus, once per clip, the stream parameters:
+ClipItem::Stream(Stream { salt: [u8; 32], chunk_size: u32, total: u64 })
+```
+(Exact shape is up to the implementation; the constraint is append-only variants, see `payload.rs`.) Older clients can't decode it and show "Can't decrypt this clip", as with `File`.
+
+**Which path:** files whose total is at most `min(8 MiB, relay max_size)` keep using `ClipItem::File` in one envelope (instant previews, prefetch). Bigger ones are chunked when the relay supports it (`/config` gains `chunked: { max_chunk_bytes }`; absent = older relay → single envelope with its limit, as now).
+
+### Relay
+```
+POST   /api/v1/channels/{c}/uploads?ttl=…   body: header envelope; header Upload-Length: total ciphertext bytes
+                                            → 201 { id }   (quota reserved for Upload-Length now)
+PUT    /api/v1/channels/{c}/uploads/{id}/chunks/{i}   body: one chunk (≤ max_chunk_bytes + 16), idempotent
+GET    /api/v1/channels/{c}/uploads/{id}              → { received: [i, …] }   (retry what's missing)
+POST   /api/v1/channels/{c}/uploads/{id}/complete     → 201 ClipMeta   (all chunks present, sizes right; only now listed + `added` event)
+DELETE /api/v1/channels/{c}/uploads/{id}              abort
+GET    /api/v1/channels/{c}/clips/{id}                → the header envelope, as today
+GET    /api/v1/channels/{c}/clips/{id}/chunks/{i}     → one chunk (immutable, cacheable)
+```
+- Plain per-chunk PUTs (the S3 multipart model), not tus: simpler, parallel, and each retry is one small request.
+- Chunk handlers stream the body to a temp file (`Body::into_data_stream`), counting bytes, then rename; a route-specific limit instead of `DefaultBodyLimit`.
+- **Storage:** `data/{channel}/{ulid}.uploading/` (`header.bin`, `00000000`, …), renamed to `{ulid}.{expires_at_ms}.d/` on completion; the TTL starts then. The reaper also removes expired `.d` dirs and uploads idle for more than 24 h. `max_clips` counts completed clips (eviction removes the whole dir); at most 4 open uploads per channel.
+- `ClipMeta.size` is the total (header + chunks), so lists show the real size.
+- **Limits:** no per-file limit; the disk quota (`YACS_MAX_DISK`, checked against the reservation) is the only cap. `YACS_MAX_SIZE` keeps limiting single envelopes. The 2 GB default quota is low for this; decide with the user whether to raise the default.
+- **Proxies:** 4 MiB chunks pass Cloudflare (100 MB per request, 100 s per request) and our `deploy/nginx.conf` (`client_max_body_size 25m`). Document that a hand-written nginx config needs `client_max_body_size` ≥ 5m (its default is 1m).
+
+### Clients
+- **`yacs-client`:** `upload(files, ttl, progress)`: 3 chunks in flight, retry with backoff, resume missing chunks via `GET …/uploads/{id}`; `download(clip, file, writer, progress)` streaming chunk by chunk. Never the whole file in memory.
+- **CLI:** `yacs send big.iso` picks the chunked path by size, with a progress line on stderr; `yacs recv -o` streams to disk.
+- **Desktop:** ⌘V with big files uploads in the background with progress in Spotlight (it can hide; a finished upload shows up like any clip). Big clips are never prefetched: the preview shows names and sizes from the header; ↵ streams them into Downloads with progress, then puts them on the clipboard.
+- **PWA upload:** in a Web Worker: `file.slice()` → `arrayBuffer()` → WASM `seal_chunk` → `PUT` with a `Uint8Array` body (streaming request bodies don't work in Safari). Progress bar plus the hint **"Keep this screen open until the upload finishes"**: iOS pauses background pages; retries carry on when the page is visible again, a reload starts over. Android's share target receives big files too.
+- **PWA download:** a service worker route streams the decrypted file as a `Response` with `Content-Disposition: attachment` (Chrome; Safari since 15.4, reportedly broken in iOS 18.2–18.3). The key goes to the service worker per download via `postMessage`, never stored there. iOS fallback, chosen by user agent: a worker writes the decrypted file into OPFS (`createSyncAccessHandle`), then the page shares or downloads `getFile()`, and deletes it afterwards. Never build a multi-GB `Blob` in memory (iOS kills the tab). Unverified: whether OPFS-backed files stay out of RAM on iOS and whether service-worker downloads work from a home-screen app. **The user tests on iPhone and Android after the release.**
+
+### Order
+1. `yacs-core` stream + vectors (native + wasm).
+2. Relay routes, storage, reaper, quota reservation + integration tests (out-of-order and repeated chunks, `complete` with a missing chunk, stale-upload cleanup, eviction of chunked clips).
+3. `yacs-client` + CLI, with an e2e test sending a few hundred MB and checking memory stays bounded.
+4. Desktop send/receive with progress.
+5. PWA upload (worker + hint), then PWA download (Android/desktop browsers), then the iOS fallback.
+6. Docs (README limits, proxy note), release; then device testing by the user.
+
+## 8. Roadmap
 
 This reorders the original roadmap: crypto and the protocol come first, so the UI is built on a finished, tested core and nothing has to be retrofitted later.
 
@@ -214,16 +271,17 @@ This reorders the original roadmap: crypto and the protocol come first, so the U
 | **3: Desktop clipboard** ✅ (verified Mac ↔ PC) | Core UX | `clipboard-rs` multi-format read/write, history list + keyboard navigation, Ctrl+C / Ctrl+V / Del, TTL dropdown, sanitized preview | Rich text from Word/browser and screenshots round-trip between Mac and PC |
 | **4: PWA + release (v1.0)** ✅ (v0.1.1: phones pair via QR over HTTPS, relay on a VPS behind nginx, desktop self-update verified) | Mobile + ship | `yacs-wasm`, mobile UI, embedded PWA, QR pairing, Dockerfile + compose (Caddy or nginx), signed desktop builds, updater | A phone can pair via QR and copy/send; `docker compose up` works on a VPS |
 | **5: v1.x** | Breadth | ✅ SSE live updates (0.2.0) and the relay version in desktop Settings; ✅ CLI for servers: `yacs pair` saves the pairing (from the desktop's link or the phrase), `yacs send FILE`, static release binaries, `yacs update` (signed), `yacs relay update` (Docker compose); the desktop apps bundle `yacs` and put it on the PATH on request (macOS, Windows); ✅ Linux desktop (0.2.3); files through the relay, up to its size limit | |
-| **6: v2.0** | Native + big files | Tauri mobile with native clipboard plugins + share extensions; P2P large-file transfer | |
+| **6: Large files** | Any size through the relay | Chunked, streamed uploads and downloads on every client (section 7) | A multi-GB file goes phone ↔ desktop through the relay, memory stays flat |
+| **7: Native mobile** (later) | Tauri mobile | Native clipboard plugins + share extensions | |
 
-### Note on v2 P2P
-If mobile goes native in v2, consider **iroh** (Rust, QUIC, hole punching, self-hostable relay fallback) instead of raw WebRTC. WebRTC is mainly worth it when a *browser* has to take part (i.e. the PWA receiving big files). Also: WebRTC needs a TURN fallback when hole punching fails, and that puts bandwidth back on the server. Decide at the start of v2. The `Payload` enum already has room for it.
+### Note on P2P
+Direct device-to-device transfer (iroh or WebRTC) was considered for big files and dropped: chunked uploads through the relay (section 7) cover it without hole punching, TURN or both devices being online at once.
 
-## 8. Testing
+## 9. Testing
 - **core:** unit tests + fixed test vectors (phrase → channel_id/key/ciphertext), run against both the native and WASM builds so desktop and PWA can never derive different keys.
 - **server:** Axum integration tests with `tempfile` data dirs and a fake clock: TTL clamping, expiry, oldest-first eviction at `max_clips`, list ordering.
 - **e2e:** the CLI sends and receives against a real server in CI.
 - **manual matrix (Phase 3):** Word, Google Docs, Safari/Chrome, Notes, screenshots, on macOS and Windows.
 
-## 9. Open questions
+## 10. Open questions
 None right now. Settled: `YACS_MAX_CLIPS_PER_CHANNEL=50`, with a disk quota covering the worst case, and `7d` stays in the dropdown but only shows when a self-hoster raises `YACS_MAX_TTL`.
