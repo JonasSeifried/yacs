@@ -74,7 +74,9 @@ export function relayUpload(
       xhr.status >= 200 && xhr.status < 300 ? resolve(xhr.responseText) : reject(relayError(xhr.status, xhr.responseText, xhr.statusText));
     xhr.onerror = () => reject(new RelayError("Can't reach the relay. Check your connection.", true));
     xhr.onabort = () => reject(new DOMException("Sending cancelled.", "AbortError"));
-    signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    const abort = () => xhr.abort();
+    signal.addEventListener("abort", abort, { once: true });
+    xhr.onloadend = () => signal.removeEventListener("abort", abort);
     xhr.send(body);
   });
 }

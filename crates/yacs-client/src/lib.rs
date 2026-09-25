@@ -125,17 +125,17 @@ impl Client {
     ) -> Result<ClipMeta> {
         let body = Envelope::seal(&self.pairing, payload)?.to_bytes();
         let len = body.len();
-        let body = match progress {
+        let body = match progress.clone() {
             None => reqwest::Body::from(body),
             Some(progress) => {
                 // Handed out a piece at a time: each piece asked for means the
-                // one before it is on its way.
+                // ones before it are on their way. All of it is only once the
+                // relay answers.
                 const PIECE: usize = 64 * 1024;
                 let bytes = bytes::Bytes::from(body);
                 let pieces = (0..len).step_by(PIECE).map(move |start| {
-                    let end = (start + PIECE).min(len);
-                    progress(end as u64, len as u64);
-                    Ok::<_, std::io::Error>(bytes.slice(start..end))
+                    progress(start as u64, len as u64);
+                    Ok::<_, std::io::Error>(bytes.slice(start..(start + PIECE).min(len)))
                 });
                 reqwest::Body::wrap_stream(futures_util::stream::iter(pieces))
             }
@@ -150,7 +150,11 @@ impl Client {
             req = req.query(&[("ttl", ttl.as_secs().max(1))]);
         }
         let res = self.send(req).await?;
-        res.json().await.map_err(|_| Error::BadResponse)
+        let meta = res.json().await.map_err(|_| Error::BadResponse)?;
+        if let Some(progress) = progress {
+            progress(len as u64, len as u64);
+        }
+        Ok(meta)
     }
 
     /// Unexpired clips, newest first. Metadata only; nothing is decrypted.
