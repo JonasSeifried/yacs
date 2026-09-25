@@ -53,6 +53,7 @@ export interface Platform {
   installUpdate(): Promise<void>;
   hideSpotlight(): Promise<void>;
   openSettings(): Promise<void>;
+  hideSettings(): Promise<void>;
   /** Returns an unsubscribe function. */
   onSpotlightShown(handler: () => void): Promise<() => void>;
   onStatusChanged(handler: () => void): Promise<() => void>;

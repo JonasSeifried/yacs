@@ -33,6 +33,7 @@ export const tauriPlatform: Platform = {
   installUpdate: () => invoke("install_update"),
   hideSpotlight: () => invoke("hide_spotlight"),
   openSettings: () => invoke("open_settings"),
+  hideSettings: () => invoke("hide_settings"),
   onSpotlightShown: (handler) => listen("spotlight-shown", handler),
   onStatusChanged: (handler) => listen("status-changed", handler),
   onSettingsShown: (handler) => listen("settings-shown", handler),

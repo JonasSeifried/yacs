@@ -572,3 +572,8 @@ pub fn hide_spotlight(app: AppHandle) {
 pub fn open_settings(app: AppHandle) {
     windows::show_settings(&app);
 }
+
+#[tauri::command]
+pub fn hide_settings(app: AppHandle) {
+    windows::hide_settings(&app);
+}

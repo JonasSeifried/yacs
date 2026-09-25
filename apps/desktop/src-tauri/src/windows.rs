@@ -56,10 +56,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         // Closing only hides: YACS keeps running in the tray.
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            if let Some(w) = handle.get_webview_window(SETTINGS) {
-                let _ = w.hide();
-            }
-            return_focus(&handle);
+            hide_settings(&handle);
         }
     });
     Ok(())
@@ -76,6 +73,12 @@ pub fn toggle_spotlight(app: &AppHandle) {
         let _ = w.center();
         let _ = w.show();
         let _ = w.set_focus();
+        // One YACS window at a time: Spotlight replaces Settings, as Settings
+        // replaces Spotlight. Hidden after Spotlight has focus, so focus never
+        // goes back to the previous app in between.
+        if let Some(settings) = app.get_webview_window(SETTINGS) {
+            let _ = settings.hide();
+        }
         let _ = app.emit_to(SPOTLIGHT, EVENT_SPOTLIGHT_SHOWN, ());
         crate::live::wake(app);
     }
@@ -102,6 +105,13 @@ pub fn show_settings(app: &AppHandle) {
         let _ = app.emit_to(SETTINGS, EVENT_SETTINGS_SHOWN, ());
     }
     hide_spotlight(app);
+}
+
+pub fn hide_settings(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(SETTINGS) {
+        let _ = w.hide();
+    }
+    return_focus(app);
 }
 
 /// Undo `return_focus`: windows of a hidden macOS app stay invisible even

@@ -23,6 +23,21 @@ export function Settings() {
     return () => subscriptions.forEach((s) => s.then((unsubscribe) => unsubscribe()));
   }, [refresh]);
 
+  // Esc and ⌘W / Ctrl+W close the window, like its close button. The hotkey
+  // recorder takes Esc for itself (and prevents the default) while recording.
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      const mod = status?.os === "macos" ? e.metaKey : e.ctrlKey;
+      if (e.defaultPrevented) return;
+      if (e.key === "Escape" || (mod && e.key.toLowerCase() === "w")) {
+        e.preventDefault();
+        platform.hideSettings();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [status?.os]);
+
   if (!status) return null;
   return (
     <main className="settings">
