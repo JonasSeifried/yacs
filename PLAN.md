@@ -62,7 +62,7 @@ root   ── HKDF-SHA256(info="yacs/v1/channel")                  → channel_i
 root   ── HKDF-SHA256(info="yacs/v1/key")                      → enc_key (32 B)
 ```
 - The salt is fixed on purpose: both devices must derive the same values without talking to each other.
-- The key is derived once at pairing time and stored: macOS Keychain / Windows Credential Manager via the `keyring` crate, `localStorage` in the PWA. The Argon2 cost is paid only once. Debug builds of the desktop app use `dev-pairing.json` (mode 0600) in the app's config dir instead, because every rebuild of an unsigned binary makes the keychain ask again.
+- The key is derived once at pairing time and stored, so the Argon2 cost is paid only once: `pairing.json` (mode 0600) in the desktop app's config dir, `cli.json` for `yacs`, `localStorage` in the PWA. Not the OS keychain: once the app pairs the `yacs` command, the key is in a file anyway; on Linux a keyring isn't always running; and any program running as the user can read the clipboard directly. Versions up to 0.2.3 used the keychain; the app moves such pairings to the file on start, which is all the `keyring` crate is still there for.
 - Parameters are versioned (`v1`). Every client must use exactly the same parameters, so they are enforced by shared test vectors.
 - The default phrase is generated (6 words from the EFF wordlist, about 77 bits). Users can still type their own.
 
@@ -137,7 +137,7 @@ GET    /*                                             embedded PWA (rust-embed)
 
 ## 5. Desktop (Tauri v2, macOS + Windows)
 
-**Plugins & crates:** `tauri-plugin-global-shortcut`, `-single-instance`, `-autostart`, `-store` (settings), `-updater`, built-in tray, `keyring`, **`clipboard-rs`**.
+**Plugins & crates:** `tauri-plugin-global-shortcut`, `-single-instance`, `-autostart`, `-store` (settings), `-updater`, built-in tray, **`clipboard-rs`**.
 
 - **Why `clipboard-rs` instead of the Tauri clipboard plugin:** the plugin can't *read* HTML/RTF. `clipboard-rs` reads and writes text, HTML, RTF and images on macOS and Windows.
 - **Why Rust handles `Ctrl+V` instead of the DOM `paste` event:** the webview paste event hides RTF and behaves differently in WKWebView and WebView2.
@@ -182,7 +182,7 @@ GET    /*                                             embedded PWA (rust-embed)
 
 ### v1: PWA (served by the relay)
 - **Pairing via QR:** desktop Settings → *Pair another device* shows `https://your-server/#pair=v1.<channel id>.<key>[&token=…]`. It carries the *derived* pairing (`Pairing::to_secret` in `yacs-core`), not the phrase: the desktop never stores the phrase, and the phone skips Argon2id. Everything is in the URL fragment, which browsers never send, so it never reaches the server or its logs; the app removes it from the address bar as soon as it's read. The PWA can also scan the code itself (BarcodeDetector, or jsQR loaded on demand), which iOS needs: a home screen app has its own storage, so a pairing made in the browser tab doesn't carry over, and the camera app only opens the browser. Typing the phrase works too (Argon2id in WASM, about a second on a phone).
-- **Storage:** the pairing lives in `localStorage` (a browser has no keychain). The page's CSP only runs scripts from the relay itself, so no third-party script can read it.
+- **Storage:** the pairing lives in `localStorage`. The page's CSP only runs scripts from the relay itself, so no third-party script can read it.
 - **HTTPS required** for the clipboard API, the service worker and installing. Over plain `http://` (except `localhost`) you can still type, pick images and receive; the desktop's QR dialog warns about it.
 - **Receive:** opening the app shows the history list (newest first) with the newest clip expanded; it refreshes when the app comes to the foreground and every 10 s while open. Each clip has a **Copy** button that calls `navigator.clipboard.write([new ClipboardItem({ "text/plain", "text/html", "image/png" })])` straight from the tap (Safari only allows clipboard writes inside the gesture). RTF is dropped, since browsers can't write it. Images also get a **Save/Share** button (Web Share API, download as fallback).
 - **Send:** a Paste button (`navigator.clipboard.read()`; iOS shows its own "Paste" confirmation), a text area, or an image picker, plus the same TTL dropdown as desktop. Android: Web Share Target, so "Share → YACS" works from other apps: the service worker takes the POST, holds the content in a cache just long enough for the page to pick it up, and deletes it.

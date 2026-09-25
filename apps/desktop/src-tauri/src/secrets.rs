@@ -1,11 +1,9 @@
-//! The pairing (channel id + key) and the relay's access token, stored as one
-//! keychain entry: macOS Keychain, Windows Credential Manager, or on Linux the
-//! Secret Service (GNOME Keyring, KWallet). One entry means at most one
-//! keychain prompt.
+//! The pairing (channel id + key) and the relay's access token, stored in
+//! `pairing.json` in the app's config dir, readable only by the user. The
+//! `yacs` command keeps its pairing the same way.
 //!
-//! Debug builds use a plain file instead. Each rebuild changes an unsigned
-//! binary's identity, so the keychain would ask again every time, and
-//! dismissing the prompt left the app unpaired.
+//! Versions up to 0.2.3 kept release pairings in the OS keychain and debug
+//! pairings in `dev-pairing.json`; `migrate` moves them over.
 
 use std::fs;
 use std::io;
@@ -14,23 +12,16 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use yacs_core::{ChannelKey, Pairing};
 
-const ACCOUNT: &str = "pairing";
-
-/// Linux desktops don't all run a keyring.
-const KEYRING_HINT: &str = if cfg!(target_os = "linux") {
-    " (YACS keeps the pairing in your desktop's keyring: is GNOME Keyring or KWallet running?)"
-} else {
-    ""
-};
+const FILE: &str = "pairing.json";
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretsError {
-    #[error("keychain error: {0}{KEYRING_HINT}")]
-    Keyring(#[from] keyring::Error),
-    #[error("can't access the dev pairing file: {0}")]
+    #[error("can't access the pairing file: {0}")]
     File(#[from] std::io::Error),
     #[error("the stored pairing is corrupt; pair this device again")]
     Corrupt,
+    #[error("keychain error: {0}")]
+    Keychain(#[from] keyring::Error),
 }
 
 pub struct Stored {
@@ -68,84 +59,103 @@ impl Blob {
     }
 }
 
-pub enum Secrets {
-    /// `service` is the app identifier, so dev and release builds with
-    /// different identifiers don't overwrite each other's pairing.
-    Keychain { service: String },
-    /// Unencrypted, for debug builds only.
-    File { path: PathBuf },
+pub struct Secrets {
+    path: PathBuf,
 }
 
 impl Secrets {
-    /// The keychain in release builds, `dev-pairing.json` in debug builds.
-    pub fn for_build(service: &str, config_dir: &Path) -> Self {
-        if cfg!(debug_assertions) {
-            let path = config_dir.join(DEV_FILE);
-            tracing::warn!(path = %path.display(), "debug build: the pairing is stored unencrypted");
-            Self::File { path }
-        } else {
-            Self::Keychain {
-                service: service.into(),
-            }
+    pub fn new(config_dir: &Path) -> Self {
+        Self {
+            path: config_dir.join(FILE),
         }
     }
 
     pub fn load(&self) -> Result<Option<Stored>, SecretsError> {
-        let blob = match self {
-            Self::Keychain { service } => {
-                match keyring::Entry::new(service, ACCOUNT)?.get_password() {
-                    Ok(s) => s,
-                    Err(keyring::Error::NoEntry) => return Ok(None),
-                    Err(e) => return Err(e.into()),
-                }
-            }
-            Self::File { path } => match fs::read_to_string(path) {
-                Ok(s) => s,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-                Err(e) => return Err(e.into()),
-            },
+        let blob = match fs::read_to_string(&self.path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
         };
         Blob::decode(&blob).map(Some).ok_or(SecretsError::Corrupt)
     }
 
     pub fn save(&self, stored: &Stored) -> Result<(), SecretsError> {
-        let blob = Blob::encode(stored);
-        match self {
-            Self::Keychain { service } => {
-                keyring::Entry::new(service, ACCOUNT)?.set_password(&blob)?
-            }
-            Self::File { path } => write_private(path, &blob)?,
-        }
-        Ok(())
+        Ok(write_private(&self.path, &Blob::encode(stored))?)
     }
 
     pub fn delete(&self) -> Result<(), SecretsError> {
-        match self {
-            Self::Keychain { service } => {
-                match keyring::Entry::new(service, ACCOUNT)?.delete_credential() {
-                    Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                    Err(e) => Err(e.into()),
-                }
-            }
-            Self::File { path } => match fs::remove_file(path) {
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-                Err(e) => Err(e.into()),
-            },
+        match fs::remove_file(&self.path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
         }
+    }
+
+    /// Moves the pairing from where versions up to 0.2.3 kept it, unless
+    /// there's a pairing file already. Only the builds that wrote a location
+    /// read it, so debug builds never trigger a keychain prompt. Failures are
+    /// logged; the user can pair again.
+    pub fn migrate(&self, keychain_service: &str) {
+        if self.path.exists() {
+            return;
+        }
+        let result = if cfg!(debug_assertions) {
+            self.migrate_dev_file()
+        } else {
+            self.migrate_keychain(keychain_service)
+        };
+        match result {
+            Ok(true) => {
+                tracing::info!(path = %self.path.display(), "moved the pairing to its file")
+            }
+            Ok(false) => {}
+            Err(e) => tracing::warn!(error = %e, "couldn't move the old pairing"),
+        }
+    }
+
+    fn migrate_dev_file(&self) -> Result<bool, SecretsError> {
+        match fs::rename(self.path.with_file_name(DEV_FILE), &self.path) {
+            Ok(()) => Ok(true),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// The keychain entry holds the same blob as the file. It's deleted only
+    /// once the file is written.
+    fn migrate_keychain(&self, service: &str) -> Result<bool, SecretsError> {
+        let entry = keyring::Entry::new(service, KEYCHAIN_ACCOUNT)?;
+        let blob = match entry.get_password() {
+            Ok(blob) => blob,
+            Err(keyring::Error::NoEntry) => return Ok(false),
+            Err(e) => return Err(e.into()),
+        };
+        if Blob::decode(&blob).is_none() {
+            return Err(SecretsError::Corrupt);
+        }
+        write_private(&self.path, &blob)?;
+        if let Err(e) = entry.delete_credential() {
+            tracing::warn!(error = %e, "moved the pairing, but couldn't delete it from the keychain");
+        }
+        Ok(true)
     }
 }
 
+/// Up to 0.2.3: the debug builds' file, and the release builds' keychain
+/// entry (service: the app identifier).
 const DEV_FILE: &str = "dev-pairing.json";
+const KEYCHAIN_ACCOUNT: &str = "pairing";
 
-/// Readable only by the current user (on Unix), written atomically.
+/// Readable only by the current user (on Unix), written atomically. On
+/// Windows the app's config dir is already private to the user.
 fn write_private(path: &Path, contents: &str) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("json.tmp");
+    let _ = fs::remove_file(&tmp);
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
     std::io::Write::write_all(&mut options.open(&tmp)?, contents.as_bytes())?;
@@ -158,15 +168,19 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn blob_round_trips() {
-        let stored = Stored {
+    fn stored() -> Stored {
+        Stored {
             pairing: Pairing {
                 channel_id: ChannelId::from_bytes([3; 32]),
                 key: ChannelKey::from_bytes([4; 32]),
             },
             token: Some("s3cret".into()),
-        };
+        }
+    }
+
+    #[test]
+    fn blob_round_trips() {
+        let stored = stored();
         let decoded = Blob::decode(&Blob::encode(&stored)).unwrap();
         assert_eq!(decoded.pairing, stored.pairing);
         assert_eq!(decoded.token, stored.token);
@@ -175,53 +189,60 @@ mod tests {
     #[test]
     fn file_store_round_trips_and_deletes() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested").join(DEV_FILE);
-        let secrets = Secrets::File { path: path.clone() };
+        let config_dir = dir.path().join("nested");
+        let secrets = Secrets::new(&config_dir);
         assert!(secrets.load().unwrap().is_none());
         secrets.delete().unwrap();
 
-        let stored = Stored {
-            pairing: Pairing {
-                channel_id: ChannelId::from_bytes([3; 32]),
-                key: ChannelKey::from_bytes([4; 32]),
-            },
-            token: None,
-        };
+        let stored = stored();
         secrets.save(&stored).unwrap();
-        assert_eq!(secrets.load().unwrap().unwrap().pairing, stored.pairing);
+        let loaded = secrets.load().unwrap().unwrap();
+        assert_eq!(loaded.pairing, stored.pairing);
+        assert_eq!(loaded.token, stored.token);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(&path).unwrap().permissions().mode();
+            let mode = fs::metadata(config_dir.join(FILE))
+                .unwrap()
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o600);
         }
 
-        fs::write(&path, "garbage").unwrap();
+        fs::write(config_dir.join(FILE), "garbage").unwrap();
         assert!(matches!(secrets.load(), Err(SecretsError::Corrupt)));
         secrets.delete().unwrap();
         assert!(secrets.load().unwrap().is_none());
     }
 
+    #[test]
+    fn migrates_the_dev_file_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = Secrets::new(dir.path());
+        assert!(!secrets.migrate_dev_file().unwrap());
+
+        write_private(&dir.path().join(DEV_FILE), &Blob::encode(&stored())).unwrap();
+        assert!(secrets.migrate_dev_file().unwrap());
+        assert!(!dir.path().join(DEV_FILE).exists());
+        assert_eq!(secrets.load().unwrap().unwrap().pairing, stored().pairing);
+    }
+
     /// Uses the real keychain: `cargo test -p yacs-desktop -- --ignored keychain`.
     #[test]
     #[ignore]
-    fn keychain_round_trips() {
-        let secrets = Secrets::Keychain {
-            service: "com.jonasseifried.yacs.test".into(),
-        };
-        let stored = Stored {
-            pairing: Pairing {
-                channel_id: ChannelId::from_bytes([5; 32]),
-                key: ChannelKey::from_bytes([6; 32]),
-            },
-            token: Some("s3cret".into()),
-        };
-        secrets.save(&stored).unwrap();
+    fn migrates_the_keychain_entry() {
+        let service = "com.jonasseifried.yacs.test";
+        let entry = keyring::Entry::new(service, KEYCHAIN_ACCOUNT).unwrap();
+        entry.set_password(&Blob::encode(&stored())).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let secrets = Secrets::new(dir.path());
+        assert!(secrets.migrate_keychain(service).unwrap());
         let loaded = secrets.load().unwrap().unwrap();
-        assert_eq!(loaded.pairing, stored.pairing);
-        assert_eq!(loaded.token, stored.token);
-        secrets.delete().unwrap();
-        assert!(secrets.load().unwrap().is_none());
+        assert_eq!(loaded.pairing, stored().pairing);
+        assert_eq!(loaded.token, stored().token);
+        assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
+        assert!(!secrets.migrate_keychain(service).unwrap());
     }
 
     #[test]

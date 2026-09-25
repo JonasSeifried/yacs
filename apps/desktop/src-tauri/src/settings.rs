@@ -1,5 +1,5 @@
 //! Non-secret preferences, stored as JSON in the app's config dir.
-//! Secrets (channel key, access token) live in the OS keychain, see `secrets`.
+//! Secrets (channel key, access token) live in their own file, see `secrets`.
 
 use std::io;
 use std::path::{Path, PathBuf};

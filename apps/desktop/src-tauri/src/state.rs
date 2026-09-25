@@ -19,12 +19,16 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Reads settings and the keychain. A broken pairing is logged and treated
+    /// Reads settings and the pairing. A broken pairing is logged and treated
     /// as unpaired, so the user can simply pair again.
     pub fn load(config_dir: &Path, keychain_service: &str) -> Self {
         let settings_file = SettingsFile::new(config_dir);
         let settings = settings_file.load();
-        let secrets = Secrets::for_build(keychain_service, config_dir);
+        let secrets = Secrets::new(config_dir);
+        // Only a paired app has an old pairing to move.
+        if settings.server_url.is_some() {
+            secrets.migrate(keychain_service);
+        }
 
         let client = match (&settings.server_url, secrets.load()) {
             (Some(url), Ok(Some(stored))) => match Client::new(url, stored.token, stored.pairing) {
@@ -35,7 +39,7 @@ impl AppState {
                 }
             },
             (_, Err(e)) => {
-                tracing::warn!(error = %e, "can't read pairing from keychain");
+                tracing::warn!(error = %e, "can't read the pairing");
                 None
             }
             _ => None,

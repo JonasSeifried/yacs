@@ -1,7 +1,7 @@
 // The PWA's backend: crypto in WASM (`yacs-wasm`, the same Rust code the
 // desktop runs), network via fetch to the relay that served the page.
-// There's no OS keychain in a browser, so the pairing is kept in
-// localStorage; the page's CSP allows no third-party scripts that could read it.
+// The pairing is kept in localStorage; the page's CSP allows no third-party
+// scripts that could read it.
 
 import init, { Pairing, generatePhrase as wasmGeneratePhrase } from "../wasm/yacs";
 import { SseParser } from "../shared/sse";

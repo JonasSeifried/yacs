@@ -40,7 +40,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      # Tauri's system libraries, plus D-Bus for the keychain (Secret Service).
+      # Tauri's system libraries, plus D-Bus for the keychain migration (Secret Service).
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
