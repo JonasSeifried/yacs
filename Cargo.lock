@@ -6500,7 +6500,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "yacs-cli"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -6527,7 +6527,7 @@ dependencies = [
 
 [[package]]
 name = "yacs-client"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "bytes",
  "futures-util",
@@ -6541,7 +6541,7 @@ dependencies = [
 
 [[package]]
 name = "yacs-core"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "argon2",
  "base64 0.23.1",
@@ -6562,7 +6562,7 @@ dependencies = [
 
 [[package]]
 name = "yacs-desktop"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "clap",
  "clipboard-rs",
@@ -6594,7 +6594,7 @@ dependencies = [
 
 [[package]]
 name = "yacs-server"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "axum",
  "bytesize",
@@ -6621,7 +6621,7 @@ dependencies = [
 
 [[package]]
 name = "yacs-wasm"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",

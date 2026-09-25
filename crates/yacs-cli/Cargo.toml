@@ -24,8 +24,8 @@ serde_json = "1.0.151"
 tempfile = "3.27.0"
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "signal"] }
 url = "2.5.8"
-yacs-client = { version = "0.3.1", path = "../yacs-client" }
-yacs-core = { version = "0.3.1", path = "../yacs-core" }
+yacs-client = { version = "0.3.2", path = "../yacs-client" }
+yacs-core = { version = "0.3.2", path = "../yacs-core" }
 
 [build-dependencies]
 serde_json = "1.0.151"
