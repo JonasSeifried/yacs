@@ -318,8 +318,32 @@ async fn reports_config() {
                 max_chunk_bytes: u64::from(MAX_CHUNK_SIZE),
             }),
             accounts: Some(AccountsConfig { public: false }),
+            legal: false,
         }
     );
+}
+
+#[tokio::test]
+async fn links_the_legal_pages() {
+    let plain = app(&[]).await;
+    assert_eq!(plain.get("/privacy").await.status, StatusCode::NOT_FOUND);
+    let app = app(&[
+        "--privacy-url",
+        "https://example.com/privacy",
+        "--imprint-url",
+        "https://example.com/imprint",
+    ])
+    .await;
+    let config: ServerConfig = app.get("/api/v1/config").await.json();
+    assert!(config.legal);
+    for (page, url) in [
+        ("/privacy", "https://example.com/privacy"),
+        ("/imprint", "https://example.com/imprint"),
+    ] {
+        let res = app.get(page).await;
+        assert_eq!(res.status, StatusCode::SEE_OTHER);
+        assert_eq!(res.headers[header::LOCATION], url);
+    }
 }
 
 #[tokio::test]

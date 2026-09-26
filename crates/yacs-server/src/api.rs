@@ -109,6 +109,8 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .nest("/api/v1", api)
         .route("/healthz", get(|| async { "ok" }))
+        .route("/privacy", get(privacy))
+        .route("/imprint", get(imprint))
         .merge(crate::web::routes())
         .with_state(state)
         .layer(
@@ -123,6 +125,21 @@ pub fn router(state: AppState) -> Router {
                 })
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
+}
+
+async fn privacy(State(state): State<AppState>) -> Response {
+    legal_page(state.config.privacy_url.as_deref())
+}
+
+async fn imprint(State(state): State<AppState>) -> Response {
+    legal_page(state.config.imprint_url.as_deref())
+}
+
+fn legal_page(url: Option<&str>) -> Response {
+    match url {
+        Some(url) => axum::response::Redirect::to(url).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 #[derive(Debug)]
@@ -364,6 +381,7 @@ async fn server_config(
             max_chunk_bytes: u64::from(MAX_CHUNK_SIZE),
         }),
         accounts: Some(AccountsConfig { public: c.public }),
+        legal: c.privacy_url.is_some() && c.imprint_url.is_some(),
     }))
 }
 

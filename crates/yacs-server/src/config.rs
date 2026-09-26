@@ -70,6 +70,14 @@ pub struct Config {
     /// of up to a fifth of it.
     #[arg(long, env = "YACS_REQUESTS_PER_MINUTE", default_value_t = 600)]
     pub requests_per_minute: u32,
+
+    /// Your privacy policy; `/privacy` redirects to it and the apps link it.
+    #[arg(long, env = "YACS_PRIVACY_URL")]
+    pub privacy_url: Option<String>,
+
+    /// Your imprint (Impressum); `/imprint` redirects to it and the apps link it.
+    #[arg(long, env = "YACS_IMPRINT_URL")]
+    pub imprint_url: Option<String>,
 }
 
 impl Config {
@@ -97,6 +105,16 @@ impl Config {
             .is_some_and(|t| t.trim().is_empty())
         {
             self.access_token = None;
+        }
+        for url in [&mut self.privacy_url, &mut self.imprint_url] {
+            if url.as_deref().is_some_and(|u| u.trim().is_empty()) {
+                *url = None;
+            }
+            if let Some(u) = url.as_deref() {
+                if !u.starts_with("https://") && !u.starts_with("http://") {
+                    return Err(format!("{u} isn't a web address (http:// or https://)"));
+                }
+            }
         }
         if self.public {
             if self.free_max_ttl.is_zero() {

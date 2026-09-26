@@ -90,6 +90,11 @@ pub async fn run(
         tracing::info!(
             "public relay: anyone can create spaces on the free plan; limits count per client address from X-Forwarded-For"
         );
+        if config.privacy_url.is_none() || config.imprint_url.is_none() {
+            tracing::warn!(
+                "public relay without YACS_PRIVACY_URL and YACS_IMPRINT_URL: its users see no privacy policy or imprint"
+            );
+        }
     } else if config.access_token.is_none() {
         tracing::warn!(
             "no account key set: anyone who can reach this server can store clips on it (set YACS_ACCESS_TOKEN)"

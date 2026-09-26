@@ -57,6 +57,9 @@ pub struct ServerConfig {
     /// `GET …/channels/{channel}/limits` ([`SpaceLimits`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accounts: Option<AccountsConfig>,
+    /// The relay has a privacy policy and an imprint, at `/privacy` and `/imprint`.
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub legal: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
