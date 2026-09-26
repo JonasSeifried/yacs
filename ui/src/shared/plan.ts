@@ -2,7 +2,7 @@ import { formatDuration, formatSize } from "./time";
 import type { ServerConfig, SpaceLimits } from "./types";
 
 /** The relay YACS's author runs, free for anyone (`yacs_client::PUBLIC_RELAY`). */
-export const PUBLIC_RELAY = "https://yacs.jonasseifried.com";
+export const PUBLIC_RELAY = "https://app.yacs.jonasseifried.com";
 
 export function isPublicRelay(url: string): boolean {
   return url.trim().replace(/\/+$/, "") === PUBLIC_RELAY;

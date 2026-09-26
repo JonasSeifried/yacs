@@ -14,8 +14,8 @@ const free: SpaceLimits = {
 
 describe("plan", () => {
   it("knows the free relay however it's written", () => {
-    expect(isPublicRelay("https://yacs.jonasseifried.com/")).toBe(true);
-    expect(isPublicRelay(" https://yacs.jonasseifried.com ")).toBe(true);
+    expect(isPublicRelay("https://app.yacs.jonasseifried.com/")).toBe(true);
+    expect(isPublicRelay(" https://app.yacs.jonasseifried.com ")).toBe(true);
     expect(isPublicRelay("https://clip.example.com")).toBe(false);
   });
 
