@@ -69,7 +69,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// The relay run by YACS's author, which anyone may use on the free plan.
-pub const PUBLIC_RELAY: &str = "https://app.yacs.jonasseifried.com";
+pub const PUBLIC_RELAY: &str = "https://yacs-relay.jonasseifried.com";
 
 /// A live event stream sends a keep-alive every 20 s; this much silence means
 /// the connection is dead (e.g. after the computer slept).

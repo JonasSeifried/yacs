@@ -16,7 +16,7 @@ Devices join with an invite link (or its QR code). It works once, within 24 hour
 
 ## The free relay
 
-`app.yacs.jonasseifried.com` is a relay anyone can use, run by YACS's author. It's the default in the apps, so there's nothing to set up. It sees what any relay sees (see above), plus your IP address, which it keeps in memory only, to limit new spaces and requests per address. Its free plan has limits that keep it affordable and hard to abuse: clips up to 10 MB, kept up to an hour, 500 MB of transfer per space a day. Run your own relay for more.
+`yacs-relay.jonasseifried.com` is a relay anyone can use, run by YACS's author. It's the default in the apps, so there's nothing to set up. It sees what any relay sees (see above), plus your IP address, which it keeps in memory only, to limit new spaces and requests per address. Its free plan has limits that keep it affordable and hard to abuse: clips up to 10 MB, kept up to an hour, 500 MB of transfer per space a day. Run your own relay for more.
 
 ## Self-hosting the relay
 
