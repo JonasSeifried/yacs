@@ -24,7 +24,7 @@ tower-http = { version = "0.7.1", features = ["trace", "limit"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 ulid = "3.0.0"
-yacs-core = { version = "0.5.1", path = "../yacs-core" }
+yacs-core = { version = "0.5.2", path = "../yacs-core" }
 
 [dev-dependencies]
 http-body-util = "0.1.5"
