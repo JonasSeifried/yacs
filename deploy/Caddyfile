@@ -7,5 +7,7 @@
 	# nor file chunks (encrypted, so they don't compress).
 	@compressible not path */events */chunks/*
 	encode @compressible zstd gzip
+	# Caddy replaces X-Forwarded-For with the client's address, which a
+	# public relay (YACS_PUBLIC) needs for its per-address limits.
 	reverse_proxy yacs:8080
 }

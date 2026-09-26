@@ -1,9 +1,9 @@
 # YACS
 
-**Yet Another Clipboard Service**: copy on one device, paste on another. End-to-end encrypted, self-hosted, no accounts.
+**Yet Another Clipboard Service**: copy on one device, paste on another. End-to-end encrypted, no accounts. Use the free relay, or run your own.
 
 - **Desktop** (macOS, Windows, Linux): press `⌘⇧Space` / `Ctrl+Shift+Space` for a Spotlight-style panel. `⌘V` sends your clipboard; `↵` copies a clip back, with every format it had (text, HTML, RTF, images). Copied files are sent too, of any size, and arrive in Downloads and on the clipboard.
-- **Phone**: a web app served by your relay. Scan a QR code from the desktop and it's in; add it to the home screen to use it like an app.
+- **Phone**: a web app served by the relay. Scan a QR code from the desktop and it's in; add it to the home screen to use it like an app.
 - **Relay**: one small server that stores encrypted clips until they expire (15 minutes by default). It can't read them.
 
 Big files (a video, a disk image) go through the relay in encrypted 4 MB chunks, so no device ever holds a whole file in memory. The phone app shows progress; keep its screen on until an upload or download is done, since phones pause apps in the background.
@@ -12,7 +12,11 @@ Big files (a video, a disk image) go through the relay in encrypted 4 MB chunks,
 
 Your devices share a **space**: a random key, made on the first device, that every clip is encrypted with (XChaCha20-Poly1305) before it leaves the device. The relay only sees the space's channel id, encrypted blobs, their sizes and their expiry times: never content, formats, device names or the space's name. Clips are deleted when they expire, and nothing is kept beyond that.
 
-Devices join with an invite link (or its QR code). It works once, within 24 hours: the relay hands the sealed invite out to the first device that opens the link and then forgets it, without ever being able to open it. If someone else got there first, your device is told the invite was already used. An access token on the relay keeps strangers from storing data on it.
+Devices join with an invite link (or its QR code). It works once, within 24 hours: the relay hands the sealed invite out to the first device that opens the link and then forgets it, without ever being able to open it. If someone else got there first, your device is told the invite was already used. On your own relay, its account key keeps strangers from creating spaces on it; the devices you invite don't need it.
+
+## The free relay
+
+`yacs.jonasseifried.com` is a relay anyone can use, run by YACS's author. It's the default in the apps, so there's nothing to set up. It sees what any relay sees (see above), plus your IP address, which it keeps in memory only, to limit new spaces and requests per address. Its free plan has limits that keep it affordable and hard to abuse: clips up to 10 MB, kept up to an hour, 500 MB of transfer per space a day. Run your own relay for more.
 
 ## Self-hosting the relay
 
@@ -35,7 +39,7 @@ docker compose -f compose.nginx.yaml up -d
 
 | Setting | Default | |
 | --- | --- | --- |
-| `YACS_ACCESS_TOKEN` | unset | Clients must send it. Set it whenever the relay is reachable from the internet. |
+| `YACS_ACCESS_TOKEN` | unset | The relay's account key: creating a space needs it, joining one doesn't. Set it whenever the relay is reachable from the internet. |
 | `YACS_DEFAULT_TTL` | `15m` | Expiry when a client doesn't choose one. |
 | `YACS_MAX_TTL` | `24h` | Longest expiry a client may choose (`7d` shows up in the apps once allowed). |
 | `YACS_MAX_SIZE` | `20MB` | Largest clip sent in one piece. Bigger files go in chunks, which only `YACS_MAX_DISK` limits. |
@@ -45,14 +49,16 @@ docker compose -f compose.nginx.yaml up -d
 | `YACS_VERSION` | `latest` | Compose only: image tag to run, e.g. `0.1.0`. |
 | `YACS_PORT` | `8080` | `compose.nginx.yaml` only: the localhost port nginx proxies to. |
 
+**A public relay** like the free one: set `YACS_PUBLIC=true`, and anyone may create spaces on a free plan (`YACS_FREE_MAX_SIZE` `10MB` per clip, `YACS_FREE_MAX_TTL` `1h`, `YACS_FREE_DAILY_TRANSFER` `500MB` per space), with limits per IP address (`YACS_NEW_SPACES_PER_IP` `10` a day, `YACS_REQUESTS_PER_MINUTE` `600`). Spaces created with `YACS_ACCESS_TOKEN` keep the limits in the table. The reverse proxy must set `X-Forwarded-For` to the client's address, as both setups here do. Point `YACS_PRIVACY_URL` and `YACS_IMPRINT_URL` at your privacy policy and imprint; the phone app links them.
+
 Without Docker: `cargo build --release -p yacs-server` (after building the web app, see below) gives a single binary; put it behind any HTTPS reverse proxy. Keep that proxy's access log off or path-free: request paths contain channel ids. The proxy must accept request bodies above `YACS_MAX_SIZE`, and at least 5 MB for the chunks of big files (nginx: `client_max_body_size 25m`; its default of 1 MB is too small). Cloudflare's limits are fine.
 
 ## Adding your devices
 
-1. On the first computer: open YACS → Settings, enter your relay's URL and token under **Start a new space**, and press it. The space is called "My devices"; rename it there whenever you like (each device keeps its own name for it).
+1. On the first computer: open YACS → Settings, choose the free YACS relay or your own (its URL and account key) under **Start a new space**, and press it. The space is called "My devices"; rename it there whenever you like (each device keeps its own name for it).
 2. Everything else: on a computer in the space, Settings → **Invite a device…** shows a QR code and a link, good for one device within 24 hours (the phone app makes links too, under Settings), and a code like `7-tulip-apple` that works while the panel is open.
    - Phone: scan the code with the camera (on iPhone, see the tips below), or paste the link into the app.
-   - Another computer: type the code into its **Invite link or code** field (with the relay's URL), or paste the link there.
+   - Another computer: type the code into its **Invite link or code** field (on your own relay, with its URL), or paste the link there.
    - Server: paste the link or type the code into `yacs join` (see [Command line](#command-line)).
 
    Anyone who types a wrong code uses it up, and the other device shows a new one, so a code can't be guessed by trying.
@@ -95,7 +101,7 @@ yacs update                       # the newest version, checked against the rele
 yacs relay update                 # on the relay's machine: pull the new relay image and restart it
 ```
 
-The space is saved in `~/.config/yacs/cli.json`, readable only by you; `yacs spaces` shows it, `yacs space rename` renames it and `yacs leave` forgets it. On a machine without other devices, `yacs space new --relay URL` starts a space and `yacs invite` prints a link for the others, then shows a code and waits until it's typed. Scripts can skip the saved space and set `YACS_RELAY`, `YACS_TOKEN` and `YACS_SPACE` (from `yacs space export`) instead (`YACS_SERVER` works too).
+The space is saved in `~/.config/yacs/cli.json`, readable only by you; `yacs spaces` shows it, `yacs space rename` renames it and `yacs leave` forgets it. On a machine without other devices, `yacs space new` starts a space on the free relay (`--relay URL` for your own, `--account-key` if it has one) and `yacs invite` prints a link for the others, then shows a code and waits until it's typed. `yacs info` shows the space's limits. Scripts can skip the saved space and set `YACS_RELAY` and `YACS_SPACE` (from `yacs space export`) instead (`YACS_SERVER` works too).
 
 ## Updating
 

@@ -97,7 +97,8 @@ struct Envelope { version: u8, nonce: [u8; 24], ciphertext: Vec<u8> }
 ## 4. Relay server (`yacs-server`)
 
 ```
-GET    /api/v1/config                                 → { default_ttl_secs, max_ttl_secs, max_size_bytes, max_clips, version }
+GET    /api/v1/config                                 → { default_ttl_secs, max_ttl_secs, max_size_bytes, max_clips, version, chunked, accounts, legal }
+GET    /api/v1/channels/{channel_id}/limits           → the space's plan and limits (section 8)
 POST   /api/v1/channels/{channel_id}/clips?ttl=900    body: octet-stream Envelope
                                                       → 201 { id, created_at_ms, expires_at_ms, size }  (ttl clamped to max_ttl)
 GET    /api/v1/channels/{channel_id}/clips            → [{ id, created_at_ms, expires_at_ms, size }]  newest first
@@ -116,11 +117,11 @@ GET    /*                                             embedded PWA (rust-embed)
 - **Envelope responses** carry the metadata in `x-yacs-clip-id`, `x-yacs-created-at` and `x-yacs-expires-at` headers.
 - **Storage:** `data/{hex channel_id}/{ulid}.{expires_at_ms}.bin`. Hex, not base64url, so two ids can't collide on case-insensitive filesystems (macOS, Windows). Because the expiry is in the filename, the reaper never has to open a file. Writes go to a temp file first and are then renamed, so a clip is never half-written. The reaper runs on a `tokio::time::interval` (60 s) and deletes expired files and empty channel dirs.
 - **The server sees** each clip's size, creation time and expiry. Contents, formats and device names stay encrypted.
-- **Limits:** `DefaultBodyLimit` (`YACS_MAX_SIZE`, for single envelopes), `max_clips` per channel, total disk quota (chunked uploads count in full from their start, see section 7). No rate limiting: the access token keeps strangers out, the quotas bound disk use, and behind a reverse proxy per-IP limits would lump all clients together. If wanted, rate-limit in Caddy/Traefik. Expired-but-not-yet-reaped clips don't hold a history slot. The public relay's mode adds per-IP and per-space limits (section 8).
+- **Limits:** `DefaultBodyLimit` (`YACS_MAX_SIZE`, for single envelopes), `max_clips` per channel, total disk quota (chunked uploads count in full from their start, see section 7). A self-hosted relay has no rate limiting: the account key keeps strangers from creating spaces, and the quotas bound disk use. Expired-but-not-yet-reaped clips don't hold a history slot. Public mode adds per-IP and per-space limits (section 8).
 - **Live updates:** `/events` is a server-sent event stream per channel (a `tokio::sync::broadcast` per listened-to channel, pruned by the reaper). Events carry only what the relay already knows (clip metadata, deleted ids); clients re-list after (re)connecting, since events sent while they were away are gone. A keep-alive comment every 20 s keeps proxies (nginx drops quiet upstreams after 60 s) from cutting the stream, and lets clients spot a dead connection after 60 s of silence; `X-Accel-Buffering: no` stops nginx from buffering it. Streams end on shutdown, so a restart doesn't wait on them. The desktop listens in the background while paired and prefetches new clips up to 4 MB, so Spotlight opens with them decrypted; the PWA listens while it's on screen and polls every 10 s only without a connection (e.g. relays before 0.2.0, which answer 404).
 - **Version:** `/config` reports the relay's version. The desktop, which updates itself, shows it in Settings with a hint when the relay is older than the newest release.
 - **Logging** shows the route pattern (`/api/v1/channels/{channel}/clips`), never the URI, because the URI contains the channel id.
-- **Optional access token:** set `YACS_ACCESS_TOKEN` and clients must send `Authorization: Bearer …`. This keeps strangers from filling your disk when the server is reachable from the internet. The server logs a warning at startup when it's unset. Phase 8/9 turn it into the relay owner's account key (section 8).
+- **Account key:** `YACS_ACCESS_TOKEN` is the relay owner's account key (section 8). A space is registered by its first request carrying it (`Authorization: Bearer …`); after that its members need none. Unregistered spaces are refused without it, so strangers can't fill your disk. `/config` needs no key, but refuses a wrong one, so apps can check a key there. The server logs a warning at startup when it's unset (then every space works, unregistered).
 - **Config:** env vars / `clap` flags. Durations are parsed with `humantime` (`15m`, `24h`, `7d`).
 
   | Setting | Default |
@@ -133,6 +134,10 @@ GET    /*                                             embedded PWA (rust-embed)
   | `YACS_MAX_CLIPS_PER_CHANNEL` | `50` |
   | `YACS_MAX_DISK` | `25GB` |
   | `YACS_ACCESS_TOKEN` | unset (open) |
+  | `YACS_PUBLIC` | `false` |
+  | `YACS_FREE_MAX_SIZE` / `YACS_FREE_MAX_TTL` / `YACS_FREE_DAILY_TRANSFER` | `10MB` / `1h` / `500MB` |
+  | `YACS_NEW_SPACES_PER_IP` / `YACS_REQUESTS_PER_MINUTE` | `10` / `600` |
+  | `YACS_PRIVACY_URL` / `YACS_IMPRINT_URL` | unset |
 - **TLS:** terminate at a reverse proxy. `deploy/compose.yaml` runs the relay behind Caddy, which gets the certificate; its Caddyfile keeps the access log off because paths contain channel ids.
 - **No CORS needed.** The PWA is served from the same origin, and desktop makes its requests from Rust.
 - **Container:** `deploy/Dockerfile`: WASM (wasm-pack) → PWA (Vite) → static musl relay with the PWA embedded → `distroless/static:nonroot`, about 14 MB.
@@ -297,8 +302,8 @@ Invite to "My devices"
 The joining side has one field: *"Paste an invite link or type a code"*, and it works out which. When a code has expired: *"This code has expired. Open Invite on the other device and try again."* For a code, the joiner also needs the relay: the public one by default, otherwise the Invite window shows it under the code and the Join form has a relay field (a link carries its relay as its host).
 
 **Invite link / QR** (asynchronous, long secret):
-- The inviter picks a random 32-byte `s`; HKDF(`s`) → `slot` (sent to the relay) and a wrap key (`yacs_core::invite`). The sealed invite (space name, channel id, key, inviter's device name, and for now the relay's access token) goes to the relay; the link is `https://relay/#join=v2.<s>`, and the relay is the link's host. The fragment never reaches the server.
-- **The token rides along until phase 9**, sealed and one-time: today a self-hosted relay needs it for every request, so the invitee can't do without it. Phase 9 makes joining work without it (registered channels), and then it leaves the invite.
+- The inviter picks a random 32-byte `s`; HKDF(`s`) → `slot` (sent to the relay) and a wrap key (`yacs_core::invite`). The sealed invite (space name, channel id, key, inviter's device name, and for relays before 0.5 the account key) goes to the relay; the link is `https://relay/#join=v2.<s>`, and the relay is the link's host. The fragment never reaches the server.
+- **The key rides along only to relays before 0.5**, sealed and one-time: they needed it for every request. From 0.5 the space is registered, so joining needs no key and invites leave it out (clients tell by `accounts` in `/config`).
 - The relay keeps open invites in memory (at most 20 per space, 24 h), like open uploads: a restart drops them, and the inviter makes a new one. `GET /api/v1/invites/{slot}` needs no token.
 - One use: the relay deletes the invite on the first fetch and tells the space (`invite_used` on its SSE stream). The joining page asks *"Join?"* first and fetches only on the tap, so link previewers in messengers can't burn it.
 - The desktop takes a link back (`DELETE`) once its panel closes or a device joined by code, unless the link was copied: then it may be on its way somewhere.
@@ -310,7 +315,7 @@ The joining side has one field: *"Paste an invite link or type a code"*, and it 
 - It's live, so both devices have to be online. The window communicates that ("works while this window is open"); a code lasts until the window closes, at most 10 min, then it refreshes itself.
 - The inviter's window turns into *"Anna's iPhone joined ✓"*.
 
-Relay routes (all in memory, sizes ≤ 4 KB; routes under a channel need the token, the others serve the device that has none yet):
+Relay routes (all in memory, sizes ≤ 4 KB; routes under a channel are the space's, the others serve the device that isn't in it yet):
 ```
 PUT    /api/v1/channels/{c}/invites/{slot}?ttl=86400   sealed invite → 201
 GET    /api/v1/invites/{slot}                           → 200 once, then 404; `invite_used` on channel c
@@ -327,10 +332,11 @@ PUT    /api/v1/rendezvous/{nameplate}/b/{i}              joiner writes (no token
 - **An account key opens the door; it doesn't travel with the space.** The relay stores `hash(account key) → plan` and `channel → account`. The first device registers a space with the key once; after that every request to the channel gets that account's limits, and members and invitees never need the key. If you lose it, your spaces keep working; it's only needed to register, upgrade or move.
 - **Premium is per space.** Checkout gives an account key worth N spaces (one subscription, quantity N). *Upgrade this space* attaches a slot, and everyone in the space shares it (a family or a team). *Move premium* frees a slot for another space. **Anyone in a space can upgrade it**; only the key holder can move or cancel. When the subscription ends, the space falls back to free limits; nothing is deleted.
 - **Member count doesn't matter:** the relay can't count people and doesn't need to. The space's daily transfer quota is the real limit, so a premium space can't become a free distribution network.
-- **Self-hosted:** `YACS_ACCESS_TOKEN` becomes the key of the relay's one unlimited account. Creating a space needs it, joining doesn't, so a friend in your self-hosted space never learns it. Unregistered channels are refused. For compatibility, a request carrying the token still works and registers its channel.
-- **Public mode** (`YACS_PUBLIC=true`, for `yacs.jonasseifried.com`): no account key needed. A new channel starts on the free plan, with a per-IP limit on new channels per day and per-IP request rates (client IP from the trusted proxy's `X-Forwarded-For`, counters in memory only). Paths stay out of logs, as today.
-- **Limits per plan** (starting values, to tune): free: files up to 10 MB, TTL up to 1 h, 500 MB transfer per day; premium: files up to 5 GB, TTL up to 7 d, 20 GB per day, longer history; the author's own account and self-hosted: unlimited (the relay's settings). Clients read a space's limits from the relay (a per-channel `/limits`, next to `/config`), so the TTL dropdown, size checks and a premium badge follow the plan.
-- The relay gets a small persistent store for accounts and registrations (SQLite or a file in the data dir). Stripe webhooks create and revoke account keys (Payments, below).
+- **Self-hosted** ✅: `YACS_ACCESS_TOKEN` is the key of the relay's one unlimited account. Creating a space needs it, joining doesn't, so a friend in your self-hosted space never learns it. Unregistered channels are refused. Clients from 0.4 send the key with every request, which registers their spaces after the relay updates.
+- **Public mode** ✅ (`YACS_PUBLIC=true`, for `yacs.jonasseifried.com`): no account key needed. A new channel starts on the free plan, with a per-IP limit on new channels per day and a per-IP token bucket for requests (a fifth of the per-minute rate as burst). The client IP is the last `X-Forwarded-For` entry when the peer is on loopback or a private network (the proxy, which must overwrite the header), otherwise the peer; IPv6 counts per /64. Counters are in memory only, and IPs are never logged. Only rate limits send `Retry-After`, so clients retry those and show the relay's reason for quotas. The owner's key on a request upgrades the space to unlimited.
+- **Registrations** ✅ live in `{data dir}/accounts.json` (`channel → account, last used day`), written at once for new spaces and within a minute for the rest. Free spaces unused for 30 days are forgotten; their next request registers them again.
+- **Limits per plan** (starting values, to tune): free ✅: clips up to 10 MB (chunks included), TTL up to 1 h, 500 MB transfer per day (uploads and downloads, counted when they start, in memory, per UTC day); premium: files up to 5 GB, TTL up to 7 d, 20 GB per day, longer history; the author's own account and self-hosted: unlimited (the relay's settings). Clients read a space's limits from the relay (`GET …/channels/{c}/limits`, next to `/config`), so the TTL dropdown, size checks and (phase 12) a premium badge follow the plan.
+- Phase 12 adds account keys besides the owner's to `accounts.json` (or SQLite, if it outgrows a file). Stripe webhooks create and revoke them (Payments, below).
 - The account holder's email stays with the payment vendor. The relay knows account → channels, never content. Recovery: the app picks the key up right after checkout, and every device that registered a space has it. If all of them are lost, the spaces stay premium; moving premium then needs a support request checked against the Stripe subscription.
 
 ### Payments (phase 12)
@@ -352,8 +358,9 @@ PUT    /api/v1/rendezvous/{nameplate}/b/{i}              joiner writes (no token
 - **Abuse is the reason for tight limits:** Firefox Send, which worked exactly like this, was shut down in 2020 over malware distribution. Self-hosted: allowed as configured. Public relay free: up to 10 MB, one download, 1 h. Premium spaces: big files and a few downloads, since payment makes senders accountable.
 
 ### Running the public relay
-- `yacs.jonasseifried.com`, run by the author: one VPS (e.g. Hetzner, 20 TB traffic included), the usual Docker compose with `YACS_PUBLIC=true`. The author's own devices use the same relay with an unlimited account, so problems show up there first.
-- Needed before launch: privacy policy (IP addresses are personal data), Impressum, and terms once there's a paid tier.
+- `yacs.jonasseifried.com`, run by the author: for now on the author's home server, which already serves other sites behind nginx with port forwarding and a certificate script, so it's `compose.nginx.yaml` with `YACS_PUBLIC=true` and one more nginx site. `YACS_MAX_DISK` a few GB, not the default 25. Move to a VPS (e.g. Hetzner) when there are users who'd notice downtime or once premium exists; clients only know the domain and clips expire within the hour, so moving is a DNS change plus copying `accounts.json`. The author's own devices use the same relay with the owner's key, so problems show up there first.
+- Needed before launch: privacy policy (IP addresses are personal data) and Impressum, linked through `YACS_PRIVACY_URL` / `YACS_IMPRINT_URL`; terms once there's a paid tier.
+- **Release order:** the apps default to the free relay from 0.5.0, so it has to be live before 0.5.0 ships.
 
 ## 9. Roadmap
 
@@ -370,7 +377,7 @@ This reorders the original roadmap: crypto and the protocol come first, so the U
 | **6: Large files** ✅ (0.3.0; 80 MB verified on Android + iPhone in 0.3.1) | Any size through the relay | Chunked, streamed uploads and downloads on every client (section 7) | A multi-GB file goes phone ↔ desktop through the relay, memory stays flat |
 | **7: Native mobile** (on hold) | Tauri mobile | Native clipboard plugins + share extensions | |
 | **8: Spaces + invites** ✅ (codes: desktop and CLI show them, every client types them; the phone app doesn't show codes yet) | Pairing without moving secrets by hand (section 8) | Vocabulary in all apps; spaces stored as a list (one shown), with a name you can edit in Settings and the PWA; random space keys, phrase + Argon2id removed; invite links/QR and codes (SPAKE2) with the relay routes; Join field; `yacs join` / `yacs invite` / `yacs space export` | A second computer joins by typing a code, a phone by scanning, a friend by a link sent over a messenger |
-| **9: Public relay** | People without a server | Public mode (per-IP limits, free plan); account keys + channel registration (self-hosted token becomes the owner's key); per-space limits in `/limits`; onboarding "free relay or your own"; `yacs.jonasseifried.com` live with privacy policy + Impressum | A new user installs the app and syncs a phone without setting anything up |
+| **9: Public relay** (code ✅; not live yet) | People without a server | Public mode (per-IP limits, free plan); account keys + channel registration (self-hosted token becomes the owner's key); per-space limits in `/limits`; onboarding "free relay or your own"; `yacs.jonasseifried.com` live with privacy policy + Impressum | A new user installs the app and syncs a phone without setting anything up |
 | **10: Multiple spaces UI** | Spaces with friends | Spotlight switcher and new-clip dots, Settings list (invite, reset, leave), PWA picker, `--space` in the CLI | Personal and shared spaces side by side on every client |
 | **11: Send as link** | Files for people without YACS | `/d/<id>#<key>` downloads in the web app, byte-counted download limit, plan limits | A link sent to someone without YACS downloads once, then stops working |
 | **12: Premium** | Paid tier | Stripe Managed Payments checkout + webhooks, account keys with N spaces, upgrade/move in the apps, premium badge, terms | Buying premium upgrades a space for all its members |
