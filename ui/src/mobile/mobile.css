@@ -481,3 +481,12 @@ button.icon {
   justify-content: space-between;
   gap: 12px;
 }
+
+.legal {
+  margin: 4px 0 0;
+  text-align: center;
+}
+
+.legal a {
+  color: inherit;
+}

@@ -55,6 +55,23 @@ export interface ServerConfig {
   version?: string;
   /** Set when the relay takes big files as chunks (0.3.0 and later). */
   chunked?: { max_chunk_bytes: number };
+  /** Set when the relay registers spaces (0.5.0 and later); `public`: anyone may create one. */
+  accounts?: { public: boolean };
+  /** The relay has a privacy policy and imprint at `/privacy` and `/imprint`. */
+  legal?: boolean;
+}
+
+/** `yacs_core::api::SpaceLimits`: what one space may do (relays from 0.5.0). */
+export interface SpaceLimits {
+  plan: "free" | "unlimited" | "other";
+  default_ttl_secs: number;
+  max_ttl_secs: number;
+  /** Chunks included; missing when only the relay's disk limits it. */
+  max_clip_bytes?: number;
+  /** Uploads and downloads per day (UTC); missing when there's no daily limit. */
+  daily_transfer_bytes?: number;
+  transfer_used_bytes: number;
+  max_clips: number;
 }
 
 /** A big upload or download running in the background (desktop). */

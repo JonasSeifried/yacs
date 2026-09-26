@@ -10,8 +10,8 @@ use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 use yacs_client::spaces::{Accepted, DEFAULT_SPACE_NAME, Link, Space, clean_name};
-use yacs_client::{Client, LocalFiles, stream_of};
-use yacs_core::api::{ClipMeta, ServerConfig};
+use yacs_client::{Client, LocalFiles, PUBLIC_RELAY, stream_of};
+use yacs_core::api::{ClipMeta, ServerConfig, SpaceLimits};
 use yacs_core::{Clip, ClipItem, Pairing, Stream, StreamFile};
 
 use crate::clipboard::{Copied, LocalFile};
@@ -96,8 +96,9 @@ pub async fn create_space(
     use_space(&app, &state, space, connected)
 }
 
-/// Join the space in an invite link, or behind a code (on `relay`), from
-/// another device, once its relay accepts it. Nothing is saved if that fails.
+/// Join the space in an invite link, or behind a code (on `relay`, the free
+/// relay if none), from another device, once its relay accepts it. Nothing
+/// is saved if that fails.
 #[tauri::command]
 pub async fn join_space(
     app: AppHandle,
@@ -110,7 +111,7 @@ pub async fn join_space(
         let relay = relay
             .map(|r| r.trim().to_owned())
             .filter(|r| !r.is_empty())
-            .ok_or("enter the relay's URL: the other device shows it under the code")?;
+            .unwrap_or_else(|| PUBLIC_RELAY.to_owned());
         let device_name = state.settings().device_name.clone();
         let invite = yacs_client::join_with_code(&relay, &code, &device_name)
             .await
@@ -257,6 +258,12 @@ fn client(state: &AppState) -> CmdResult<Arc<Client>> {
 #[tauri::command]
 pub async fn server_config(state: State<'_, AppState>) -> CmdResult<ServerConfig> {
     client(&state)?.config().await.map_err(|e| e.to_string())
+}
+
+/// What the space may do; `None` from relays before 0.5.0.
+#[tauri::command]
+pub async fn space_limits(state: State<'_, AppState>) -> CmdResult<Option<SpaceLimits>> {
+    client(&state)?.limits().await.map_err(|e| e.to_string())
 }
 
 /// Newest first. Also forgets cached clips that expired or were deleted.
@@ -417,6 +424,14 @@ pub async fn send_clipboard(
         Copied::Items(items) => items,
         Copied::Files(files) => {
             let total: u64 = files.iter().map(|f| f.size).sum();
+            if config.accounts.is_some() {
+                let limits = client.limits().await.map_err(|e| e.to_string())?;
+                if let Some(max) = limits.and_then(|l| l.max_clip_bytes) {
+                    if total > max {
+                        return Err(clipboard::files_over_plan(&files, max));
+                    }
+                }
+            }
             let limit = config.inline_file_limit();
             if total > limit {
                 let Some(chunked) = &config.chunked else {

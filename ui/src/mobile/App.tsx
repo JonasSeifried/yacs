@@ -11,6 +11,7 @@ import {
   joinWithCode,
   leaveSpace,
   loadStored,
+  relayConfig,
   renameSpace,
   saveDeviceName,
   session,
@@ -18,9 +19,10 @@ import {
 } from "../platform/web";
 import { EAGER_CONCURRENCY, loadsEagerly, runLimited } from "../shared/async";
 import { clipTitle, isImageMime, previewDocument, previewKind } from "../shared/clip";
+import { describeLimits, maxTtlSecs } from "../shared/plan";
 import { inlineFileLimit, streamTotal } from "../shared/stream";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
-import type { ClipItem, ClipMeta, ServerConfig } from "../shared/types";
+import type { ClipItem, ClipMeta, ServerConfig, SpaceLimits } from "../shared/types";
 import { canCopy, canSave, copyClip, fileItem, pick, readClipboard, savable, shareFiles } from "./clipboard";
 import {
   type InviteLink,
@@ -134,7 +136,17 @@ function JoinFromLink(props: { link: InviteLink; stored: Stored | null; onDone: 
   );
 }
 
+/** This relay's settings, read once, before this device is in a space. */
+function useRelayConfig(): ServerConfig | null {
+  const [config, setConfig] = useState<ServerConfig | null>(null);
+  useEffect(() => {
+    relayConfig().then(setConfig, () => {});
+  }, []);
+  return config;
+}
+
 function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; onLink: (l: InviteLink) => void }) {
+  const relay = useRelayConfig();
   const [scanning, setScanning] = useState(false);
   const [pasted, setPasted] = useState("");
   const [starting, setStarting] = useState(false);
@@ -176,11 +188,14 @@ function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; 
           <p className="muted">
             For this device and the ones you invite, through <b>{location.host}</b>. Invite them from Settings once
             it's started.
+            {relay?.accounts?.public && " It's free, for clips up to 10 MB kept up to an hour."}
           </p>
-          <label>
-            <span>Access token <span className="muted">if the relay needs one</span></span>
-            <input value={token} onChange={(e) => setToken(e.target.value)} autoCapitalize="none" autoComplete="off" />
-          </label>
+          {!relay?.accounts?.public && (
+            <label>
+              <span>Account key <span className="muted">if the relay has one</span></span>
+              <input type="password" value={token} onChange={(e) => setToken(e.target.value)} autoCapitalize="none" autoComplete="off" />
+            </label>
+          )}
           <DeviceNameField value={deviceName} onChange={setDeviceName} />
           {error && <p className="error">{error}</p>}
           <button className="primary" disabled={busy}>
@@ -190,6 +205,7 @@ function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; 
             Back
           </button>
         </form>
+        <LegalLinks config={relay} />
       </Screen>
     );
   }
@@ -227,7 +243,24 @@ function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; 
           No other devices yet? Start a new space
         </button>
       </form>
+      <LegalLinks config={relay} />
     </Screen>
+  );
+}
+
+/** The relay's privacy policy and imprint, if it has them. */
+function LegalLinks({ config }: { config: ServerConfig | null }) {
+  if (!config?.legal) return null;
+  return (
+    <p className="legal muted small">
+      <a href="/privacy" target="_blank" rel="noreferrer">
+        Privacy
+      </a>
+      {" · "}
+      <a href="/imprint" target="_blank" rel="noreferrer">
+        Imprint
+      </a>
+    </p>
   );
 }
 
@@ -410,6 +443,7 @@ function Home({ stored, current, onChange }: { stored: Stored; current: Session;
   const { secret, token, deviceName } = current;
   const client = useMemo(() => new WebClient({ secret, token, deviceName }), [secret, token, deviceName]);
   const [config, setConfig] = useState<ServerConfig | null>(null);
+  const [limits, setLimits] = useState<SpaceLimits | null>(null);
   const [list, setList] = useState<List>({ state: "loading" });
   const [loaded, setLoaded] = useState<Record<string, Loaded>>({});
   const [openId, setOpenId] = useState<string | null>(null);
@@ -459,6 +493,7 @@ function Home({ stored, current, onChange }: { stored: Stored; current: Session;
   const refresh = useCallback(async () => {
     setNow(Date.now());
     client.config().then(setConfig, () => {});
+    client.limits().then(setLimits, () => {});
     try {
       const listed = await client.list();
       setList({ state: "ok", clips: listed });
@@ -597,8 +632,9 @@ function Home({ stored, current, onChange }: { stored: Stored; current: Session;
 
       <Composer
         ttl={ttl}
-        ttlChoices={ttlChoices(ttl, config?.max_ttl_secs)}
+        ttlChoices={ttlChoices(ttl, maxTtlSecs(config, limits))}
         config={config}
+        maxClipBytes={limits?.max_clip_bytes ?? null}
         upload={upload}
         onDrafted={setDrafted}
         onTtl={changeTtl}
@@ -646,7 +682,16 @@ function Home({ stored, current, onChange }: { stored: Stored; current: Session;
           )}
         </div>
       )}
-      {settings && <SettingsSheet stored={stored} client={client} onClose={() => setSettings(false)} onChange={onChange} />}
+      {settings && (
+        <SettingsSheet
+          stored={stored}
+          client={client}
+          config={config}
+          limits={limits}
+          onClose={() => setSettings(false)}
+          onChange={onChange}
+        />
+      )}
     </Screen>
   );
 }
@@ -656,6 +701,8 @@ function Composer(props: {
   ttlChoices: { secs: number; label: string }[];
   /** The relay's limits, once known. */
   config: ServerConfig | null;
+  /** The space's plan limit per clip, if it has one. */
+  maxClipBytes: number | null;
   upload: Progress | null;
   /** Whether there's something typed or picked, which a reload would lose. */
   onDrafted: (drafted: boolean) => void;
@@ -714,6 +761,7 @@ function Composer(props: {
   // Too big for the clip itself: the files go as chunks, if the relay takes them.
   const big = limit !== null && total > limit;
   const tooLarge = big && !props.config?.chunked;
+  const overPlan = props.maxClipBytes !== null && total > props.maxClipBytes;
   // Until the relay's limits are known, it's unclear whether files go as chunks.
   const waiting = files.length > 0 && props.config === null;
   const drafted = text.trim() !== "" || files.length > 0;
@@ -735,7 +783,12 @@ function Composer(props: {
               ))}
             </ul>
           )}
-          {tooLarge && (
+          {overPlan && (
+            <p className="error small">
+              {formatSize(total)} is more than this space takes per clip ({formatSize(props.maxClipBytes!)}).
+            </p>
+          )}
+          {tooLarge && !overPlan && (
             <p className="error small">
               {formatSize(total)} is more than this relay takes per clip ({formatSize(limit!)}). Update the relay to
               send bigger files.
@@ -748,7 +801,7 @@ function Composer(props: {
           ) : (
             <button
               className="primary"
-              disabled={busy || tooLarge || waiting}
+              disabled={busy || tooLarge || overPlan || waiting}
               onClick={() =>
                 big ? run(async () => textItems(), files)
                 : run(async () => [...textItems(), ...(await Promise.all(files.map(fileItem)))])
@@ -972,7 +1025,14 @@ function ClipPreview({ clip }: { clip: Decrypted }) {
   return <p className="muted">Rich text without a preview. Copy works in apps that take it.</p>;
 }
 
-function SettingsSheet(props: { stored: Stored; client: WebClient; onClose: () => void; onChange: (s: Stored) => void }) {
+function SettingsSheet(props: {
+  stored: Stored;
+  client: WebClient;
+  config: ServerConfig | null;
+  limits: SpaceLimits | null;
+  onClose: () => void;
+  onChange: (s: Stored) => void;
+}) {
   const space = props.stored.spaces[0];
   const [name, setName] = useState(space.name);
   const [deviceName, setDeviceName] = useState(props.stored.deviceName);
@@ -1009,6 +1069,7 @@ function SettingsSheet(props: { stored: Stored; client: WebClient; onClose: () =
           Save
         </button>
         <InviteDevice client={props.client} spaceName={space.name} />
+        {describeLimits(props.limits) && <p className="muted small">Free plan: {describeLimits(props.limits)}.</p>}
         <p className="muted small">
           Install YACS: in Safari tap Share → Add to Home Screen; in Chrome use “Install app”. On Android, installed
           YACS shows up in the share sheet.
@@ -1022,6 +1083,7 @@ function SettingsSheet(props: { stored: Stored; client: WebClient; onClose: () =
         >
           Leave this space
         </button>
+        <LegalLinks config={props.config} />
       </div>
     </div>
   );

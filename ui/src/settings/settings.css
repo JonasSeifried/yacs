@@ -38,6 +38,54 @@ label,
   font-weight: 550;
 }
 
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+label.choice {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+label.choice:has(input:checked) {
+  border-color: var(--accent);
+}
+
+label.choice input {
+  margin: 3px 0 0;
+}
+
+label.choice > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+button.link {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+button.link:hover:not(:disabled) {
+  background: none;
+  text-decoration: underline;
+}
+
+.plan {
+  margin: -8px 0 14px;
+}
+
 label.check {
   flex-direction: row;
   align-items: center;
@@ -52,7 +100,7 @@ label.check {
   color: var(--muted);
 }
 
-input:not([type="checkbox"]),
+input:not([type="checkbox"], [type="radio"]),
 select {
   width: 100%;
   min-width: 0;

@@ -11,6 +11,7 @@ export const tauriPlatform: Platform = {
   leaveSpace: () => invoke("leave_space"),
   savePreferences: (preferences) => invoke("save_preferences", { preferences }),
   serverConfig: () => invoke("server_config"),
+  spaceLimits: () => invoke("space_limits"),
   listClips: () => invoke("list_clips"),
   getClip: (id) => invoke("get_clip", { id }),
   clipImage: async (id) => {

@@ -10,7 +10,7 @@ import { isIos } from "../mobile/link";
 import type { UploadMessage, UploadRequest } from "../mobile/upload.worker";
 import { SseParser } from "../shared/sse";
 import { chunkSizeFor } from "../shared/stream";
-import type { ChannelEvent, Clip, ClipItem, ClipMeta, ClipView, ServerConfig, StreamInfo } from "../shared/types";
+import type { ChannelEvent, Clip, ClipItem, ClipMeta, ClipView, ServerConfig, SpaceLimits, StreamInfo } from "../shared/types";
 import { API, relayRequest, relayUpload } from "./relay";
 
 const STORAGE_KEY = "yacs.spaces";
@@ -111,8 +111,13 @@ export async function enterSpace(secret: string | null, name: string, token: str
     token: token?.trim() || null,
     deviceName: deviceName.trim() || "Phone",
   };
-  await new WebClient(session(next)!).config();
+  await new WebClient(session(next)!).check();
   return save(next);
+}
+
+/** This relay's settings, before this device is in a space. */
+export async function relayConfig(): Promise<ServerConfig> {
+  return (await relayRequest(`${API}/config`, null)).json();
 }
 
 /** What a one-time invite holds. */
@@ -198,6 +203,18 @@ export class WebClient {
     return (await this.request(`${API}/config`)).json();
   }
 
+  /** What this space may do; null from relays before 0.5.0. */
+  async limits(): Promise<SpaceLimits | null> {
+    const url = `${API}/channels/${(await this.pairing).channelId}/limits`;
+    const res = await this.request(url, {}, [404]);
+    return res.status === 404 ? null : res.json();
+  }
+
+  /** Proves the relay lets this device into the space, registering a new one (which may take the account key). */
+  async check(): Promise<void> {
+    if ((await this.config()).accounts) await this.limits();
+  }
+
   /** Newest first. Also forgets cached clips that are gone. */
   async list(): Promise<ClipMeta[]> {
     const listed: ClipMeta[] = await (await this.request(await this.clipsUrl())).json();
@@ -206,10 +223,15 @@ export class WebClient {
     return listed;
   }
 
-  /** Parks a one-time invite to this space on the relay, for a day; resolves to its secret for the link. */
+  /**
+   * Parks a one-time invite to this space on the relay, for a day; resolves
+   * to its secret for the link. It carries the account key only to relays
+   * before 0.5.0, whose spaces all needed it.
+   */
   async invite(spaceName: string): Promise<string> {
     const pairing = await this.pairing;
-    const made = pairing.invite(spaceName, this.stored.deviceName, this.stored.token) as {
+    const token = this.stored.token && !(await this.config()).accounts ? this.stored.token : null;
+    const made = pairing.invite(spaceName, this.stored.deviceName, token) as {
       secret: string;
       slot: string;
       sealed: Uint8Array<ArrayBuffer>;

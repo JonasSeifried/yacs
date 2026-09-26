@@ -6,6 +6,7 @@ import type {
   Preferences,
   Sent,
   ServerConfig,
+  SpaceLimits,
   Status,
   Transfer,
   TransferChanged,
@@ -19,15 +20,17 @@ import { tauriPlatform } from "./tauri";
  */
 export interface Platform {
   status(): Promise<Status>;
-  /** Starts a new space on the relay, once it accepts the token. */
+  /** Starts a new space on the relay, once it takes it (with the account key, if it needs one). */
   createSpace(serverUrl: string, token: string | null, name: string | null): Promise<void>;
-  /** Joins the space in an invite link, or behind a code on `relay`, from another device. */
+  /** Joins the space in an invite link, or behind a code on `relay` (the free relay if null), from another device. */
   joinSpace(link: string, relay: string | null): Promise<void>;
   /** This computer's own name for the space; resolves to the name as saved. */
   renameSpace(name: string): Promise<string>;
   leaveSpace(): Promise<void>;
   savePreferences(preferences: Preferences): Promise<void>;
   serverConfig(): Promise<ServerConfig>;
+  /** Null from relays before 0.5.0. */
+  spaceLimits(): Promise<SpaceLimits | null>;
   listClips(): Promise<ClipMeta[]>;
   /** Decrypted; null if the clip expired or was deleted. */
   getClip(id: string): Promise<ClipView | null>;

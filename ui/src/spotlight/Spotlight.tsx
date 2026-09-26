@@ -3,8 +3,9 @@ import { platform } from "../platform";
 import { EAGER_CONCURRENCY, loadsEagerly, runLimited } from "../shared/async";
 import { type ClipIcon, clipIcon, clipTitle, isImageMime, previewDocument, previewKind } from "../shared/clip";
 import { guessOs, modKey } from "../shared/hotkey";
+import { maxTtlSecs } from "../shared/plan";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
-import type { ClipMeta, ClipView, FileInfo, ServerConfig, Status, Transfer } from "../shared/types";
+import type { ClipMeta, ClipView, FileInfo, ServerConfig, SpaceLimits, Status, Transfer } from "../shared/types";
 
 /** A failed refresh keeps the clips it had, with `error` set, instead of hiding them. */
 type List =
@@ -25,6 +26,7 @@ const SENDING_BAR_BYTES = 256 * 1024;
 export function Spotlight() {
   const [status, setStatus] = useState<Status | null>(null);
   const [config, setConfig] = useState<ServerConfig | null>(null);
+  const [limits, setLimits] = useState<SpaceLimits | null>(null);
   const [list, setList] = useState<List>({ state: "loading" });
   const [loaded, setLoaded] = useState<Record<string, Loaded>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -98,6 +100,7 @@ export function Spotlight() {
     setTtl(s.defaultTtlSecs);
     if (!s.space) return;
     platform.serverConfig().then(setConfig, () => {});
+    platform.spaceLimits().then(setLimits, () => {});
     await reloadList();
   }, [reloadList]);
 
@@ -131,7 +134,7 @@ export function Spotlight() {
     if (selected) load(selected.id);
   }, [selected, load]);
 
-  const choices = ttlChoices(ttl, config?.max_ttl_secs);
+  const choices = ttlChoices(ttl, maxTtlSecs(config, limits));
   const changeTtl = useCallback((secs: number) => {
     setTtl(secs);
     platform.setDefaultTtl(secs).catch((e) => setNotice({ kind: "error", text: String(e) }));

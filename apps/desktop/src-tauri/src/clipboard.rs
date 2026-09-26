@@ -144,6 +144,20 @@ pub fn files_too_big(files: &[LocalFile], limit: u64) -> String {
     )
 }
 
+/// Over what the space's plan takes, which no relay update changes.
+pub fn files_over_plan(files: &[LocalFile], limit: u64) -> String {
+    let total = files.iter().map(|f| f.size).sum();
+    let what = match files {
+        [file] => format!("{} is", file.name),
+        _ => format!("These {} files are", files.len()),
+    };
+    format!(
+        "{what} {}, but this space takes up to {} per clip.",
+        size(total),
+        size(limit)
+    )
+}
+
 /// The files' contents, to send in the clip itself.
 pub fn read_files(files: Vec<LocalFile>) -> Result<Vec<ClipItem>, String> {
     files

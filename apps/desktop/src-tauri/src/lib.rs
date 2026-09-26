@@ -100,6 +100,7 @@ pub fn run() {
             commands::leave_space,
             commands::save_preferences,
             commands::server_config,
+            commands::space_limits,
             commands::list_clips,
             commands::get_clip,
             commands::clip_image,

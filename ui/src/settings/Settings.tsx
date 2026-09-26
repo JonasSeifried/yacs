@@ -1,6 +1,7 @@
 import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import { platform } from "../platform";
 import { acceleratorFromEvent, formatAccelerator } from "../shared/hotkey";
+import { describeLimits, isPublicRelay, maxTtlSecs, PUBLIC_RELAY } from "../shared/plan";
 import { ttlChoices } from "../shared/time";
 import type {
   CodeEvent,
@@ -9,6 +10,7 @@ import type {
   Os,
   Preferences,
   ServerConfig,
+  SpaceLimits,
   SpaceStatus,
   Status,
 } from "../shared/types";
@@ -17,11 +19,16 @@ import { relayBehind } from "../shared/version";
 export function Settings() {
   const [status, setStatus] = useState<Status | null>(null);
   const [serverConfig, setServerConfig] = useState<ServerConfig | null>(null);
+  const [limits, setLimits] = useState<SpaceLimits | null>(null);
 
   const refresh = useCallback(async () => {
     const s = await platform.status();
     setStatus(s);
-    setServerConfig(s.space ? await platform.serverConfig().catch(() => null) : null);
+    const [config, spaceLimits] = s.space
+      ? await Promise.all([platform.serverConfig().catch(() => null), platform.spaceLimits().catch(() => null)])
+      : [null, null];
+    setServerConfig(config);
+    setLimits(spaceLimits);
   }, []);
 
   useEffect(() => {
@@ -51,11 +58,11 @@ export function Settings() {
     <main className="settings">
       <section className="card">
         <h2>Space</h2>
-        {status.space ? <SpaceSettings space={status.space} /> : <SetUpSpace />}
+        {status.space ? <SpaceSettings space={status.space} limits={limits} /> : <SetUpSpace />}
       </section>
       <section className="card">
         <h2>Preferences</h2>
-        <PreferencesForm status={status} serverConfig={serverConfig} />
+        <PreferencesForm status={status} maxTtlSecs={maxTtlSecs(serverConfig, limits)} />
       </section>
       {status.cli.available && (
         <section className="card">
@@ -198,7 +205,7 @@ function CommandLine({ status }: { status: Status }) {
   );
 }
 
-function SpaceSettings({ space }: { space: SpaceStatus }) {
+function SpaceSettings({ space, limits }: { space: SpaceStatus; limits: SpaceLimits | null }) {
   const [error, setError] = useState<string | null>(null);
   const leave = async () => {
     if (!confirm(`Leave “${space.name}”? This computer stops sharing clips with the space. To come back, you'll need an invite from one of its devices.`))
@@ -213,8 +220,18 @@ function SpaceSettings({ space }: { space: SpaceStatus }) {
     <>
       <SpaceName name={space.name} />
       <p className="paired">
-        <span className="dot" /> Syncing through <strong>{space.relay}</strong>
+        <span className="dot" />
+        {isPublicRelay(space.relay) ? (
+          <span>
+            Syncing through the <strong>free YACS relay</strong>
+          </span>
+        ) : (
+          <span>
+            Syncing through <strong>{space.relay}</strong>
+          </span>
+        )}
       </p>
+      {describeLimits(limits) && <p className="hint plan">Free plan: {describeLimits(limits)}.</p>}
       {error && <p className="error">{error}</p>}
       <InviteDevice relay={space.relay} />
       <div className="actions">
@@ -405,7 +422,8 @@ function InviteDevice({ relay }: { relay: string }) {
           <p className="code mono">{code.code}</p>
           <p className="hint">
             {code.replaced && "Someone typed a wrong code, so here's a new one. "}
-            Works while this window is open. The other device also needs the relay: {relay}
+            Works while this window is open.
+            {!isPublicRelay(relay) && ` The other device also needs the relay: ${relay}`}
           </p>
         </>
       )}
@@ -414,9 +432,14 @@ function InviteDevice({ relay }: { relay: string }) {
   );
 }
 
-/** Join your other devices' space with an invite link, or start a new one. */
+/**
+ * Join your other devices' space with an invite link or code, or start a new
+ * one, on the free relay or your own.
+ */
 function SetUpSpace() {
   const [link, setLink] = useState("");
+  /** Your own relay instead of the free one, for codes and new spaces. */
+  const [own, setOwn] = useState(false);
   const [serverUrl, setServerUrl] = useState("");
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState<"join" | "create" | null>(null);
@@ -437,12 +460,32 @@ function SetUpSpace() {
   const isCode = /^\s*\d/.test(link);
   const join = (e: FormEvent) => {
     e.preventDefault();
-    run("join", () => platform.joinSpace(link, isCode ? serverUrl : null));
+    run("join", () => platform.joinSpace(link, isCode && own ? serverUrl : null));
   };
   const create = (e: FormEvent) => {
     e.preventDefault();
-    run("create", () => platform.createSpace(serverUrl, token || null, null));
+    run("create", () => (own ? platform.createSpace(serverUrl, token || null, null) : platform.createSpace(PUBLIC_RELAY, null, null)));
   };
+  const relayUrl = (hint: string) => (
+    <label>
+      Relay URL <span className="optional">{hint}</span>
+      <input
+        type="url"
+        required
+        placeholder="https://clip.example.com"
+        value={serverUrl}
+        onChange={(e) => {
+          // An invite link pasted here out of habit belongs in the first field.
+          if (/#(join|pair)=/.test(e.target.value)) {
+            setLink(e.target.value.trim());
+            setServerUrl("");
+          } else {
+            setServerUrl(e.target.value);
+          }
+        }}
+      />
+    </label>
+  );
 
   return (
     <>
@@ -457,20 +500,19 @@ function SetUpSpace() {
             autoComplete="off"
             spellCheck={false}
           />
-          <span className="hint">On a computer in the space: Settings → Invite a device….</span>
+          <span className="hint">On a device in the space: Invite a device….</span>
         </label>
-        {isCode && (
-          <label>
-            Relay URL <span className="optional">shown under the code</span>
-            <input
-              type="url"
-              required
-              placeholder="https://clip.example.com"
-              value={serverUrl}
-              onChange={(e) => setServerUrl(e.target.value)}
-            />
-          </label>
-        )}
+        {isCode &&
+          (own ? (
+            relayUrl("shown under the code")
+          ) : (
+            <p className="hint">
+              On the free YACS relay.{" "}
+              <button type="button" className="link" onClick={() => setOwn(true)}>
+                The code is for my own relay
+              </button>
+            </p>
+          ))}
         {error?.form === "join" && <p className="error">{error.text}</p>}
         <div className="actions">
           <button className="primary" type="submit" disabled={busy !== null}>
@@ -480,28 +522,33 @@ function SetUpSpace() {
       </form>
       <p className="divider">or start a new space</p>
       <form onSubmit={create}>
-        <label>
-          Relay URL
-          <input
-            type="url"
-            required
-            placeholder="https://clip.example.com"
-            value={serverUrl}
-            onChange={(e) => {
-              // An invite link pasted here out of habit belongs above.
-              if (/#(join|pair)=/.test(e.target.value)) {
-                setLink(e.target.value.trim());
-                setServerUrl("");
-              } else {
-                setServerUrl(e.target.value);
-              }
-            }}
-          />
-        </label>
-        <label>
-          Access token <span className="optional">if your relay requires one</span>
-          <input type="password" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" />
-        </label>
+        <div className="choices" role="radiogroup" aria-label="Relay">
+          <label className="choice">
+            <input type="radio" name="relay" checked={!own} onChange={() => setOwn(false)} />
+            <span>
+              Free YACS relay
+              <span className="hint">
+                Nothing to set up. Clips up to 10 MB, kept up to an hour. Privacy: {PUBLIC_RELAY.replace("https://", "")}/privacy
+              </span>
+            </span>
+          </label>
+          <label className="choice">
+            <input type="radio" name="relay" checked={own} onChange={() => setOwn(true)} />
+            <span>
+              My own relay
+              <span className="hint">A relay you run, with your own limits.</span>
+            </span>
+          </label>
+        </div>
+        {own && (
+          <>
+            {relayUrl("")}
+            <label>
+              Account key <span className="optional">the relay's YACS_ACCESS_TOKEN, if it has one</span>
+              <input type="password" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" />
+            </label>
+          </>
+        )}
         {error?.form === "create" && <p className="error">{error.text}</p>}
         <div className="actions">
           <button type="submit" disabled={busy !== null}>
@@ -521,7 +568,7 @@ const NAME_SAVE_MS = 600;
  * Each change saves right away (the device name once typing pauses), so
  * closing the window never leaves a change unsaved that looks applied.
  */
-function PreferencesForm({ status, serverConfig }: { status: Status; serverConfig: ServerConfig | null }) {
+function PreferencesForm({ status, maxTtlSecs }: { status: Status; maxTtlSecs: number | undefined }) {
   const fromStatus = (s: Status): Preferences => ({
     deviceName: s.deviceName,
     hotkey: s.hotkey,
@@ -576,7 +623,7 @@ function PreferencesForm({ status, serverConfig }: { status: Status; serverConfi
     save(prefs);
   };
 
-  const options = ttlChoices(prefs.defaultTtlSecs, serverConfig?.max_ttl_secs);
+  const options = ttlChoices(prefs.defaultTtlSecs, maxTtlSecs);
 
   return (
     <form onSubmit={submit}>
