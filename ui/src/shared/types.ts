@@ -126,12 +126,14 @@ export interface CliStatus {
   location: string | null;
 }
 
-/** The desktop's "Invite a device" QR code and link. */
+/** The desktop's "Invite a device" QR code and link, for a one-time invite. */
 export interface Invite {
   url: string;
   /** `data:image/svg+xml` URL. */
   qr: string;
   warning: string | null;
+  /** Where the relay keeps it; `onInviteUsed` names it. */
+  slot: string;
 }
 
 export interface Preferences {

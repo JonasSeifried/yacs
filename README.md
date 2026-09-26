@@ -12,7 +12,7 @@ Big files (a video, a disk image) go through the relay in encrypted 4 MB chunks,
 
 Your devices share a **space**: a random key, made on the first device, that every clip is encrypted with (XChaCha20-Poly1305) before it leaves the device. The relay only sees the space's channel id, encrypted blobs, their sizes and their expiry times: never content, formats, device names or the space's name. Clips are deleted when they expire, and nothing is kept beyond that.
 
-The invite link (or its QR code) carries the key, and it's the only secret. Anyone who has it can read and send your clips, so only use it for your own devices. An access token on the relay keeps strangers from storing data on it.
+Devices join with an invite link (or its QR code). It works once, within 24 hours: the relay hands the sealed invite out to the first device that opens the link and then forgets it, without ever being able to open it. If someone else got there first, your device is told the invite was already used. An access token on the relay keeps strangers from storing data on it.
 
 ## Self-hosting the relay
 
@@ -50,7 +50,7 @@ Without Docker: `cargo build --release -p yacs-server` (after building the web a
 ## Adding your devices
 
 1. On the first computer: open YACS → Settings, enter your relay's URL and token under **Start a new space**, and press it. The space is called "My devices"; rename it there whenever you like (each device keeps its own name for it).
-2. Everything else: on a computer in the space, Settings → **Invite a device…** shows a QR code and a link.
+2. Everything else: on a computer in the space, Settings → **Invite a device…** shows a QR code and a link, good for one device within 24 hours (the phone app makes links too, under Settings).
    - Phone: scan the code with the camera (on iPhone, see the tips below), or paste the link into the app.
    - Another computer: **Copy link** and paste it into that computer's **Invite link** field.
    - Server: paste the link into `yacs join` (see [Command line](#command-line)).

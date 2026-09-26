@@ -5,6 +5,8 @@ pub enum Error {
     InvalidChannelId,
     #[error("invalid pairing secret")]
     InvalidSecret,
+    #[error("invalid invite")]
+    InvalidInvite,
     #[error("envelope is too short")]
     Truncated,
     #[error("unsupported protocol version {0}")]

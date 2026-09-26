@@ -1,20 +1,22 @@
-// Invite links: `https://relay/#pair=v1.<channel>.<key>&token=…&name=…`, made
-// by the desktop's "Invite a device" QR code and `yacs invite`. The fragment
-// never reaches the relay (browsers don't send it), so neither the key nor the
-// token shows up in logs.
+// Invite links: `https://relay/#join=v2.<secret>`, made by "Invite a device"
+// in any YACS app and by `yacs invite`. The secret opens a one-time invite
+// the relay keeps for a day. The fragment never reaches the relay (browsers
+// don't send it), so the secret doesn't show up in its logs.
+//
+// YACS 0.3 made `#pair=v1.<channel>.<key>&token=…&name=…` links, which carry
+// the space itself; they're still read.
 
-export interface InviteLink {
-  secret: string;
-  token: string | null;
-  /** The inviter's name for the space, as a suggestion. */
-  name: string | null;
-}
+export type InviteLink =
+  | { kind: "invite"; secret: string }
+  | { kind: "space"; secret: string; token: string | null; name: string | null };
 
 export function parseInviteLink(hash: string): InviteLink | null {
   const params = new URLSearchParams(hash.replace(/^#/, ""));
+  const join = params.get("join");
+  if (join) return { kind: "invite", secret: join };
   const secret = params.get("pair");
   if (!secret) return null;
-  return { secret, token: params.get("token") || null, name: params.get("name")?.trim() || null };
+  return { kind: "space", secret, token: params.get("token") || null, name: params.get("name")?.trim() || null };
 }
 
 /**
@@ -34,14 +36,10 @@ export function inviteLinkFromCode(text: string, origin = location.origin): Invi
   return link;
 }
 
-/** The link other devices join with, for the relay at `base` (this app's own URL). */
-export function inviteUrl(link: InviteLink, base = location.origin + location.pathname): string {
-  const params = new URLSearchParams();
-  if (link.token) params.set("token", link.token);
-  if (link.name) params.set("name", link.name);
-  const rest = params.toString();
-  // The secret is base64url and dots: nothing to escape.
-  return `${base.replace(/\/+$/, "")}/#pair=${link.secret}${rest ? `&${rest}` : ""}`;
+/** The link for a one-time invite, on the relay at `base` (this app's own URL). */
+export function inviteUrl(secret: string, base = location.origin + location.pathname): string {
+  // The secret is base64url and a dot: nothing to escape.
+  return `${base.replace(/\/+$/, "")}/#join=${secret}`;
 }
 
 /** Called right after reading the link, so the secret doesn't linger in the address bar or history. */

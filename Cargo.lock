@@ -6570,7 +6570,9 @@ version = "0.3.2"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "serde",
  "serde-wasm-bindgen",
+ "serde_bytes",
  "wasm-bindgen",
  "wasm-bindgen-test",
  "yacs-core",

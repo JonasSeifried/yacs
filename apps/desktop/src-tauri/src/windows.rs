@@ -15,6 +15,8 @@ pub const EVENT_SETTINGS_SHOWN: &str = "settings-shown";
 pub const EVENT_STATUS_CHANGED: &str = "status-changed";
 /// Sent to an open Spotlight when the relay reports a change to the history.
 pub const EVENT_CLIPS_CHANGED: &str = "clips-changed";
+/// To Settings, with the slot: one of the space's invites was taken.
+pub const EVENT_INVITE_USED: &str = "invite-used";
 
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let spotlight =

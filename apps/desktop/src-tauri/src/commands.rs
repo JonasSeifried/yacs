@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
-use yacs_client::spaces::{DEFAULT_SPACE_NAME, InviteLink, Space};
+use yacs_client::spaces::{DEFAULT_SPACE_NAME, Link, Space};
 use yacs_client::{Client, LocalFiles, stream_of};
 use yacs_core::api::{ClipMeta, ServerConfig};
 use yacs_core::{Clip, ClipItem, Pairing, Stream, StreamFile};
@@ -100,13 +100,18 @@ pub async fn create_space(
 /// accepts it. Nothing is saved if that fails.
 #[tauri::command]
 pub async fn join_space(app: AppHandle, state: State<'_, AppState>, link: String) -> CmdResult<()> {
-    let link = InviteLink::parse(&link).map_err(|e| {
+    let link = Link::parse(&link).map_err(|e| {
         format!("{e}. Copy one on a computer in the space from Settings → Invite a device…")
     })?;
-    let connected =
-        pairing::connect(&link.relay, link.token.as_deref(), link.pairing.clone()).await?;
-    let name = link.name.as_deref().unwrap_or(DEFAULT_SPACE_NAME);
-    let space = Space::new(name, &connected.relay, &link.pairing);
+    let joining = link.accept().await.map_err(|e| e.to_string())?;
+    let connected = pairing::connect(
+        &joining.relay,
+        joining.token.as_deref(),
+        joining.pairing.clone(),
+    )
+    .await?;
+    let name = joining.name.as_deref().unwrap_or(DEFAULT_SPACE_NAME);
+    let space = Space::new(name, &connected.relay, &joining.pairing);
     use_space(&app, &state, space, connected)
 }
 
@@ -543,12 +548,28 @@ pub struct Invite {
     /// `data:image/svg+xml` URL of the QR code.
     qr: String,
     warning: Option<String>,
+    /// Where the relay keeps it: `invite-used` events name it.
+    slot: String,
 }
 
-/// For "Invite a device" (QR code and link). Only shown on request: it's the key.
+/// For "Invite a device" (QR code and link): a new one-time invite on the
+/// relay, for a day. Only made on request.
 #[tauri::command]
-pub fn invite(state: State<'_, AppState>) -> CmdResult<Invite> {
-    let link = invite_link(&state)?;
+pub async fn invite(state: State<'_, AppState>) -> CmdResult<Invite> {
+    let client = client(&state)?;
+    let (relay, name) = {
+        let spaces = state.spaces();
+        let space = spaces
+            .current()
+            .ok_or("this computer isn't in a space yet")?;
+        (space.relay.clone(), space.name.clone())
+    };
+    let device_name = state.settings().device_name.clone();
+    let secret = client
+        .invite(&name, &device_name)
+        .await
+        .map_err(|e| e.to_string())?;
+    let link = pairing::invite(&relay, &secret);
     let svg = qrcode::QrCode::new(&link.url)
         .map_err(|e| e.to_string())?
         .render::<qrcode::render::svg::Color>()
@@ -565,23 +586,21 @@ pub fn invite(state: State<'_, AppState>) -> CmdResult<Invite> {
         url: link.url,
         qr,
         warning: link.warning,
+        slot: secret.slot().to_string(),
     })
-}
-
-fn invite_link(state: &AppState) -> CmdResult<pairing::Invite> {
-    client(state)?;
-    let spaces = state.spaces();
-    let space = spaces
-        .current()
-        .ok_or("this computer isn't in a space yet")?;
-    pairing::invite(space, spaces.token(&space.relay))
 }
 
 /// Puts `yacs` on the PATH and, if this computer is in a space, adds the
 /// command to it. May wait for macOS's admin password prompt.
 #[tauri::command]
 pub async fn install_cli(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
-    let link = invite_link(&state).ok().map(|link| link.url);
+    let link = {
+        let spaces = state.spaces();
+        spaces
+            .current()
+            .filter(|_| state.client().is_some())
+            .and_then(|space| pairing::space_link(space, spaces.token(&space.relay)).ok())
+    };
     let result = tauri::async_runtime::spawn_blocking(move || cli::install(link.as_deref()))
         .await
         .map_err(|e| e.to_string())?;

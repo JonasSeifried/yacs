@@ -8,7 +8,8 @@
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use yacs_core::{
-    Clip, ClipItem, Envelope, Image, MIN_CHUNK_SIZE, Pairing, Payload, Stream, StreamFile,
+    Clip, ClipItem, Envelope, Image, Invite, InviteSecret, MIN_CHUNK_SIZE, Pairing, Payload,
+    Stream, StreamFile,
 };
 
 /// What Argon2id made of three phrases up to 0.3 ("correct horse battery
@@ -109,7 +110,30 @@ fn main() {
         "chunks": chunks,
     })];
 
+    // Sealing picks a fresh nonce, so clients check that these open and that
+    // the secret leads to the slot, not that they seal to the same bytes.
+    let secret = InviteSecret::from_bytes(core::array::from_fn(|i| (i * 7) as u8));
+    let invites: Vec<_> = [
+        Invite::new("Anna & me", "MacBook", Some("s3cret"), pairing),
+        Invite::new("My devices", "PC 🖥️", None, pairing),
+    ]
+    .iter()
+    .map(|invite| {
+        json!({
+            "secret": secret.to_string(),
+            "slot": secret.slot().to_string(),
+            "sealed": hex::encode(secret.seal(invite).unwrap()),
+            "space_name": invite.space_name,
+            "inviter": invite.inviter,
+            "token": invite.token,
+            "channel_id": pairing.channel_id.to_string(),
+            "key": hex::encode(pairing.key.as_bytes()),
+        })
+    })
+    .collect();
+
     let vectors = json!({
+        "invites": invites,
         "version": yacs_core::PROTOCOL_VERSION,
         "roots": roots,
         "envelopes": envelopes,

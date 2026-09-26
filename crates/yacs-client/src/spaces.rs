@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use yacs_core::Pairing;
+use yacs_core::{InviteSecret, Pairing};
 
 /// What a device calls its first space. Names are each device's own label:
 /// they never go to the relay, and renaming one doesn't rename it elsewhere.
@@ -105,31 +105,118 @@ impl Spaces {
     }
 }
 
-/// Adds a device to a space: `https://relay/#pair=v1.<channel>.<key>&token=…&name=…`,
-/// shown as a QR code and link by the desktop app and printed by `yacs invite`.
-/// Browsers never send the fragment to the relay. It works for as long as the
-/// space exists, so it's as secret as the key; one-time invites replace it.
+/// A one-time invite's link, `https://relay/#join=v2.<secret>`: shown as a QR
+/// code and link by the apps and printed by `yacs invite`. Browsers never send
+/// the fragment to the relay.
+pub fn invite_url(relay: &str, secret: &InviteSecret) -> String {
+    format!("{}/#join={secret}", normalize_relay(relay))
+}
+
+/// What an invite link or QR code holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InviteLink {
+pub enum Link {
+    /// A one-time invite, parked on the relay (see [`invite_url`]).
+    Invite { relay: String, secret: InviteSecret },
+    /// The space itself, as YACS 0.3 showed it.
+    Space(SpaceLink),
+}
+
+/// `https://relay/#pair=v1.<channel>.<key>&token=…&name=…`: a space's key in
+/// the fragment, working for as long as the space exists. Only for handing a
+/// space to this device's own `yacs` command now, and read for links made by
+/// YACS 0.3.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaceLink {
     pub relay: String,
     pub pairing: Pairing,
-    /// The relay's access token, which the invited device needs as well.
+    /// The relay's access token, which the other device needs as well.
     pub token: Option<String>,
-    /// The inviter's name for the space, suggested to the invited device.
+    /// The name for the space, suggested to the other device.
     pub name: Option<String>,
+}
+
+/// What joining a space takes, from either kind of link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Accepted {
+    pub relay: String,
+    pub pairing: Pairing,
+    pub token: Option<String>,
+    pub name: Option<String>,
+    /// The inviting device, for a one-time invite.
+    pub inviter: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum LinkError {
     #[error("that isn't an invite link")]
     NotALink,
-    #[error("that link has no space in it")]
+    #[error("that link has no invite in it")]
     NoSpace,
-    #[error("the space in that link is damaged")]
+    #[error("the invite in that link is damaged")]
     Damaged,
 }
 
-impl InviteLink {
+impl Link {
+    pub fn parse(input: &str) -> Result<Self, LinkError> {
+        let mut url = url::Url::parse(input.trim()).map_err(|_| LinkError::NotALink)?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(LinkError::NotALink);
+        }
+        let fragment = url.fragment().unwrap_or_default().to_owned();
+        let (mut join, mut secret, mut token, mut name) = (None, None, None, None);
+        for (key, value) in url::form_urlencoded::parse(fragment.as_bytes()) {
+            let value = Some(value.into_owned()).filter(|v| !v.is_empty());
+            match &*key {
+                "join" => join = value,
+                "pair" => secret = value,
+                "token" => token = value,
+                "name" => name = value.as_deref().and_then(clean_name),
+                _ => {}
+            }
+        }
+        url.set_fragment(None);
+        let relay = normalize_relay(url.as_str());
+        if let Some(join) = join {
+            let secret = join.parse().map_err(|_| LinkError::Damaged)?;
+            return Ok(Self::Invite { relay, secret });
+        }
+        let pairing = Pairing::from_secret(&secret.ok_or(LinkError::NoSpace)?)
+            .map_err(|_| LinkError::Damaged)?;
+        Ok(Self::Space(SpaceLink {
+            relay,
+            pairing,
+            token,
+            name,
+        }))
+    }
+
+    /// For an invite, takes it from the relay, which uses it up.
+    pub async fn accept(self) -> crate::Result<Accepted> {
+        match self {
+            Self::Space(link) => Ok(Accepted {
+                relay: link.relay,
+                pairing: link.pairing,
+                token: link.token,
+                name: link.name,
+                inviter: None,
+            }),
+            Self::Invite { relay, secret } => {
+                let invite = crate::take_invite(&relay, &secret)
+                    .await?
+                    .ok_or(crate::Error::InviteGone)?;
+                Ok(Accepted {
+                    pairing: invite.pairing(),
+                    token: invite.token.clone(),
+                    name: clean_name(&invite.space_name),
+                    inviter: clean_name(&invite.inviter),
+                    relay,
+                })
+            }
+        }
+    }
+}
+
+impl SpaceLink {
     pub fn new(space: &Space, token: Option<&str>) -> Result<Self, yacs_core::Error> {
         Ok(Self {
             relay: space.relay.clone(),
@@ -155,33 +242,6 @@ impl InviteLink {
             url.push_str(&rest);
         }
         url
-    }
-
-    pub fn parse(input: &str) -> Result<Self, LinkError> {
-        let mut url = url::Url::parse(input.trim()).map_err(|_| LinkError::NotALink)?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err(LinkError::NotALink);
-        }
-        let fragment = url.fragment().unwrap_or_default().to_owned();
-        let (mut secret, mut token, mut name) = (None, None, None);
-        for (key, value) in url::form_urlencoded::parse(fragment.as_bytes()) {
-            let value = Some(value.into_owned()).filter(|v| !v.is_empty());
-            match &*key {
-                "pair" => secret = value,
-                "token" => token = value,
-                "name" => name = value.as_deref().and_then(clean_name),
-                _ => {}
-            }
-        }
-        let pairing = Pairing::from_secret(&secret.ok_or(LinkError::NoSpace)?)
-            .map_err(|_| LinkError::Damaged)?;
-        url.set_fragment(None);
-        Ok(Self {
-            relay: normalize_relay(url.as_str()),
-            pairing,
-            token,
-            name,
-        })
     }
 }
 
@@ -255,9 +315,9 @@ mod tests {
     }
 
     #[test]
-    fn invite_links_round_trip() {
+    fn links_round_trip() {
         let space = Space::new("Anna & me", "https://clip.example.com/yacs/", &pairing(1));
-        let link = InviteLink::new(&space, Some("s3cret &x")).unwrap();
+        let link = SpaceLink::new(&space, Some("s3cret &x")).unwrap();
         let url = link.to_url();
         let secret = pairing(1).to_secret();
         assert_eq!(
@@ -266,12 +326,15 @@ mod tests {
                 "https://clip.example.com/yacs/#pair={secret}&token=s3cret+%26x&name=Anna+%26+me"
             )
         );
-        assert_eq!(InviteLink::parse(&format!(" {url}\n")), Ok(link));
+        assert_eq!(Link::parse(&format!(" {url}\n")), Ok(Link::Space(link)));
 
-        let bare = InviteLink::parse(&format!("http://10.0.0.2:8080/#pair={secret}")).unwrap();
+        let Ok(Link::Space(bare)) = Link::parse(&format!("http://10.0.0.2:8080/#pair={secret}"))
+        else {
+            panic!("not a space link");
+        };
         assert_eq!(bare.relay, "http://10.0.0.2:8080");
         assert_eq!((bare.token, bare.name), (None, None));
-        let no_extras = InviteLink {
+        let no_extras = SpaceLink {
             relay: "http://10.0.0.2:8080".into(),
             pairing: pairing(1),
             token: None,
@@ -287,9 +350,21 @@ mod tests {
             ("ftp://clip.example.com/#pair=x", LinkError::NotALink),
             ("https://clip.example.com/", LinkError::NoSpace),
             ("https://clip.example.com/#pair=v1.nope", LinkError::Damaged),
+            ("https://clip.example.com/#join=v2.nope", LinkError::Damaged),
         ] {
-            assert_eq!(InviteLink::parse(bad), Err(err), "{bad}");
+            assert_eq!(Link::parse(bad), Err(err), "{bad}");
         }
+
+        let secret = InviteSecret::generate().unwrap();
+        let url = invite_url("https://clip.example.com/yacs/", &secret);
+        assert_eq!(url, format!("https://clip.example.com/yacs/#join={secret}"));
+        assert_eq!(
+            Link::parse(&url),
+            Ok(Link::Invite {
+                relay: "https://clip.example.com/yacs".into(),
+                secret
+            })
+        );
     }
 
     #[test]

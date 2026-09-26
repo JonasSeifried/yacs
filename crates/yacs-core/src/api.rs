@@ -121,10 +121,29 @@ pub enum ChannelEvent {
         id: String,
     },
     Cleared,
+    /// Someone took one of the space's invites (`GET /api/v1/invites/{slot}`),
+    /// so it's gone. Older clients see it as [`Other`](Self::Other).
+    InviteUsed {
+        slot: String,
+    },
     /// A type from a newer relay. Treat it as "the history changed".
     #[serde(other)]
     Other,
 }
+
+// One-time invites (see [`crate::InviteSecret`]), sealed bytes of at most
+// [`crate::MAX_SEALED_INVITE`]:
+//
+// ```text
+// PUT    …/channels/{channel}/invites/{slot}?ttl=   body: the sealed invite → 201
+// DELETE …/channels/{channel}/invites/{slot}        take it back → 204, or 404
+// GET    /api/v1/invites/{slot}                     → 200 with the sealed invite once, then 404
+// ```
+//
+// The `GET` needs no access token: the invited device has none yet, and the
+// slot is as hard to guess as a key. Taking an invite sends
+// [`ChannelEvent::InviteUsed`] to its space. `ttl` is at most
+// [`crate::MAX_INVITE_TTL_SECS`], which is also the default.
 
 /// Body of every non-2xx JSON response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

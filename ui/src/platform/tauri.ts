@@ -41,5 +41,6 @@ export const tauriPlatform: Platform = {
   onStatusChanged: (handler) => listen("status-changed", handler),
   onSettingsShown: (handler) => listen("settings-shown", handler),
   onClipsChanged: (handler) => listen("clips-changed", handler),
+  onInviteUsed: (handler) => listen<string>("invite-used", (e) => handler(e.payload)),
   onTransferChanged: (handler) => listen<TransferChanged>("transfer-changed", (e) => handler(e.payload)),
 };

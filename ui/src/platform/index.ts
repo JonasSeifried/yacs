@@ -46,7 +46,7 @@ export interface Platform {
   cancelTransfer(): Promise<void>;
   deleteClip(id: string): Promise<void>;
   setDefaultTtl(ttlSecs: number): Promise<void>;
-  /** Contains the space's key: only fetch it when the user asks to see it. */
+  /** A new one-time invite on the relay, for a day. Only make one when the user asks. */
   invite(): Promise<Invite>;
   /** Puts the bundled `yacs` command on the PATH, in this computer's space. */
   installCli(): Promise<void>;
@@ -67,6 +67,8 @@ export interface Platform {
   onSettingsShown(handler: () => void): Promise<() => void>;
   /** The relay reported new or deleted clips (only sent while Spotlight is open). */
   onClipsChanged(handler: () => void): Promise<() => void>;
+  /** One of the space's invites was taken (by its slot). */
+  onInviteUsed(handler: (slot: string) => void): Promise<() => void>;
   /** Progress of a big transfer, and how it ended. */
   onTransferChanged(handler: (event: TransferChanged) => void): Promise<() => void>;
 }

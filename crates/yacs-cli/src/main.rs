@@ -4,7 +4,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use yacs_client::spaces::{DEFAULT_SPACE_NAME, InviteLink, Space, Spaces, normalize_relay};
+use yacs_client::spaces::{DEFAULT_SPACE_NAME, Link, Space, Spaces, invite_url, normalize_relay};
 use yacs_client::{Client, stream_of};
 use yacs_core::api::{ClipMeta, ServerConfig};
 
@@ -74,8 +74,7 @@ enum Command {
     Leave,
     /// List the spaces this machine is in.
     Spaces,
-    /// Print an invite link for another device. Anyone with it can read and
-    /// send the space's clips.
+    /// Print an invite link for another device: it works once, within 24 hours.
     Invite,
     /// Start, rename or export a space.
     Space {
@@ -171,22 +170,36 @@ async fn run(cli: Cli) -> Result<()> {
         Command::Relay {
             command: RelayCommand::Update,
         } => return relay::update(),
-        Command::Leave | Command::Spaces | Command::Invite | Command::Space { .. } => {
+        Command::Leave | Command::Spaces | Command::Space { .. } => {
             return manage(&cli.command);
         }
         _ => {}
     }
     let (server, client) = connect(&cli)?;
+    let device_name = device_name(&cli);
 
     match cli.command {
         Command::Join { .. }
         | Command::Leave
         | Command::Spaces
-        | Command::Invite
         | Command::Space { .. }
         | Command::Update { .. }
         | Command::Relay { .. } => {
             unreachable!("handled above")
+        }
+        Command::Invite => {
+            let saved = config::load(&config::path()?)?;
+            let name = saved
+                .current()
+                .filter(|s| {
+                    s.relay == server && s.pairing().ok().as_ref() == Some(client.pairing())
+                })
+                .map_or(DEFAULT_SPACE_NAME, |s| &s.name);
+            let secret = client.invite(name, &device_name).await?;
+            println!("{}", invite_url(&server, &secret));
+            eprintln!(
+                "Works once, within 24 hours: open it on a phone, or paste it into Settings on a computer or into `yacs join`.\nWhoever opens it first joins \"{name}\", so only send it to the device you mean."
+            );
         }
         Command::Send {
             file,
@@ -194,9 +207,6 @@ async fn run(cli: Cli) -> Result<()> {
             as_file,
             ttl,
         } => {
-            let device_name = cli
-                .device_name
-                .unwrap_or_else(|| gethostname::gethostname().to_string_lossy().into_owned());
             let (item, what) = match (text, file) {
                 (Some(text), _) => content::from_text(text),
                 (None, Some(path)) => {
@@ -261,6 +271,13 @@ async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+/// Shown to other devices. Defaults to the host name.
+fn device_name(cli: &Cli) -> String {
+    cli.device_name
+        .clone()
+        .unwrap_or_else(|| gethostname::gethostname().to_string_lossy().into_owned())
+}
+
 fn print_sent(what: &str, meta: &ClipMeta) {
     eprintln!(
         "sent {what}, expires in {}",
@@ -314,18 +331,25 @@ async fn join(cli: &Cli, name: Option<&str>) -> Result<()> {
         );
     }
     let input = prompt_secret("Invite link: ")?;
-    let link = InviteLink::parse(&input).map_err(|e| {
+    let link = Link::parse(&input).map_err(|e| {
         anyhow::anyhow!(
             "{e}; copy one on a computer in the space from Settings → Invite a device…, or run `yacs invite` there"
         )
     })?;
-    let name = name.or(link.name.as_deref()).unwrap_or(DEFAULT_SPACE_NAME);
-    let token = cli.token.clone().or(link.token);
-    let (token, config) = check(&link.relay, token, &link.pairing).await?;
-    let space = Space::new(name, &link.relay, &link.pairing);
+    let joining = link.accept().await?;
+    let name = name
+        .or(joining.name.as_deref())
+        .unwrap_or(DEFAULT_SPACE_NAME);
+    let token = cli.token.clone().or(joining.token);
+    let (token, config) = check(&joining.relay, token, &joining.pairing).await?;
+    let space = Space::new(name, &joining.relay, &joining.pairing);
     let path = save_current(space.clone(), token)?;
+    let from = joining
+        .inviter
+        .map(|device| format!(", invited by {device}"))
+        .unwrap_or_default();
     eprintln!(
-        "Joined \"{}\" on {} (relay {}).",
+        "Joined \"{}\" on {} (relay {}{from}).",
         space.name,
         space.relay,
         relay_version(&config)
@@ -419,15 +443,6 @@ fn manage(command: &Command) -> Result<()> {
             for space in &saved.spaces {
                 println!("{}\t{}", space.name, space.relay);
             }
-        }
-        Command::Invite => {
-            let space = current(&saved)?;
-            let link = InviteLink::new(&space, saved.token(&space.relay))?;
-            println!("{}", link.to_url());
-            eprintln!(
-                "Open it on a phone, or paste it into Settings on a computer or into `yacs join`.\nAnyone with it can read and send the clips of \"{}\": only use it for your own devices.",
-                space.name
-            );
         }
         Command::Space {
             command: SpaceCommand::Rename { name },

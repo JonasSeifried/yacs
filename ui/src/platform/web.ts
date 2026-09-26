@@ -3,7 +3,7 @@
 // Spaces are kept in localStorage; the page's CSP allows no third-party
 // scripts that could read them.
 
-import init, { Pairing, newStream } from "../wasm/yacs";
+import init, { Pairing, inviteSlot, newStream, openInvite } from "../wasm/yacs";
 import type { DownloadMessage, DownloadMode, DownloadRequest } from "../mobile/download.worker";
 import { OPFS_DIR } from "../mobile/download.worker";
 import { isIos } from "../mobile/link";
@@ -115,6 +115,25 @@ export async function enterSpace(secret: string | null, name: string, token: str
   return save(next);
 }
 
+/** What a one-time invite holds. */
+export interface TakenInvite {
+  /** The space's secret. */
+  space: string;
+  name: string;
+  inviter: string;
+  token: string | null;
+}
+
+/** Takes the invite from the relay, which hands it out once. */
+export async function takeInvite(secret: string): Promise<TakenInvite> {
+  await ready();
+  const res = await relayRequest(`${API}/invites/${inviteSlot(secret)}`, null, {}, [404]);
+  if (res.status === 404) {
+    throw new Error("This invite was already used or has expired. Make a new one on the other device (Settings → Invite a device).");
+  }
+  return openInvite(secret, new Uint8Array(await res.arrayBuffer())) as TakenInvite;
+}
+
 export function renameSpace(stored: Stored, name: string): Stored {
   const [space, ...rest] = stored.spaces;
   const cleaned = cleanName(name);
@@ -150,6 +169,19 @@ export class WebClient {
     const ids = new Set(listed.map((m) => m.id));
     for (const id of this.cache.keys()) if (!ids.has(id)) this.cache.delete(id);
     return listed;
+  }
+
+  /** Parks a one-time invite to this space on the relay, for a day; resolves to its secret for the link. */
+  async invite(spaceName: string): Promise<string> {
+    const pairing = await this.pairing;
+    const made = pairing.invite(spaceName, this.stored.deviceName, this.stored.token) as {
+      secret: string;
+      slot: string;
+      sealed: Uint8Array<ArrayBuffer>;
+    };
+    const url = `${API}/channels/${pairing.channelId}/invites/${made.slot}`;
+    await this.request(url, { method: "PUT", body: made.sealed });
+    return made.secret;
   }
 
   /** Fetched once and decrypted: clips never change. Null if it's gone. */

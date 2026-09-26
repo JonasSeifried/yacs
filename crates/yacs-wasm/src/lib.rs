@@ -7,8 +7,9 @@
 //! Big files are a `{ Stream: { salt: Uint8Array, chunk_size, files: [{ name, mime, size }] } }`
 //! item, whose chunks a [`WasmStreamCipher`] seals and opens one at a time.
 
+use serde::Serialize;
 use wasm_bindgen::prelude::*;
-use yacs_core::{Clip, Envelope, Payload, Stream, StreamCipher, StreamFile};
+use yacs_core::{Clip, Envelope, Invite, InviteSecret, Payload, Stream, StreamCipher, StreamFile};
 
 #[wasm_bindgen(js_name = Pairing)]
 pub struct WasmPairing(yacs_core::Pairing);
@@ -49,6 +50,24 @@ impl WasmPairing {
         Ok(serde_wasm_bindgen::to_value(&clip)?)
     }
 
+    /// A new one-time invite to this space: `{ secret, slot, sealed }`. PUT
+    /// `sealed` to the relay under `slot`; the link carries `secret`.
+    pub fn invite(
+        &self,
+        space_name: &str,
+        inviter: &str,
+        token: Option<String>,
+    ) -> Result<JsValue, JsError> {
+        let secret = InviteSecret::generate()?;
+        let invite = Invite::new(space_name, inviter, token.as_deref(), &self.0);
+        let sealed = NewInvite {
+            secret: secret.to_string(),
+            slot: secret.slot().to_string(),
+            sealed: secret.seal(&invite)?,
+        };
+        Ok(serde_wasm_bindgen::to_value(&sealed)?)
+    }
+
     /// For a clip's `Stream` item: seals the chunks to upload, or opens the
     /// downloaded ones.
     #[wasm_bindgen(js_name = streamCipher)]
@@ -56,6 +75,43 @@ impl WasmPairing {
         let stream: Stream = serde_wasm_bindgen::from_value(stream)?;
         Ok(WasmStreamCipher(stream.cipher(&self.0)?))
     }
+}
+
+#[derive(Serialize)]
+struct NewInvite {
+    secret: String,
+    slot: String,
+    #[serde(with = "serde_bytes")]
+    sealed: Vec<u8>,
+}
+
+/// What a taken invite holds: `{ space, name, inviter, token }`, `space`
+/// being the space's secret for `Pairing.fromSecret`.
+#[derive(Serialize)]
+struct OpenedInvite {
+    space: String,
+    name: String,
+    inviter: String,
+    token: Option<String>,
+}
+
+/// Where the relay keeps the invite behind `secret` (from a `#join=` link).
+#[wasm_bindgen(js_name = inviteSlot)]
+pub fn invite_slot(secret: &str) -> Result<String, JsError> {
+    Ok(secret.parse::<InviteSecret>()?.slot().to_string())
+}
+
+/// Opens the sealed invite fetched from the relay.
+#[wasm_bindgen(js_name = openInvite)]
+pub fn open_invite(secret: &str, sealed: &[u8]) -> Result<JsValue, JsError> {
+    let invite = secret.parse::<InviteSecret>()?.open(sealed)?;
+    let opened = OpenedInvite {
+        space: invite.pairing().to_secret(),
+        name: invite.space_name.clone(),
+        inviter: invite.inviter.clone(),
+        token: invite.token.clone(),
+    };
+    Ok(serde_wasm_bindgen::to_value(&opened)?)
 }
 
 /// A new `Stream` item for `files` (`[{ name, mime, size }]`, in the order

@@ -55,6 +55,28 @@
       }
     }
   ],
+  "invites": [
+    {
+      "channel_id": "sD92fYor09GumXgF4Jf80RRCMM5QTU78Ko0ipESaWYo",
+      "inviter": "MacBook",
+      "key": "42b889c18c87629dd1b8c73347800946d95000101c807155a05c5fd4f5be99fc",
+      "sealed": "01d0047d233af9dc5234fd6e7a3f383861f7341f4278d51f9288235580225eb93b8ff938d8f87340cd9441e8f6fe7b0de3db36fd25e469ed20f8d3af4c035d25758f3cc36204c18a61a9f30fd16cad7ecdaee54e5652573e800db7290c8aa14db94e42b21f8ea6606197a5d6dbf0af4c8a1010e18193e3e303322f56fc0163e0fcb9c7",
+      "secret": "v2.AAcOFRwjKjE4P0ZNVFtiaXB3foWMk5qhqK-2vcTL0tk",
+      "slot": "dorQNCXBIBPx_VV3YNI1Z-O3zDlpubR8GhSR_lo0fHI",
+      "space_name": "Anna & me",
+      "token": "s3cret"
+    },
+    {
+      "channel_id": "sD92fYor09GumXgF4Jf80RRCMM5QTU78Ko0ipESaWYo",
+      "inviter": "PC 🖥️",
+      "key": "42b889c18c87629dd1b8c73347800946d95000101c807155a05c5fd4f5be99fc",
+      "sealed": "012e889002ddea9f7f9858aee3b6bf6e1fce7731845f7240e97c0c914e6d479463a3981705aa0fe39a71c77ff00289a0cd70b48befc87a22e1a967c774151408723a0886008d3b14b385f1cff70d8a8158606a9df92ca08c1c077cb49d4534a40095142485e676e8fefc481f3c3f346d2472fa57b44948ad40a71620040f7784",
+      "secret": "v2.AAcOFRwjKjE4P0ZNVFtiaXB3foWMk5qhqK-2vcTL0tk",
+      "slot": "dorQNCXBIBPx_VV3YNI1Z-O3zDlpubR8GhSR_lo0fHI",
+      "space_name": "My devices",
+      "token": null
+    }
+  ],
   "roots": [
     {
       "channel_id": "FyuU7iWg6igRbFa042KMeIt1AJESKspYhPnptMJimPU",

@@ -3,7 +3,7 @@
 
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::wasm_bindgen_test;
-use yacs_wasm::{WasmPairing, new_stream};
+use yacs_wasm::{WasmPairing, invite_slot, new_stream, open_invite};
 
 fn clip() -> JsValue {
     js_sys::JSON::parse(
@@ -92,4 +92,31 @@ fn streams_seal_and_open_chunks() {
     );
     assert!(opener.open(0, sealed).is_err());
     assert!(sealer.seal(0, vec![1; 10]).is_err());
+}
+
+#[wasm_bindgen_test]
+fn invites_seal_and_open() {
+    let pairing = WasmPairing::generate().unwrap();
+    let made = pairing
+        .invite("Anna & me", "iPhone", Some("s3cret".into()))
+        .unwrap();
+    let get = |key: &str| js_sys::Reflect::get(&made, &key.into()).unwrap();
+    let secret = get("secret").as_string().unwrap();
+    assert_eq!(
+        invite_slot(&secret).unwrap(),
+        get("slot").as_string().unwrap()
+    );
+    let sealed = js_sys::Uint8Array::from(get("sealed")).to_vec();
+
+    let opened = open_invite(&secret, &sealed).unwrap();
+    let json = String::from(js_sys::JSON::stringify(&opened).unwrap());
+    assert_eq!(
+        json,
+        format!(
+            r#"{{"space":"{}","name":"Anna & me","inviter":"iPhone","token":"s3cret"}}"#,
+            pairing.secret()
+        )
+    );
+    assert!(open_invite("v2.nope", &sealed).is_err());
+    assert!(invite_slot("nope").is_err());
 }

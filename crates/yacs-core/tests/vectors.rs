@@ -6,7 +6,7 @@
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use yacs_core::{ChannelId, ChannelKey, Envelope, Error, Pairing, Payload, Stream};
+use yacs_core::{ChannelId, ChannelKey, Envelope, Error, InviteSecret, Pairing, Payload, Stream};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -15,6 +15,7 @@ use wasm_bindgen_test::wasm_bindgen_test;
 struct Vectors {
     version: u8,
     roots: Vec<RootVector>,
+    invites: Vec<InviteVector>,
     envelopes: Vec<EnvelopeVector>,
     streams: Vec<StreamVector>,
 }
@@ -22,6 +23,18 @@ struct Vectors {
 #[derive(Deserialize)]
 struct RootVector {
     root: String,
+    channel_id: String,
+    key: String,
+}
+
+#[derive(Deserialize)]
+struct InviteVector {
+    secret: String,
+    slot: String,
+    sealed: String,
+    space_name: String,
+    inviter: String,
+    token: Option<String>,
     channel_id: String,
     key: String,
 }
@@ -84,6 +97,20 @@ fn root_derivation_matches() {
             "{}",
             v.root
         );
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+fn stored_invites_open() {
+    for v in vectors().invites {
+        let secret: InviteSecret = v.secret.parse().unwrap();
+        assert_eq!(secret.slot().to_string(), v.slot);
+        let invite = secret.open(&hex::decode(&v.sealed).unwrap()).unwrap();
+        assert_eq!(invite.space_name, v.space_name);
+        assert_eq!(invite.inviter, v.inviter);
+        assert_eq!(invite.token, v.token);
+        assert_eq!(invite.pairing(), pairing(&v.channel_id, &v.key));
     }
 }
 

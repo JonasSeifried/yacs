@@ -13,6 +13,7 @@ import {
   renameSpace,
   saveDeviceName,
   session,
+  takeInvite,
 } from "../platform/web";
 import { EAGER_CONCURRENCY, loadsEagerly, runLimited } from "../shared/async";
 import { clipTitle, isImageMime, previewDocument, previewKind } from "../shared/clip";
@@ -81,9 +82,12 @@ export function App() {
 
 // ── Joining a space ────────────────────────────────────────────────────────
 
-/** The "Join?" step: nothing is fetched or stored until the tap. */
+/**
+ * The "Join?" step: nothing is fetched or stored until the tap, so a link
+ * preview in a messenger can't use up the invite.
+ */
 function JoinFromLink(props: { link: InviteLink; stored: Stored | null; onDone: (s: Stored | null) => void }) {
-  const [name, setName] = useState(props.link.name ?? DEFAULT_SPACE_NAME);
+  const { link } = props;
   const [deviceName, setDeviceName] = useState(() => props.stored?.deviceName ?? guessDeviceName());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,7 +98,12 @@ function JoinFromLink(props: { link: InviteLink; stored: Stored | null; onDone: 
     setBusy(true);
     setError(null);
     try {
-      props.onDone(await enterSpace(props.link.secret, name, props.link.token, deviceName));
+      if (link.kind === "invite") {
+        const invite = await takeInvite(link.secret);
+        props.onDone(await enterSpace(invite.space, invite.name, invite.token, deviceName));
+      } else {
+        props.onDone(await enterSpace(link.secret, link.name ?? DEFAULT_SPACE_NAME, link.token, deviceName));
+      }
     } catch (e) {
       setError(errorText(e));
       setBusy(false);
@@ -104,16 +113,12 @@ function JoinFromLink(props: { link: InviteLink; stored: Stored | null; onDone: 
   return (
     <Screen>
       <form className="card pair" onSubmit={submit}>
-        <h1>Join “{props.link.name ?? DEFAULT_SPACE_NAME}”?</h1>
+        <h1>{link.kind === "space" && link.name ? `Join “${link.name}”?` : "Join a space?"}</h1>
         <p className="muted">
-          Clips will sync through <b>{location.host}</b>, end-to-end encrypted.
+          This device will share clips with the devices in it through <b>{location.host}</b>, end-to-end encrypted.
           {replacing && " This replaces the space this device is in now."}
         </p>
         <IosHomeScreenHint />
-        <label>
-          <span>Space name <span className="muted">only on this device</span></span>
-          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={64} required />
-        </label>
         <DeviceNameField value={deviceName} onChange={setDeviceName} />
         {error && <p className="error">{error}</p>}
         <button className="primary" disabled={busy}>
@@ -204,7 +209,7 @@ function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; 
             autoCorrect="off"
             autoComplete="off"
             spellCheck={false}
-            placeholder={`${location.origin}/#pair=…`}
+            placeholder={`${location.origin}/#join=…`}
           />
         </label>
         {error && <p className="error">{error}</p>}
@@ -632,7 +637,7 @@ function Home({ stored, current, onChange }: { stored: Stored; current: Session;
           )}
         </div>
       )}
-      {settings && <SettingsSheet stored={stored} onClose={() => setSettings(false)} onChange={onChange} />}
+      {settings && <SettingsSheet stored={stored} client={client} onClose={() => setSettings(false)} onChange={onChange} />}
     </Screen>
   );
 }
@@ -958,7 +963,7 @@ function ClipPreview({ clip }: { clip: Decrypted }) {
   return <p className="muted">Rich text without a preview. Copy works in apps that take it.</p>;
 }
 
-function SettingsSheet(props: { stored: Stored; onClose: () => void; onChange: (s: Stored) => void }) {
+function SettingsSheet(props: { stored: Stored; client: WebClient; onClose: () => void; onChange: (s: Stored) => void }) {
   const space = props.stored.spaces[0];
   const [name, setName] = useState(space.name);
   const [deviceName, setDeviceName] = useState(props.stored.deviceName);
@@ -994,7 +999,7 @@ function SettingsSheet(props: { stored: Stored; onClose: () => void; onChange: (
         >
           Save
         </button>
-        <InviteDevice stored={props.stored} />
+        <InviteDevice client={props.client} spaceName={space.name} />
         <p className="muted small">
           Install YACS: in Safari tap Share → Add to Home Screen; in Chrome use “Install app”. On Android, installed
           YACS shows up in the share sheet.
@@ -1014,13 +1019,29 @@ function SettingsSheet(props: { stored: Stored; onClose: () => void; onChange: (
 }
 
 /** Hands out the invite link: share it to a messenger, or copy it for a computer's Settings. */
-function InviteDevice({ stored }: { stored: Stored }) {
+/**
+ * Makes a one-time invite, then hands its link out: share it to a messenger,
+ * or copy it for a computer's Settings. Two taps, since browsers only share
+ * and copy straight from a tap, not after waiting for the relay.
+ */
+function InviteDevice({ client, spaceName }: { client: WebClient; spaceName: string }) {
+  const [url, setUrl] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const space = stored.spaces[0];
-  const url = () => inviteUrl({ secret: space.secret, token: stored.token, name: space.name });
+  const create = async () => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      setUrl(inviteUrl(await client.invite(spaceName)));
+    } catch (e) {
+      setStatus(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(url());
+      await navigator.clipboard.writeText(url!);
       setStatus("Copied. Paste it into Settings → Invite link on the other device.");
     } catch {
       setStatus("Couldn't copy here (the clipboard needs HTTPS).");
@@ -1028,7 +1049,7 @@ function InviteDevice({ stored }: { stored: Stored }) {
   };
   const share = async () => {
     try {
-      await navigator.share({ title: `Join “${space.name}” in YACS`, url: url() });
+      await navigator.share({ title: `Join “${spaceName}” in YACS`, url: url! });
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) setStatus(errorText(e));
     }
@@ -1036,16 +1057,28 @@ function InviteDevice({ stored }: { stored: Stored }) {
   return (
     <div className="invite">
       <span>Invite a device</span>
-      <p className="muted small">Anyone with the link can read and send your clips. Only use it for your own devices.</p>
+      <p className="muted small">
+        {url
+          ? "The link works once, within 24 hours. Whoever opens it first joins, so send it only to the device you mean."
+          : "Makes a link that adds one device to this space."}
+      </p>
       <div className="row">
-        {"share" in navigator && (
-          <button type="button" onClick={share}>
-            Share link
+        {!url ? (
+          <button type="button" onClick={create} disabled={busy}>
+            {busy ? "Making a link…" : "Make an invite link"}
           </button>
+        ) : (
+          <>
+            {"share" in navigator && (
+              <button type="button" onClick={share}>
+                Share link
+              </button>
+            )}
+            <button type="button" onClick={copy}>
+              Copy link
+            </button>
+          </>
         )}
-        <button type="button" onClick={copy}>
-          Copy link
-        </button>
       </div>
       {status && <p className="muted small">{status}</p>}
     </div>

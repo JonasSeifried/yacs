@@ -2,7 +2,8 @@
 //! invite link other devices join with.
 
 use yacs_client::Client;
-use yacs_client::spaces::{InviteLink, Space, normalize_relay};
+use yacs_client::spaces::{Space, SpaceLink, invite_url, normalize_relay};
+use yacs_core::InviteSecret;
 use yacs_core::Pairing;
 
 pub struct Connected {
@@ -37,25 +38,37 @@ pub async fn connect(
 }
 
 /// What "Invite a device" shows as a QR code and link: the relay's web app
-/// with the space in the fragment, which browsers never send to the server.
-/// Phones open it; computers and `yacs join` take it pasted.
+/// with the invite's secret in the fragment, which browsers never send to the
+/// server. Phones open it; computers and `yacs join` take it pasted.
 pub struct Invite {
     pub url: String,
     /// Why other devices might not get far with this link, if there's a reason.
     pub warning: Option<String>,
 }
 
-pub fn invite(space: &Space, token: Option<&str>) -> Result<Invite, String> {
-    let url = InviteLink::new(space, token)
+pub fn invite(relay: &str, secret: &InviteSecret) -> Invite {
+    Invite {
+        url: invite_url(relay, secret),
+        warning: warning(relay),
+    }
+}
+
+/// For the bundled `yacs` command, on this computer: the space itself, so
+/// installing needs no round trip to the relay.
+pub fn space_link(space: &Space, token: Option<&str>) -> Result<String, String> {
+    Ok(SpaceLink::new(space, token)
         .map_err(|e| e.to_string())?
-        .to_url();
-    let parsed = url::Url::parse(&space.relay).ok();
+        .to_url())
+}
+
+fn warning(relay: &str) -> Option<String> {
+    let parsed = url::Url::parse(relay).ok();
     let host = parsed
         .as_ref()
         .and_then(|u| u.host_str())
         .unwrap_or_default();
     let local = matches!(host, "localhost" | "[::1]") || host.starts_with("127.");
-    let warning = if local {
+    if local {
         Some(format!(
             "Other devices can't reach {host}: it's this computer. Start the space with the relay's network address (its IP or domain) to invite other devices."
         ))
@@ -63,8 +76,7 @@ pub fn invite(space: &Space, token: Option<&str>) -> Result<Invite, String> {
         Some("The relay uses http://, so a phone's browser won't allow Copy and Paste or installing the app. Put it behind HTTPS (see deploy/ in the repo).".into())
     } else {
         None
-    };
-    Ok(Invite { url, warning })
+    }
 }
 
 #[cfg(test)]
@@ -80,24 +92,13 @@ mod tests {
     }
 
     #[test]
-    fn invite_carries_the_space_in_the_fragment() {
-        let space = Space::new("Home", "https://clip.example.com/", &pairing());
-        let link = invite(&space, Some("s3cret &x")).unwrap();
-        let secret = pairing().to_secret();
-        assert_eq!(
-            link.url,
-            format!("https://clip.example.com/#pair={secret}&token=s3cret+%26x&name=Home")
-        );
+    fn invite_carries_the_secret_in_the_fragment() {
+        let secret = InviteSecret::from_bytes([3; 32]);
+        let link = invite("https://clip.example.com", &secret);
+        assert_eq!(link.url, format!("https://clip.example.com/#join={secret}"));
         assert_eq!(link.warning, None);
-        let (_, fragment) = link.url.split_once('#').unwrap();
-        assert!(!link.url[..link.url.len() - fragment.len()].contains(&secret));
 
-        let space = Space::new("Home", "http://192.168.0.5:8080", &pairing());
-        let link = invite(&space, None).unwrap();
-        assert_eq!(
-            link.url,
-            format!("http://192.168.0.5:8080/#pair={secret}&name=Home")
-        );
+        let link = invite("http://192.168.0.5:8080", &secret);
         assert!(link.warning.unwrap().contains("HTTPS"));
 
         for local in [
@@ -105,10 +106,20 @@ mod tests {
             "http://localhost:8080",
             "http://[::1]:8080",
         ] {
-            let space = Space::new("Home", local, &pairing());
-            let warning = invite(&space, None).unwrap().warning.unwrap();
+            let warning = invite(local, &secret).warning.unwrap();
             assert!(warning.contains("can't reach"), "{local}: {warning}");
         }
+    }
+
+    #[test]
+    fn space_link_carries_the_space_and_token() {
+        let space = Space::new("Home", "https://clip.example.com/", &pairing());
+        let url = space_link(&space, Some("s3cret &x")).unwrap();
+        let secret = pairing().to_secret();
+        assert_eq!(
+            url,
+            format!("https://clip.example.com/#pair={secret}&token=s3cret+%26x&name=Home")
+        );
     }
 
     #[tokio::test]

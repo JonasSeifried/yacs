@@ -17,7 +17,7 @@ use yacs_core::api::{
     ChannelEvent, ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody, HEADER_CHUNKED, HEADER_CLIP_ID,
     HEADER_CREATED_AT, HEADER_EXPIRES_AT, HEADER_SIZE, ServerConfig,
 };
-use yacs_core::{Envelope, Pairing, Payload};
+use yacs_core::{Envelope, Invite, InviteSecret, Pairing, Payload};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -39,6 +39,10 @@ pub enum Error {
     Server { status: u16, message: String },
     #[error("the server sent a malformed response")]
     BadResponse,
+    #[error("the relay is too old for invites; update it (`yacs relay update` on its machine)")]
+    NoInvites,
+    #[error("this invite was already used or has expired; make a new one on the other device")]
+    InviteGone,
     #[error("the live update connection went quiet")]
     Stalled,
     #[error("cancelled")]
@@ -62,6 +66,7 @@ pub struct Client {
     events_url: Url,
     clips_url: Url,
     uploads_url: Url,
+    invites_url: Url,
     config_url: Url,
     token: Option<String>,
     pairing: Pairing,
@@ -92,6 +97,7 @@ impl Client {
             events_url: api(&format!("channels/{}/events", pairing.channel_id))?,
             clips_url: api(&format!("channels/{}/clips", pairing.channel_id))?,
             uploads_url: api(&format!("channels/{}/uploads", pairing.channel_id))?,
+            invites_url: api(&format!("channels/{}/invites", pairing.channel_id))?,
             config_url: api("config")?,
             token: token.filter(|t| !t.is_empty()),
             pairing,
@@ -201,6 +207,29 @@ impl Client {
         })
     }
 
+    /// Parks a one-time invite to this space on the relay, for a day, and
+    /// returns its secret for the link. It carries this client's token.
+    pub async fn invite(&self, space_name: &str, inviter: &str) -> Result<InviteSecret> {
+        let secret = InviteSecret::generate()?;
+        let invite = Invite::new(space_name, inviter, self.token(), &self.pairing);
+        let mut url = self.invites_url.clone();
+        url.path_segments_mut()
+            .expect("http(s) URLs have path segments")
+            .push(&secret.slot().to_string());
+        let req = self
+            .http
+            .put(url)
+            .header(header::CONTENT_TYPE, ENVELOPE_CONTENT_TYPE)
+            .body(secret.seal(&invite)?);
+        match self.send(req).await {
+            Ok(_) => Ok(secret),
+            Err(Error::Server {
+                status: 404 | 405, ..
+            }) => Err(Error::NoInvites),
+            Err(e) => Err(e),
+        }
+    }
+
     fn clip_url(&self, id: &str) -> Url {
         let mut url = self.clips_url.clone();
         url.path_segments_mut()
@@ -227,28 +256,57 @@ impl Client {
             Some(token) => req.bearer_auth(token),
             None => req,
         };
-        let res = req.send().await?;
-        let status = res.status();
-        if status.is_success() {
-            return Ok(res);
-        }
-        Err(match status {
-            StatusCode::UNAUTHORIZED => Error::Unauthorized,
-            StatusCode::PAYLOAD_TOO_LARGE => Error::TooLarge,
-            StatusCode::INSUFFICIENT_STORAGE => Error::StorageFull,
-            StatusCode::TOO_MANY_REQUESTS => Error::RateLimited,
-            _ => {
-                let text = res.text().await.unwrap_or_default();
-                let message = serde_json::from_str::<ErrorBody>(&text)
-                    .map(|b| b.error)
-                    .unwrap_or(text);
-                Error::Server {
-                    status: status.as_u16(),
-                    message,
-                }
-            }
-        })
+        checked(req.send().await?).await
     }
+}
+
+/// Takes the invite behind `secret` from `relay`, which hands it out once:
+/// `None` if it was taken already, expired or never existed.
+pub async fn take_invite(relay: &str, secret: &InviteSecret) -> Result<Option<Invite>> {
+    let base = Url::parse(relay).map_err(|e| Error::InvalidUrl(e.to_string()))?;
+    if !matches!(base.scheme(), "http" | "https") {
+        return Err(Error::InvalidUrl(
+            "must start with http:// or https://".into(),
+        ));
+    }
+    let base = base.as_str().trim_end_matches('/');
+    let url = Url::parse(&format!("{base}/api/v1/invites/{}", secret.slot()))
+        .map_err(|e| Error::InvalidUrl(e.to_string()))?;
+    let http = reqwest::Client::builder()
+        .user_agent(concat!("yacs/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let res = match checked(http.get(url).send().await?).await {
+        Ok(res) => res,
+        Err(Error::Server { status: 404, .. }) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    Ok(Some(secret.open(&res.bytes().await?)?))
+}
+
+/// The response if it succeeded, the relay's error otherwise.
+async fn checked(res: Response) -> Result<Response> {
+    let status = res.status();
+    if status.is_success() {
+        return Ok(res);
+    }
+    Err(match status {
+        StatusCode::UNAUTHORIZED => Error::Unauthorized,
+        StatusCode::PAYLOAD_TOO_LARGE => Error::TooLarge,
+        StatusCode::INSUFFICIENT_STORAGE => Error::StorageFull,
+        StatusCode::TOO_MANY_REQUESTS => Error::RateLimited,
+        _ => {
+            let text = res.text().await.unwrap_or_default();
+            let message = serde_json::from_str::<ErrorBody>(&text)
+                .map(|b| b.error)
+                .unwrap_or(text);
+            Error::Server {
+                status: status.as_u16(),
+                message,
+            }
+        }
+    })
 }
 
 /// See [`Client::events`].

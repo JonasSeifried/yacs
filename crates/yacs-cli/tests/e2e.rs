@@ -444,7 +444,7 @@ fn starts_a_space_and_invites_another_machine() {
 
     let link = stdout(&mut saved(&relay, &["invite"]));
     assert!(
-        link.starts_with(&format!("{}/#pair=v1.", relay.url)),
+        link.starts_with(&format!("{}/#join=v2.", relay.url)),
         "{link}"
     );
     let other = TempDir::new().unwrap();
@@ -453,8 +453,26 @@ fn starts_a_space_and_invites_another_machine() {
         cmd.env("YACS_CONFIG", other.path().join("cli.json"));
         cmd
     };
-    on_other(&["join"]).write_stdin(link).assert().success();
+    let joined = on_other(&["join"])
+        .write_stdin(link.clone())
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    let joined = String::from_utf8(joined).unwrap();
+    assert!(joined.contains("Joined \"Lab\""), "{joined}");
+    assert!(joined.contains("invited by e2e"), "{joined}");
     assert_eq!(stdout(&mut on_other(&["recv"])), "hi");
+
+    // Once only.
+    let third = TempDir::new().unwrap();
+    let err = stderr_of_failure(
+        saved(&relay, &["join"])
+            .env("YACS_CONFIG", third.path().join("cli.json"))
+            .write_stdin(link),
+    );
+    assert!(err.contains("already used or has expired"), "{err}");
 
     // Names are each machine's own.
     on_other(&["space", "rename", "  The lab "])

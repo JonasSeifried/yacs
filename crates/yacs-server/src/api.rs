@@ -20,11 +20,14 @@ use yacs_core::api::{
     HEADER_CLIP_ID, HEADER_CREATED_AT, HEADER_EXPIRES_AT, HEADER_SIZE, ServerConfig, UploadCreated,
     UploadStatus,
 };
-use yacs_core::{ChannelId, Envelope, MAX_CHUNK_SIZE};
+use yacs_core::{
+    ChannelId, Envelope, InviteSlot, MAX_CHUNK_SIZE, MAX_INVITE_TTL_SECS, MAX_SEALED_INVITE,
+};
 
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::events::Events;
+use crate::invites::{InviteError, Invites};
 use crate::store::{ChunkLayout, IO_BUFFER, PutError, Store, UploadError};
 
 #[derive(Clone)]
@@ -33,6 +36,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub clock: Arc<dyn Clock>,
     pub events: Arc<Events>,
+    pub invites: Arc<Invites>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -53,6 +57,10 @@ pub fn router(state: AppState) -> Router {
             "/channels/{channel}/clips/{id}/chunks/{index}",
             get(get_chunk),
         )
+        .route(
+            "/channels/{channel}/invites/{slot}",
+            put(create_invite).delete(revoke_invite),
+        )
         .route("/channels/{channel}/uploads", post(create_upload))
         .route(
             "/channels/{channel}/uploads/{id}",
@@ -68,7 +76,9 @@ pub fn router(state: AppState) -> Router {
             "/channels/{channel}/uploads/{id}/chunks/{index}",
             put(put_chunk).layer(DefaultBodyLimit::disable()),
         )
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
+        .route_layer(middleware::from_fn_with_state(state.clone(), require_token))
+        // The invited device has no token yet.
+        .route("/invites/{slot}", get(take_invite));
 
     Router::new()
         .nest("/api/v1", api)
@@ -97,6 +107,7 @@ enum ApiError {
     TooLarge,
     Conflict(&'static str),
     TooManyUploads,
+    TooManyInvites,
     StorageFull,
     Internal(io::Error),
 }
@@ -115,6 +126,10 @@ impl IntoResponse for ApiError {
             Self::TooManyUploads => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many uploads in progress on this channel",
+            ),
+            Self::TooManyInvites => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many open invites for this channel",
             ),
             Self::StorageFull => (StatusCode::INSUFFICIENT_STORAGE, "server storage is full"),
             Self::Internal(e) => {
@@ -161,6 +176,11 @@ impl From<UploadError> for ApiError {
 fn parse_channel(s: &str) -> Result<ChannelId, ApiError> {
     s.parse()
         .map_err(|_| ApiError::BadRequest("invalid channel id"))
+}
+
+fn parse_slot(s: &str) -> Result<InviteSlot, ApiError> {
+    s.parse()
+        .map_err(|_| ApiError::BadRequest("invalid invite slot"))
 }
 
 fn parse_id(s: &str) -> Result<Ulid, ApiError> {
@@ -238,6 +258,70 @@ fn ttl_ms(config: &Config, ttl_secs: Option<u64>) -> Result<u64, ApiError> {
             .saturating_mul(1000)
             .min(config.max_ttl.as_millis() as u64),
     })
+}
+
+async fn create_invite(
+    State(state): State<AppState>,
+    Path((channel, slot)): Path<(String, String)>,
+    Query(query): Query<CreateQuery>,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let (channel, slot) = (parse_channel(&channel)?, parse_slot(&slot)?);
+    if body.is_empty() || body.len() > MAX_SEALED_INVITE {
+        return Err(ApiError::BadRequest("an invite is 1 to 4096 bytes"));
+    }
+    let ttl_ms = match query.ttl {
+        Some(0) => return Err(ApiError::BadRequest("ttl must be greater than zero")),
+        ttl => ttl.unwrap_or(MAX_INVITE_TTL_SECS).min(MAX_INVITE_TTL_SECS) * 1000,
+    };
+    let now = state.clock.now_ms();
+    state
+        .invites
+        .put(channel, slot, body, now, now + ttl_ms)
+        .map_err(|e| match e {
+            InviteError::Exists => ApiError::Conflict("there's already an invite in that slot"),
+            InviteError::TooMany => ApiError::TooManyInvites,
+        })?;
+    Ok(StatusCode::CREATED)
+}
+
+async fn revoke_invite(
+    State(state): State<AppState>,
+    Path((channel, slot)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let (channel, slot) = (parse_channel(&channel)?, parse_slot(&slot)?);
+    match state.invites.revoke(&channel, &slot) {
+        true => Ok(StatusCode::NO_CONTENT),
+        false => Err(ApiError::NotFound),
+    }
+}
+
+async fn take_invite(
+    State(state): State<AppState>,
+    Path(slot): Path<String>,
+) -> Result<Response, ApiError> {
+    let slot = parse_slot(&slot)?;
+    let (channel, sealed) = state
+        .invites
+        .take(&slot, state.clock.now_ms())
+        .ok_or(ApiError::NotFound)?;
+    state.events.publish(
+        &channel,
+        ChannelEvent::InviteUsed {
+            slot: slot.to_string(),
+        },
+    );
+    Ok((
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(ENVELOPE_CONTENT_TYPE),
+            ),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+        ],
+        sealed,
+    )
+        .into_response())
 }
 
 #[derive(Deserialize)]

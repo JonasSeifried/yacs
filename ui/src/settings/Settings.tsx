@@ -265,34 +265,69 @@ function SpaceName({ name }: { name: string }) {
 
 function InviteDevice() {
   const [invite, setInvite] = useState<Invite | null>(null);
+  const [used, setUsed] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // Don't leave the key on screen when the window is hidden and shown again.
+  // Don't leave the invite on screen when the window is hidden and shown again.
   useEffect(() => {
-    const hide = () => document.visibilityState === "hidden" && setInvite(null);
+    const hide = () => document.visibilityState === "hidden" && (setInvite(null), setUsed(false));
     document.addEventListener("visibilitychange", hide);
     return () => document.removeEventListener("visibilitychange", hide);
   }, []);
 
+  // The relay says when the invite on screen was taken.
+  useEffect(() => {
+    if (!invite) return;
+    const unsubscribe = platform.onInviteUsed((slot) => slot === invite.slot && setUsed(true));
+    return () => void unsubscribe.then((u) => u());
+  }, [invite]);
+
   const show = async () => {
+    setBusy(true);
     setError(null);
     try {
       setInvite(await platform.invite());
+      setUsed(false);
     } catch (e) {
       setError(String(e));
+    } finally {
+      setBusy(false);
     }
+  };
+  const hide = () => {
+    setInvite(null);
+    setUsed(false);
   };
 
   if (!invite) {
     return (
       <div className="pair-device">
         <p className="hint">
-          Shows a QR code for a phone's camera, and a link to paste on another computer or into <code>yacs join</code>{" "}
-          on a server.
+          Makes a one-time invite: a QR code for a phone's camera, and a link to paste on another computer or into{" "}
+          <code>yacs join</code> on a server.
         </p>
         {error && <p className="error">{error}</p>}
-        <button onClick={show}>Invite a device…</button>
+        <button onClick={show} disabled={busy}>
+          {busy ? "Making an invite…" : "Invite a device…"}
+        </button>
+      </div>
+    );
+  }
+  if (used) {
+    return (
+      <div className="pair-device">
+        <p className="paired">
+          <span className="dot" /> The invite was used: a device joined.
+        </p>
+        {error && <p className="error">{error}</p>}
+        <div className="actions">
+          <button onClick={show} disabled={busy}>
+            {busy ? "Making an invite…" : "Invite another device…"}
+          </button>
+          <button onClick={hide}>Done</button>
+        </div>
       </div>
     );
   }
@@ -301,7 +336,8 @@ function InviteDevice() {
       <img className="qr" src={invite.qr} alt="Invite QR code" />
       {invite.warning && <p className="error">{invite.warning}</p>}
       <p className="hint">
-        Anyone with this code or link can read and send your clips. Only use it for your own devices.
+        Works once, within 24 hours. Whoever opens it first joins your space, so send the link only to the device you
+        mean.
       </p>
       <div className="actions">
         <button
@@ -313,7 +349,7 @@ function InviteDevice() {
         >
           {copied ? "Copied" : "Copy link"}
         </button>
-        <button onClick={() => setInvite(null)}>Hide</button>
+        <button onClick={hide}>Hide</button>
       </div>
     </div>
   );
@@ -356,7 +392,7 @@ function SetUpSpace() {
             required
             value={link}
             onChange={(e) => setLink(e.target.value)}
-            placeholder="https://…/#pair=…"
+            placeholder="https://…/#join=…"
             autoComplete="off"
             spellCheck={false}
           />
@@ -380,7 +416,7 @@ function SetUpSpace() {
             value={serverUrl}
             onChange={(e) => {
               // An invite link pasted here out of habit belongs above.
-              if (e.target.value.includes("#pair=")) {
+              if (/#(join|pair)=/.test(e.target.value)) {
                 setLink(e.target.value.trim());
                 setServerUrl("");
               } else {

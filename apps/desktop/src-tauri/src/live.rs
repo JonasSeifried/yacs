@@ -114,6 +114,10 @@ async fn handle(app: &AppHandle, client: &Client, event: ChannelEvent) {
             .lock()
             .expect("clip cache lock poisoned")
             .clear(),
+        ChannelEvent::InviteUsed { slot } => {
+            let _ = app.emit_to(windows::SETTINGS, windows::EVENT_INVITE_USED, slot);
+            return;
+        }
         ChannelEvent::Added { .. } | ChannelEvent::Other => {}
     }
     changed(app);

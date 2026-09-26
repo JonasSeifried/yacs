@@ -13,10 +13,10 @@ use yacs_core::api::{
     ServerConfig, UploadCreated, UploadStatus,
 };
 use yacs_core::{
-    CHUNK_TAG_LEN, ChannelId, ChannelKey, Clip, ClipItem, Envelope, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE,
-    Pairing, Payload,
+    CHUNK_TAG_LEN, ChannelId, ChannelKey, Clip, ClipItem, Envelope, Invite, InviteSecret,
+    MAX_CHUNK_SIZE, MAX_SEALED_INVITE, MIN_CHUNK_SIZE, Pairing, Payload,
 };
-use yacs_server::{AppState, Config, Events, ManualClock, Store, router};
+use yacs_server::{AppState, Config, Events, Invites, ManualClock, Store, router};
 
 const START_MS: u64 = 1_758_600_000_000;
 const MINUTE: Duration = Duration::from_secs(60);
@@ -65,6 +65,7 @@ async fn app(args: &[&str]) -> TestApp {
         config: Arc::new(config),
         clock: clock.clone(),
         events: events.clone(),
+        invites: Arc::new(Invites::default()),
     });
     TestApp {
         router,
@@ -884,4 +885,127 @@ async fn restart_keeps_chunked_clips_and_drops_uploads() {
     let id: ChannelId = ch.parse().unwrap();
     assert_eq!(reopened.list(&id, START_MS).await.unwrap(), vec![meta]);
     assert_eq!(app.files(), 3);
+}
+
+fn invite_uri(channel: &str, secret: &InviteSecret) -> String {
+    format!("/api/v1/channels/{channel}/invites/{}", secret.slot())
+}
+
+fn taken_uri(secret: &InviteSecret) -> String {
+    format!("/api/v1/invites/{}", secret.slot())
+}
+
+fn sealed_invite(secret: &InviteSecret) -> Vec<u8> {
+    let pairing = Pairing::from_root(&[1; 32]);
+    secret
+        .seal(&Invite::new("Home", "MacBook", None, &pairing))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn an_invite_is_taken_once_and_its_space_hears_of_it() {
+    let app = app(&[]).await;
+    let ch = channel(1);
+    let secret = InviteSecret::generate().unwrap();
+    let mut listener = app.listen(&ch, &[]).await;
+    let sealed = sealed_invite(&secret);
+    let put = app.put(&invite_uri(&ch, &secret), sealed.clone()).await;
+    assert_eq!(put.status, StatusCode::CREATED);
+    let again = app.put(&invite_uri(&ch, &secret), sealed.clone()).await;
+    assert_eq!(again.status, StatusCode::CONFLICT);
+
+    let taken = app.get(&taken_uri(&secret)).await;
+    assert_eq!(taken.status, StatusCode::OK);
+    assert_eq!(taken.headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(taken.body, sealed);
+    assert_eq!(
+        secret.open(&taken.body).unwrap().pairing(),
+        Pairing::from_root(&[1; 32])
+    );
+    assert_eq!(
+        listener.next().await,
+        Some(ChannelEvent::InviteUsed {
+            slot: secret.slot().to_string()
+        })
+    );
+    assert_eq!(
+        app.get(&taken_uri(&secret)).await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn invites_expire_and_can_be_revoked() {
+    let app = app(&[]).await;
+    let ch = channel(1);
+    let (a, b) = (
+        InviteSecret::generate().unwrap(),
+        InviteSecret::generate().unwrap(),
+    );
+    let uri = format!("{}?ttl=172800", invite_uri(&ch, &a));
+    assert_eq!(
+        app.put(&uri, sealed_invite(&a)).await.status,
+        StatusCode::CREATED
+    );
+    // Clamped to a day.
+    app.clock.advance(Duration::from_secs(24 * 60 * 60));
+    assert_eq!(app.get(&taken_uri(&a)).await.status, StatusCode::NOT_FOUND);
+
+    app.put(&invite_uri(&ch, &b), sealed_invite(&b)).await;
+    let other_space = invite_uri(&channel(2), &b);
+    assert_eq!(app.delete(&other_space).await.status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        app.delete(&invite_uri(&ch, &b)).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(app.get(&taken_uri(&b)).await.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn rejects_bad_invites() {
+    let app = app(&[]).await;
+    let ch = channel(1);
+    let secret = InviteSecret::generate().unwrap();
+    let uri = invite_uri(&ch, &secret);
+    for (uri, body) in [
+        (uri.clone(), vec![]),
+        (uri.clone(), vec![1; MAX_SEALED_INVITE + 1]),
+        (format!("{uri}?ttl=0"), vec![1]),
+        (format!("/api/v1/channels/{ch}/invites/nope"), vec![1]),
+    ] {
+        assert_eq!(
+            app.put(&uri, body).await.status,
+            StatusCode::BAD_REQUEST,
+            "{uri}"
+        );
+    }
+    assert_eq!(
+        app.get("/api/v1/invites/nope").await.status,
+        StatusCode::BAD_REQUEST
+    );
+    for _ in 0..20 {
+        let secret = InviteSecret::generate().unwrap();
+        app.put(&invite_uri(&ch, &secret), vec![1]).await;
+    }
+    let res = app.put(&uri, vec![1]).await;
+    assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn inviting_needs_the_token_taking_an_invite_doesnt() {
+    let app = app(&["--access-token", "s3cret"]).await;
+    let ch = channel(1);
+    let secret = InviteSecret::generate().unwrap();
+    let uri = invite_uri(&ch, &secret);
+    assert_eq!(
+        app.put(&uri, sealed_invite(&secret)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let auth = [("authorization", "Bearer s3cret")];
+    let put = app
+        .call(Method::PUT, &uri, &auth, sealed_invite(&secret))
+        .await;
+    assert_eq!(put.status, StatusCode::CREATED);
+    assert_eq!(app.delete(&uri).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(app.get(&taken_uri(&secret)).await.status, StatusCode::OK);
 }
