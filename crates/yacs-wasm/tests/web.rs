@@ -3,9 +3,7 @@
 
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::wasm_bindgen_test;
-use yacs_wasm::{WasmPairing, generate_phrase, new_stream};
-
-const PHRASE: &str = "tundra velvet anchor pickle orbit meadow";
+use yacs_wasm::{WasmPairing, new_stream};
 
 fn clip() -> JsValue {
     js_sys::JSON::parse(
@@ -16,7 +14,7 @@ fn clip() -> JsValue {
 
 #[wasm_bindgen_test]
 fn seals_and_opens_through_a_stored_secret() {
-    let pairing = WasmPairing::from_phrase(PHRASE).unwrap();
+    let pairing = WasmPairing::generate().unwrap();
     let restored = WasmPairing::from_secret(&pairing.secret()).unwrap();
     assert_eq!(restored.channel_id(), pairing.channel_id());
 
@@ -31,8 +29,7 @@ fn seals_and_opens_through_a_stored_secret() {
 
 #[wasm_bindgen_test]
 fn images_cross_as_uint8_arrays() {
-    let pairing =
-        WasmPairing::from_secret(&WasmPairing::from_phrase(PHRASE).unwrap().secret()).unwrap();
+    let pairing = WasmPairing::from_secret(&WasmPairing::generate().unwrap().secret()).unwrap();
     let image = js_sys::Object::new();
     js_sys::Reflect::set(&image, &"mime".into(), &"image/png".into()).unwrap();
     js_sys::Reflect::set(
@@ -57,16 +54,18 @@ fn images_cross_as_uint8_arrays() {
 #[wasm_bindgen_test]
 fn rejects_bad_input() {
     assert!(WasmPairing::from_secret("nope").is_err());
-    assert!(WasmPairing::from_phrase("  ").is_err());
-    let pairing = WasmPairing::from_phrase(PHRASE).unwrap();
+    let pairing = WasmPairing::generate().unwrap();
+    assert_ne!(
+        pairing.channel_id(),
+        WasmPairing::generate().unwrap().channel_id()
+    );
     assert!(pairing.open(&[1, 2, 3]).is_err());
     assert!(pairing.seal(JsValue::from_str("not a clip")).is_err());
-    assert_eq!(generate_phrase().unwrap().split(' ').count(), 6);
 }
 
 #[wasm_bindgen_test]
 fn streams_seal_and_open_chunks() {
-    let pairing = WasmPairing::from_phrase(PHRASE).unwrap();
+    let pairing = WasmPairing::generate().unwrap();
     let files = js_sys::JSON::parse(
         r#"[{"name": "a.bin", "mime": "application/octet-stream", "size": 70000}]"#,
     )

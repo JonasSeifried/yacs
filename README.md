@@ -3,16 +3,16 @@
 **Yet Another Clipboard Service**: copy on one device, paste on another. End-to-end encrypted, self-hosted, no accounts.
 
 - **Desktop** (macOS, Windows, Linux): press `⌘⇧Space` / `Ctrl+Shift+Space` for a Spotlight-style panel. `⌘V` sends your clipboard; `↵` copies a clip back, with every format it had (text, HTML, RTF, images). Copied files are sent too, of any size, and arrive in Downloads and on the clipboard.
-- **Phone**: a web app served by your relay. Scan a QR code from the desktop and it's paired; add it to the home screen to use it like an app.
+- **Phone**: a web app served by your relay. Scan a QR code from the desktop and it's in; add it to the home screen to use it like an app.
 - **Relay**: one small server that stores encrypted clips until they expire (15 minutes by default). It can't read them.
 
 Big files (a video, a disk image) go through the relay in encrypted 4 MB chunks, so no device ever holds a whole file in memory. The phone app shows progress; keep its screen on until an upload or download is done, since phones pause apps in the background.
 
 ## How it's private
 
-Devices that share a pairing phrase derive the same key (Argon2id, then HKDF) and encrypt every clip with XChaCha20-Poly1305 before it leaves the device. The relay only sees a channel id, encrypted blobs, their sizes and their expiry times: never content, formats or device names. Clips are deleted when they expire, and nothing is kept beyond that.
+Your devices share a **space**: a random key, made on the first device, that every clip is encrypted with (XChaCha20-Poly1305) before it leaves the device. The relay only sees the space's channel id, encrypted blobs, their sizes and their expiry times: never content, formats, device names or the space's name. Clips are deleted when they expire, and nothing is kept beyond that.
 
-The phrase (or the QR code, which carries the derived key) is the only secret. Anyone who has it can read and send your clips, so keep it to your own devices. An access token on the relay keeps strangers from storing data on it.
+The invite link (or its QR code) carries the key, and it's the only secret. Anyone who has it can read and send your clips, so only use it for your own devices. An access token on the relay keeps strangers from storing data on it.
 
 ## Self-hosting the relay
 
@@ -47,19 +47,17 @@ docker compose -f compose.nginx.yaml up -d
 
 Without Docker: `cargo build --release -p yacs-server` (after building the web app, see below) gives a single binary; put it behind any HTTPS reverse proxy. Keep that proxy's access log off or path-free: request paths contain channel ids. The proxy must accept request bodies above `YACS_MAX_SIZE`, and at least 5 MB for the chunks of big files (nginx: `client_max_body_size 25m`; its default of 1 MB is too small). Cloudflare's limits are fine.
 
-## Pairing
+## Adding your devices
 
-1. On the first computer: open YACS → Settings, enter your relay's URL and token, press **Generate** for a new phrase, then **Pair**.
-2. Everything else: on a paired computer, Settings → **Pair another device…** shows a QR code and a link.
-   - Phone: scan the code with the camera (on iPhone, see the tips below).
-   - Another computer: **Copy link** and paste it into that computer's Relay URL field.
-   - Server: paste the link into `yacs pair` (see [Command line](#command-line)).
-
-   Typing the phrase works everywhere too.
+1. On the first computer: open YACS → Settings, enter your relay's URL and token under **Start a new space**, and press it. The space is called "My devices"; rename it there whenever you like (each device keeps its own name for it).
+2. Everything else: on a computer in the space, Settings → **Invite a device…** shows a QR code and a link.
+   - Phone: scan the code with the camera (on iPhone, see the tips below), or paste the link into the app.
+   - Another computer: **Copy link** and paste it into that computer's **Invite link** field.
+   - Server: paste the link into `yacs join` (see [Command line](#command-line)).
 
 ### Phone tips
 
-- **iPhone:** add YACS to the home screen *before* pairing. Open your relay's URL, tap Share → **Add to Home Screen**, open YACS from there, then tap **Scan QR code**. The home screen app doesn't share storage with the browser, so pairing in a browser tab doesn't carry over.
+- **iPhone:** add YACS to the home screen *before* joining. Open your relay's URL, tap Share → **Add to Home Screen**, open YACS from there, then tap **Scan QR code**. The home screen app doesn't share storage with the browser, so joining in a browser tab doesn't carry over.
 - **Android:** Chrome is recommended (menu → **Install app**).
 - The clipboard buttons need HTTPS, which both setups above give you.
 
@@ -78,10 +76,10 @@ Without Docker: `cargo build --release -p yacs-server` (after building the web a
 mkdir -p ~/.local/bin
 curl -fsSLo ~/.local/bin/yacs https://github.com/JonasSeifried/yacs/releases/latest/download/yacs-cli-linux-$(uname -m)
 chmod +x ~/.local/bin/yacs
-yacs pair   # paste the link from a paired computer: Settings → Pair another device… → Copy link
+yacs join   # paste the link from a computer in the space: Settings → Invite a device… → Copy link
 ```
 
-On a Mac or Windows PC with the desktop app, use Settings → Command line → **Install command** instead: it's already paired and updates along with the app. (`yacs-cli-macos` and `yacs-cli-windows-x86_64.exe` are also on the [releases page](https://github.com/JonasSeifried/yacs/releases).) Once paired:
+On a Mac or Windows PC with the desktop app, use Settings → Command line → **Install command** instead: it joins the computer's space and updates along with the app. (`yacs-cli-macos` and `yacs-cli-windows-x86_64.exe` are also on the [releases page](https://github.com/JonasSeifried/yacs/releases).) Once it's in a space:
 
 ```sh
 yacs send ~/.ssh/id_ed25519.pub   # text files arrive as text, images as images
@@ -95,7 +93,7 @@ yacs update                       # the newest version, checked against the rele
 yacs relay update                 # on the relay's machine: pull the new relay image and restart it
 ```
 
-The pairing is saved in `~/.config/yacs/cli.json`, readable only by you. Scripts can skip it and set `YACS_SERVER`, `YACS_TOKEN` and `YACS_PHRASE` instead.
+The space is saved in `~/.config/yacs/cli.json`, readable only by you; `yacs spaces` shows it, `yacs space rename` renames it and `yacs leave` forgets it. On a machine without other devices, `yacs space new --server URL` starts a space and `yacs invite` prints a link for the others. Scripts can skip the saved space and set `YACS_SERVER`, `YACS_TOKEN` and `YACS_SPACE` (from `yacs space export`) instead.
 
 ## Updating
 

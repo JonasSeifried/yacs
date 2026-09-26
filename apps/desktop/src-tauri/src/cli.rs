@@ -1,5 +1,5 @@
 //! Settings → Command line: puts the `yacs` command that ships inside the app
-//! on the PATH, paired like this computer. Release builds bundle it next to
+//! on the PATH, in the same space as this computer. Release builds bundle it next to
 //! the app's own binary (`bundle.externalBin`, set in release.yml), so the
 //! app's updates keep it current. Nothing happens unless the user asks.
 
@@ -44,18 +44,19 @@ pub fn status() -> CliStatus {
     }
 }
 
-/// Installs, then pairs the command with `pairing_link` (see
-/// `pairing::phone_link`), if this computer is paired.
-pub fn install(pairing_link: Option<&str>) -> Result<(), String> {
+/// Installs, then adds the command to this computer's space with
+/// `invite_link` (see `pairing::invite`), if it's in one.
+pub fn install(invite_link: Option<&str>) -> Result<(), String> {
     let cli = bundled().ok_or("this build of YACS doesn't include the yacs command")?;
     os::install(&cli)?;
-    if let Some(link) = pairing_link {
-        pair(&cli, link).map_err(|e| format!("Installed yacs, but couldn't pair it: {e}"))?;
+    if let Some(link) = invite_link {
+        join(&cli, link)
+            .map_err(|e| format!("Installed yacs, but couldn't add it to the space: {e}"))?;
     }
     Ok(())
 }
 
-/// Leaves the command's own pairing (`yacs unpair` forgets that).
+/// Leaves the command's own space (`yacs leave` forgets that).
 pub fn uninstall() -> Result<(), String> {
     match bundled() {
         Some(cli) => os::uninstall(&cli),
@@ -63,13 +64,13 @@ pub fn uninstall() -> Result<(), String> {
     }
 }
 
-/// `yacs pair` reads the link from stdin when that isn't a terminal.
-fn pair(cli: &Path, link: &str) -> Result<(), String> {
+/// `yacs join` reads the link from stdin when that isn't a terminal.
+fn join(cli: &Path, link: &str) -> Result<(), String> {
     let mut cmd = Command::new(cli);
-    cmd.arg("pair")
+    cmd.arg("join")
         .env_remove("YACS_SERVER")
         .env_remove("YACS_TOKEN")
-        .env_remove("YACS_PHRASE")
+        .env_remove("YACS_SPACE")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());

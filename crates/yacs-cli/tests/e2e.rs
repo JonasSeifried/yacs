@@ -9,13 +9,20 @@ use clap::Parser;
 use tempfile::TempDir;
 use yacs_server::{Config, SystemClock};
 
-const PHRASE: &str = "tundra velvet anchor pickle orbit meadow";
+/// The space the env-configured commands use.
+fn secret() -> String {
+    space(7).to_secret()
+}
+
+fn space(n: u8) -> yacs_core::Pairing {
+    yacs_core::Pairing::from_root(&[n; 32])
+}
 
 /// A relay running on its own thread for the lifetime of the test.
 struct Relay {
     url: String,
     _data: TempDir,
-    /// Where `yacs pair` saves, so tests never touch the real config.
+    /// Where `yacs join` saves, so tests never touch the real config.
     home: TempDir,
 }
 
@@ -52,11 +59,11 @@ fn relay(extra: &[&str]) -> Relay {
 fn yacs(relay: &Relay, args: &[&str]) -> assert_cmd::Command {
     let mut cmd = saved(relay, args);
     cmd.env("YACS_SERVER", &relay.url)
-        .env("YACS_PHRASE", PHRASE);
+        .env("YACS_SPACE", secret());
     cmd
 }
 
-/// Only what `yacs pair` saved.
+/// Only what `yacs join` saved.
 fn saved(relay: &Relay, args: &[&str]) -> assert_cmd::Command {
     let mut cmd = cargo_bin_cmd!("yacs");
     cmd.env_clear()
@@ -202,24 +209,11 @@ fn image_round_trip_needs_output_file() {
 }
 
 #[test]
-fn wrong_phrase_cannot_read_and_sees_its_own_empty_channel() {
+fn another_space_cannot_read_and_sees_its_own_empty_channel() {
     let relay = relay(&[]);
     yacs(&relay, &["send", "-t", "secret"]).assert().success();
-    let err = stderr_of_failure(yacs(&relay, &["recv"]).env("YACS_PHRASE", "some other phrase"));
+    let err = stderr_of_failure(yacs(&relay, &["recv"]).env("YACS_SPACE", space(8).to_secret()));
     assert!(err.contains("no clip found"), "{err}");
-}
-
-#[test]
-fn phrase_normalization_pairs_devices() {
-    let relay = relay(&[]);
-    yacs(&relay, &["send", "-t", "typed on a phone"])
-        .assert()
-        .success();
-    let sloppy = "  Tundra VELVET anchor  pickle orbit meadow ";
-    assert_eq!(
-        stdout(yacs(&relay, &["recv"]).env("YACS_PHRASE", sloppy)),
-        "typed on a phone"
-    );
 }
 
 #[test]
@@ -239,9 +233,9 @@ fn access_token_is_sent_and_enforced() {
 fn big_files_stream_through_the_relay() {
     const BLOCKS: usize = 200;
     let relay = relay(&[]);
-    // A saved pairing: with a phrase, Argon2id's 64 MiB would be the peak.
-    saved(&relay, &["pair"])
-        .write_stdin(pair_link(&relay, None))
+    // A saved space, as on a server.
+    saved(&relay, &["join"])
+        .write_stdin(invite_link(&relay, None))
         .assert()
         .success();
     let dir = TempDir::new().unwrap();
@@ -290,7 +284,7 @@ fn big_files_stream_through_the_relay() {
     assert_eq!(piped, (BLOCKS * 1024 * 1024) as u64);
 }
 
-/// Runs `yacs` with the saved pairing, checks it succeeded and peaked below
+/// Runs `yacs` with the saved space, checks it succeeded and peaked below
 /// 50 MiB of memory, and returns its stderr.
 fn measured(relay: &Relay, args: &[&str]) -> String {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_yacs"))
@@ -320,7 +314,7 @@ fn measured(relay: &Relay, args: &[&str]) -> String {
 /// Waits for `child`: whether it succeeded, and its peak memory in bytes.
 ///
 /// Not `ru_maxrss` here: Linux carries the parent's peak over into it at
-/// `exec`, and this test process runs Argon2id. `VmHWM` starts fresh with
+/// `exec`, and this test process runs the relay. `VmHWM` starts fresh with
 /// the new program; it's sampled until the child exits.
 #[cfg(target_os = "linux")]
 fn wait_measured(mut child: std::process::Child) -> (bool, Option<u64>) {
@@ -375,46 +369,55 @@ fn info_shows_server_limits() {
 }
 
 #[test]
-fn not_paired_is_a_clear_error() {
+fn not_in_a_space_is_a_clear_error() {
     let relay = relay(&[]);
-    let err = stderr_of_failure(saved(&relay, &["list"]).env("YACS_PHRASE", PHRASE));
-    assert!(err.contains("not paired: run `yacs pair`"), "{err}");
+    let err = stderr_of_failure(saved(&relay, &["list"]).env("YACS_SPACE", secret()));
+    assert!(err.contains("not in a space: run `yacs join`"), "{err}");
+    let err = stderr_of_failure(saved(&relay, &["list"]).env("YACS_PHRASE", "a b c"));
+    assert!(err.contains("YACS_PHRASE is no longer used"), "{err}");
+    let err = stderr_of_failure(yacs(&relay, &["list"]).env("YACS_SPACE", "tundra velvet"));
+    assert!(err.contains("yacs space export"), "{err}");
 }
 
 /// What the desktop's "Copy link" gives you.
-fn pair_link(relay: &Relay, token: Option<&str>) -> String {
-    let secret = yacs_core::Pairing::from_phrase(PHRASE).unwrap().to_secret();
+fn invite_link(relay: &Relay, token: Option<&str>) -> String {
     let token = token.map(|t| format!("&token={t}")).unwrap_or_default();
-    format!("{}/#pair={secret}{token}", relay.url)
+    format!("{}/#pair={}{token}&name=Server+room", relay.url, secret())
 }
 
 #[test]
-fn pairs_with_a_link_and_remembers_it() {
+fn joins_with_a_link_and_remembers_it() {
     let relay = relay(&["--access-token", "s3cret"]);
-    let err = stderr_of_failure(saved(&relay, &["pair"]).write_stdin(pair_link(&relay, None)));
+    let err = stderr_of_failure(saved(&relay, &["join"]).write_stdin(invite_link(&relay, None)));
     assert!(err.contains("access token"), "{err}");
     assert!(!relay.home.path().join("cli.json").exists());
+    let err = stderr_of_failure(saved(&relay, &["join"]).write_stdin("tundra velvet anchor"));
+    assert!(err.contains("isn't an invite link"), "{err}");
 
     let out = saved(&relay, &["pair"])
-        .write_stdin(format!("{}\n", pair_link(&relay, Some("s3cret"))))
+        .write_stdin(format!("{}\n", invite_link(&relay, Some("s3cret"))))
         .assert()
         .success()
         .get_output()
         .stderr
         .clone();
+    let out = String::from_utf8(out).unwrap();
     assert!(
-        String::from_utf8(out)
-            .unwrap()
-            .contains(&format!("Paired with {}", relay.url))
+        out.contains(&format!("Joined \"Server room\" on {}", relay.url)),
+        "{out}"
     );
 
-    // No flags or env from here on, and the same channel as the phrase.
+    // No flags or env from here on, and the same channel as the link.
     saved(&relay, &["send", "-t", "from the server"])
         .assert()
         .success();
     assert_eq!(
         stdout(yacs(&relay, &["recv"]).env("YACS_TOKEN", "s3cret")),
         "from the server"
+    );
+    assert_eq!(
+        stdout(&mut saved(&relay, &["spaces"])),
+        format!("Server room\t{}\n", relay.url)
     );
 
     #[cfg(unix)]
@@ -424,47 +427,81 @@ fn pairs_with_a_link_and_remembers_it() {
         assert_eq!(meta.permissions().mode() & 0o777, 0o600);
     }
 
-    saved(&relay, &["unpair"]).assert().success();
+    saved(&relay, &["leave"]).assert().success();
+    assert!(!relay.home.path().join("cli.json").exists());
     let err = stderr_of_failure(&mut saved(&relay, &["list"]));
-    assert!(err.contains("not paired"), "{err}");
+    assert!(err.contains("not in a space"), "{err}");
 }
 
 #[test]
-fn pairs_with_a_phrase() {
+fn starts_a_space_and_invites_another_machine() {
     let relay = relay(&[]);
-    saved(&relay, &["pair"])
+    saved(&relay, &["space", "new", "--name", "Lab"])
         .env("YACS_SERVER", format!("{}/", relay.url))
-        .write_stdin(PHRASE)
         .assert()
         .success();
-    yacs(&relay, &["send", "-t", "hi"]).assert().success();
-    assert_eq!(stdout(&mut saved(&relay, &["recv"])), "hi");
+    saved(&relay, &["send", "-t", "hi"]).assert().success();
+
+    let link = stdout(&mut saved(&relay, &["invite"]));
+    assert!(
+        link.starts_with(&format!("{}/#pair=v1.", relay.url)),
+        "{link}"
+    );
+    let other = TempDir::new().unwrap();
+    let on_other = |args: &[&str]| {
+        let mut cmd = saved(&relay, args);
+        cmd.env("YACS_CONFIG", other.path().join("cli.json"));
+        cmd
+    };
+    on_other(&["join"]).write_stdin(link).assert().success();
+    assert_eq!(stdout(&mut on_other(&["recv"])), "hi");
+
+    // Names are each machine's own.
+    on_other(&["space", "rename", "  The lab "])
+        .assert()
+        .success();
+    assert!(stdout(&mut on_other(&["spaces"])).starts_with("The lab\t"));
+    assert!(stdout(&mut saved(&relay, &["spaces"])).starts_with("Lab\t"));
+    let err = stderr_of_failure(&mut on_other(&["space", "rename", " "]));
+    assert!(err.contains("can't be empty"), "{err}");
+
+    // An exported space works from the environment alone.
+    let exported = stdout(&mut saved(&relay, &["space", "export"]));
+    let mut script = cargo_bin_cmd!("yacs");
+    script
+        .env_clear()
+        .env("YACS_CONFIG", other.path().join("none.json"))
+        .env("YACS_SERVER", &relay.url)
+        .env("YACS_SPACE", exported.trim())
+        .arg("recv");
+    assert_eq!(stdout(&mut script), "hi");
 }
 
 #[test]
 fn saved_token_only_goes_to_its_own_relay() {
     let relay = relay(&["--access-token", "s3cret"]);
-    saved(&relay, &["pair"])
-        .write_stdin(pair_link(&relay, Some("s3cret")))
+    saved(&relay, &["join"])
+        .write_stdin(invite_link(&relay, Some("s3cret")))
         .assert()
         .success();
     let other = self::relay(&["--access-token", "s3cret"]);
     let err = stderr_of_failure(
         saved(&relay, &["list"])
             .env("YACS_SERVER", &other.url)
-            .env("YACS_PHRASE", PHRASE),
+            .env("YACS_SPACE", secret()),
     );
     assert!(err.contains("access token"), "{err}");
+    let err = stderr_of_failure(saved(&relay, &["list"]).env("YACS_SERVER", &other.url));
+    assert!(err.contains("not "), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn client_hears_about_new_clips_right_away() {
     use yacs_core::api::ChannelEvent;
-    use yacs_core::{ClipItem, Pairing, Payload};
+    use yacs_core::{ClipItem, Payload};
 
     let relay = relay(&[]);
-    let pairing = Pairing::from_phrase(PHRASE).unwrap();
-    let client = yacs_client::Client::new(&relay.url, None, pairing).unwrap();
+    let client = yacs_client::Client::new(&relay.url, None, space(7)).unwrap();
     let mut events = client.events().await.unwrap();
 
     let mut send = yacs(&relay, &["send", "-t", "live"]);

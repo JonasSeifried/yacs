@@ -1,9 +1,8 @@
 import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useRef, useState } from "react";
 import { platform } from "../platform";
 import { acceleratorFromEvent, formatAccelerator } from "../shared/hotkey";
-import { readPairLink } from "../shared/pairlink";
 import { ttlChoices } from "../shared/time";
-import type { ManualShortcut, Os, PhonePairing, Preferences, ServerConfig, Status } from "../shared/types";
+import type { Invite, ManualShortcut, Os, Preferences, ServerConfig, SpaceStatus, Status } from "../shared/types";
 import { relayBehind } from "../shared/version";
 
 export function Settings() {
@@ -13,7 +12,7 @@ export function Settings() {
   const refresh = useCallback(async () => {
     const s = await platform.status();
     setStatus(s);
-    setServerConfig(s.paired ? await platform.serverConfig().catch(() => null) : null);
+    setServerConfig(s.space ? await platform.serverConfig().catch(() => null) : null);
   }, []);
 
   useEffect(() => {
@@ -42,8 +41,8 @@ export function Settings() {
   return (
     <main className="settings">
       <section className="card">
-        <h2>Pairing</h2>
-        {status.paired ? <Paired status={status} /> : <PairForm />}
+        <h2>Space</h2>
+        {status.space ? <SpaceSettings space={status.space} /> : <SetUpSpace />}
       </section>
       <section className="card">
         <h2>Preferences</h2>
@@ -168,7 +167,7 @@ function CommandLine({ status }: { status: Status }) {
       ) : (
         <p className="hint">
           Adds the <code>yacs</code> command for terminals and scripts
-          {status.paired && ", paired like this computer"}.{" "}
+          {status.space && `, in “${status.space.name}” like this computer`}.{" "}
           {status.os === "macos"
             ? `It goes to ${location}; macOS may ask for your password.`
             : "It updates along with the app."}
@@ -190,40 +189,88 @@ function CommandLine({ status }: { status: Status }) {
   );
 }
 
-function Paired({ status }: { status: Status }) {
+function SpaceSettings({ space }: { space: SpaceStatus }) {
   const [error, setError] = useState<string | null>(null);
-  const unpair = async () => {
-    if (!confirm("Unpair this device? You'll need the pairing phrase to pair it again.")) return;
+  const leave = async () => {
+    if (!confirm(`Leave “${space.name}”? This computer stops sharing clips with the space. To come back, you'll need an invite from one of its devices.`))
+      return;
     try {
-      await platform.unpair();
+      await platform.leaveSpace();
     } catch (e) {
       setError(String(e));
     }
   };
   return (
     <>
+      <SpaceName name={space.name} />
       <p className="paired">
-        <span className="dot" /> Paired through <strong>{status.serverUrl}</strong>
+        <span className="dot" /> Syncing through <strong>{space.relay}</strong>
       </p>
       {error && <p className="error">{error}</p>}
-      <PairDevice />
+      <InviteDevice />
       <div className="actions">
-        <button className="danger" onClick={unpair}>
-          Unpair this device
+        <button className="danger" onClick={leave}>
+          Leave this space
         </button>
       </div>
     </>
   );
 }
 
-function PairDevice() {
-  const [pairing, setPairing] = useState<PhonePairing | null>(null);
+/** Saves once typing pauses, like the device name. */
+function SpaceName({ name }: { name: string }) {
+  const [value, setValue] = useState(name);
+  const [error, setError] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  // Renamed from elsewhere (the other window, say) while not typing here.
+  useEffect(() => {
+    if (!timer.current) setValue(name);
+  }, [name]);
+
+  const save = async (next: string) => {
+    clearTimeout(timer.current);
+    timer.current = undefined;
+    if (!next.trim()) {
+      setError("The name can't be empty.");
+      return;
+    }
+    setError(null);
+    try {
+      setValue(await platform.renameSpace(next));
+    } catch (e) {
+      setError(String(e));
+    }
+  };
+
+  return (
+    <label className="space-name">
+      Name <span className="optional">only on this computer; your other devices keep their own</span>
+      <input
+        required
+        maxLength={64}
+        value={value}
+        onChange={(e) => {
+          const next = e.target.value;
+          setValue(next);
+          clearTimeout(timer.current);
+          timer.current = setTimeout(() => save(next), NAME_SAVE_MS);
+        }}
+        onBlur={() => timer.current && save(value)}
+      />
+      {error && <span className="error">{error}</span>}
+    </label>
+  );
+}
+
+function InviteDevice() {
+  const [invite, setInvite] = useState<Invite | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   // Don't leave the key on screen when the window is hidden and shown again.
   useEffect(() => {
-    const hide = () => document.visibilityState === "hidden" && setPairing(null);
+    const hide = () => document.visibilityState === "hidden" && setInvite(null);
     document.addEventListener("visibilitychange", hide);
     return () => document.removeEventListener("visibilitychange", hide);
   }, []);
@@ -231,151 +278,130 @@ function PairDevice() {
   const show = async () => {
     setError(null);
     try {
-      setPairing(await platform.phonePairing());
+      setInvite(await platform.invite());
     } catch (e) {
       setError(String(e));
     }
   };
 
-  if (!pairing) {
+  if (!invite) {
     return (
       <div className="pair-device">
         <p className="hint">
-          Shows a QR code for a phone's camera, and a link to paste on another computer or into <code>yacs pair</code>{" "}
+          Shows a QR code for a phone's camera, and a link to paste on another computer or into <code>yacs join</code>{" "}
           on a server.
         </p>
         {error && <p className="error">{error}</p>}
-        <button onClick={show}>Pair another device…</button>
+        <button onClick={show}>Invite a device…</button>
       </div>
     );
   }
   return (
     <div className="pair-device">
-      <img className="qr" src={pairing.qr} alt="Pairing QR code" />
-      {pairing.warning && <p className="error">{pairing.warning}</p>}
+      <img className="qr" src={invite.qr} alt="Invite QR code" />
+      {invite.warning && <p className="error">{invite.warning}</p>}
       <p className="hint">
-        Anyone with this code or link can read and send your clips. Only use it on your own devices.
+        Anyone with this code or link can read and send your clips. Only use it for your own devices.
       </p>
       <div className="actions">
         <button
           onClick={async () => {
-            await navigator.clipboard.writeText(pairing.url);
+            await navigator.clipboard.writeText(invite.url);
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
           }}
         >
           {copied ? "Copied" : "Copy link"}
         </button>
-        <button onClick={() => setPairing(null)}>Hide</button>
+        <button onClick={() => setInvite(null)}>Hide</button>
       </div>
     </div>
   );
 }
 
-function PairForm() {
+/** Join your other devices' space with an invite link, or start a new one. */
+function SetUpSpace() {
+  const [link, setLink] = useState("");
   const [serverUrl, setServerUrl] = useState("");
   const [token, setToken] = useState("");
-  const [phrase, setPhrase] = useState("");
-  // From a pasted pairing link: replaces the phrase.
-  const [linkSecret, setLinkSecret] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"join" | "create" | null>(null);
+  const [error, setError] = useState<{ form: "join" | "create"; text: string } | null>(null);
 
-  const generate = async () => {
-    setPhrase(await platform.generatePhrase());
-    setCopied(false);
-  };
-  const copy = async () => {
-    await navigator.clipboard.writeText(phrase);
-    setCopied(true);
-  };
-  /** A pairing link pasted into any field fills in the whole form. */
-  const takeLink = (text: string) => {
-    const link = readPairLink(text);
-    if (!link) return false;
-    setServerUrl(link.serverUrl);
-    if (link.token) setToken(link.token);
-    setLinkSecret(link.secret);
-    setPhrase("");
-    return true;
-  };
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
+  const run = async (form: "join" | "create", action: () => Promise<void>) => {
+    setBusy(form);
     setError(null);
     try {
-      await platform.pair(serverUrl, token || null, linkSecret ?? phrase);
+      await action();
     } catch (e) {
-      setError(String(e));
+      setError({ form, text: String(e) });
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
+  };
+  const join = (e: FormEvent) => {
+    e.preventDefault();
+    run("join", () => platform.joinSpace(link));
+  };
+  const create = (e: FormEvent) => {
+    e.preventDefault();
+    run("create", () => platform.createSpace(serverUrl, token || null, null));
   };
 
   return (
-    <form onSubmit={submit}>
-      <label>
-        Relay URL
-        <input
-          type="url"
-          required
-          placeholder="https://clip.example.com"
-          value={serverUrl}
-          onChange={(e) => takeLink(e.target.value) || setServerUrl(e.target.value)}
-        />
-        <span className="hint">
-          Or paste a pairing link here (on a paired computer: Settings → Pair another device… → Copy link).
-        </span>
-      </label>
-      <label>
-        Access token <span className="optional">if your relay requires one</span>
-        <input type="password" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" />
-      </label>
-      {linkSecret ? (
-        <p className="hint">
-          Pairing from the link.{" "}
-          <button type="button" onClick={() => setLinkSecret(null)}>
-            Use a phrase instead
-          </button>
-        </p>
-      ) : (
+    <>
+      <form onSubmit={join}>
         <label>
-          Pairing phrase
-          <div className="row phrase">
-            <input
-              required
-              value={phrase}
-              onChange={(e) => {
-                if (takeLink(e.target.value)) return;
-                setPhrase(e.target.value);
-                setCopied(false);
-              }}
-              placeholder="six words from your other device"
-              autoComplete="off"
-              spellCheck={false}
-              className="mono"
-            />
-            <button type="button" onClick={generate}>
-              Generate
-            </button>
-            <button type="button" onClick={copy} disabled={!phrase}>
-              {copied ? "Copied" : "Copy"}
-            </button>
-          </div>
-          <span className="hint">
-            Every device uses the same phrase. Generate one on your first device, then type it on the others. It never
-            leaves your devices.
-          </span>
+          Invite link
+          <input
+            required
+            value={link}
+            onChange={(e) => setLink(e.target.value)}
+            placeholder="https://…/#pair=…"
+            autoComplete="off"
+            spellCheck={false}
+          />
+          <span className="hint">On a computer in the space: Settings → Invite a device… → Copy link.</span>
         </label>
-      )}
-      {error && <p className="error">{error}</p>}
-      <div className="actions">
-        <button className="primary" type="submit" disabled={busy}>
-          {busy ? "Pairing…" : "Pair this device"}
-        </button>
-      </div>
-    </form>
+        {error?.form === "join" && <p className="error">{error.text}</p>}
+        <div className="actions">
+          <button className="primary" type="submit" disabled={busy !== null}>
+            {busy === "join" ? "Joining…" : "Join space"}
+          </button>
+        </div>
+      </form>
+      <p className="divider">or start a new space</p>
+      <form onSubmit={create}>
+        <label>
+          Relay URL
+          <input
+            type="url"
+            required
+            placeholder="https://clip.example.com"
+            value={serverUrl}
+            onChange={(e) => {
+              // An invite link pasted here out of habit belongs above.
+              if (e.target.value.includes("#pair=")) {
+                setLink(e.target.value.trim());
+                setServerUrl("");
+              } else {
+                setServerUrl(e.target.value);
+              }
+            }}
+          />
+        </label>
+        <label>
+          Access token <span className="optional">if your relay requires one</span>
+          <input type="password" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" />
+        </label>
+        {error?.form === "create" && <p className="error">{error.text}</p>}
+        <div className="actions">
+          <button type="submit" disabled={busy !== null}>
+            {busy === "create" ? "Starting…" : "Start a new space"}
+          </button>
+        </div>
+        <p className="hint">Then invite your other devices from here.</p>
+      </form>
+    </>
   );
 }
 

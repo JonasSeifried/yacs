@@ -419,6 +419,28 @@ button.icon {
   line-height: 1.45;
 }
 
+.invite {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.invite > span {
+  font-weight: 550;
+  font-size: 13.5px;
+}
+
+.invite .row {
+  display: flex;
+  gap: 8px;
+}
+
+.invite .row button {
+  flex: 1;
+}
+
 .transfer {
   display: flex;
   flex-direction: column;

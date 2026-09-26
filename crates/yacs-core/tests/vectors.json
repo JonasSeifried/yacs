@@ -55,33 +55,23 @@
       }
     }
   ],
-  "kdf": [
+  "roots": [
     {
       "channel_id": "FyuU7iWg6igRbFa042KMeIt1AJESKspYhPnptMJimPU",
       "key": "0fd454354d0a0dc62231515656e806e588e7fdc159e79dd1b0af7f82c9443f88",
-      "normalized": "correct horse battery staple",
-      "phrase": "correct horse battery staple"
-    },
-    {
-      "channel_id": "FyuU7iWg6igRbFa042KMeIt1AJESKspYhPnptMJimPU",
-      "key": "0fd454354d0a0dc62231515656e806e588e7fdc159e79dd1b0af7f82c9443f88",
-      "normalized": "correct horse battery staple",
-      "phrase": "  Correct   HORSE\tbattery\nstaple "
+      "root": "e9794e1b5cb23afeb84cdd3a67cde1babd7c2474808a6eee9dfe8289a0e8d91d"
     },
     {
       "channel_id": "yLY-KMzN6zpy-gOZyHvUHAUvZFbvjY8JorBOHjU8bP4",
       "key": "2974fbf1b78bba580d5797d74c35b71c53afba6fd0936fd09b1a404ae0334452",
-      "normalized": "café file naïve",
-      "phrase": "Ｃafé ﬁle naïve"
+      "root": "0144c1bbae38c08c5fafaeb39a60990c3fd494ec654210946931d98ee56b2ece"
     },
     {
       "channel_id": "sD92fYor09GumXgF4Jf80RRCMM5QTU78Ko0ipESaWYo",
       "key": "42b889c18c87629dd1b8c73347800946d95000101c807155a05c5fd4f5be99fc",
-      "normalized": "tundra velvet anchor pickle orbit meadow",
-      "phrase": "tundra velvet anchor pickle orbit meadow"
+      "root": "d50a42466f0649b68344ed84894633b51a49f498c572802df637b6d488d95a12"
     }
   ],
-  "version": 1,
   "streams": [
     {
       "channel_id": "sD92fYor09GumXgF4Jf80RRCMM5QTU78Ko0ipESaWYo",
@@ -151,5 +141,6 @@
         ]
       }
     }
-  ]
+  ],
+  "version": 1
 }

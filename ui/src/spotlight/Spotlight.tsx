@@ -96,7 +96,7 @@ export function Spotlight() {
     setStatus(s);
     platform.transferStatus().then(setTransfer, () => {});
     setTtl(s.defaultTtlSecs);
-    if (!s.paired) return;
+    if (!s.space) return;
     platform.serverConfig().then(setConfig, () => {});
     await reloadList();
   }, [reloadList]);
@@ -244,7 +244,7 @@ export function Spotlight() {
       if (mod && key === ",") {
         handled();
         platform.openSettings();
-      } else if (!status?.paired) {
+      } else if (!status?.space) {
         if (e.key === "Enter" && status) {
           handled();
           platform.openSettings();
@@ -294,27 +294,31 @@ export function Spotlight() {
     return () => window.removeEventListener("blur", onBlur);
   }, []);
 
-  const paired = status?.paired ?? false;
+  const space = status?.space ?? null;
   const selectedLoaded = selected ? loaded[selected.id] : undefined;
   const selectedHasFiles = selectedLoaded?.state === "ok" && selectedLoaded.clip.files.length > 0;
   return (
     <main className="panel">
       <header className="panel-header">
         <span className="brand">YACS</span>
-        {paired && status?.serverUrl && <span className="server">{new URL(status.serverUrl).host}</span>}
+        {space && (
+          <span className="server" title={`Through ${new URL(space.relay).host}`}>
+            {space.name}
+          </span>
+        )}
         <button className="icon-button" title={`Settings (${modKey(os, ",")})`} onClick={() => platform.openSettings()}>
           <GearIcon />
         </button>
       </header>
 
       <section className="panel-body">
-        {status && !paired ? (
-          <Empty title="This device isn't paired yet" detail="Pair it with a relay to share clips with your other devices.">
+        {status && !space ? (
+          <Empty title="This computer isn't in a space yet" detail="Start one, or join your other devices' space with an invite link.">
             <button className="primary" onClick={() => platform.openSettings()}>
               Open Settings <kbd>↵</kbd>
             </button>
           </Empty>
-        ) : list.state === "loading" && paired ? (
+        ) : list.state === "loading" && space ? (
           <Empty title="Loading…" detail="" />
         ) : list.state === "error" ? (
           <Empty title="Couldn't load your clips" detail={list.message} />
@@ -365,7 +369,7 @@ export function Spotlight() {
       )}
 
       <footer className="panel-footer">
-        {paired && (
+        {space && (
           <>
             {selected && (
               <>
@@ -387,7 +391,7 @@ export function Spotlight() {
             </label>
           </>
         )}
-        {!paired && <Hint keys="esc" label="close" />}
+        {!space && <Hint keys="esc" label="close" />}
       </footer>
     </main>
   );

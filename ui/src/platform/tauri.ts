@@ -5,9 +5,10 @@ import type { Platform } from ".";
 
 export const tauriPlatform: Platform = {
   status: () => invoke("status"),
-  generatePhrase: () => invoke("generate_phrase"),
-  pair: (serverUrl, token, phrase) => invoke("pair", { serverUrl, token, phrase }),
-  unpair: () => invoke("unpair"),
+  createSpace: (serverUrl, token, name) => invoke("create_space", { serverUrl, token, name }),
+  joinSpace: (link) => invoke("join_space", { link }),
+  renameSpace: (name) => invoke("rename_space", { name }),
+  leaveSpace: () => invoke("leave_space"),
   savePreferences: (preferences) => invoke("save_preferences", { preferences }),
   serverConfig: () => invoke("server_config"),
   listClips: () => invoke("list_clips"),
@@ -26,7 +27,7 @@ export const tauriPlatform: Platform = {
   cancelTransfer: () => invoke("cancel_transfer"),
   deleteClip: (id) => invoke("delete_clip", { id }),
   setDefaultTtl: (ttlSecs) => invoke("set_default_ttl", { ttlSecs }),
-  phonePairing: () => invoke("phone_pairing"),
+  invite: () => invoke("invite"),
   installCli: () => invoke("install_cli"),
   uninstallCli: () => invoke("uninstall_cli"),
   checkUpdate: () => invoke("check_update"),

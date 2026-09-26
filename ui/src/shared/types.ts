@@ -83,8 +83,8 @@ export type Os = "macos" | "windows" | "linux";
 
 /** Desktop app state, from the `status` command. */
 export interface Status {
-  paired: boolean;
-  serverUrl: string | null;
+  /** The space in use; null until this computer starts or joins one. */
+  space: SpaceStatus | null;
   deviceName: string;
   hotkey: string;
   hotkeyError: string | null;
@@ -103,6 +103,13 @@ export interface Status {
   cli: CliStatus;
 }
 
+export interface SpaceStatus {
+  /** This computer's own name for it. */
+  name: string;
+  /** The relay's URL. */
+  relay: string;
+}
+
 export interface ManualShortcut {
   /** This AppImage or the installed binary, with `--toggle`. */
   command: string;
@@ -119,8 +126,8 @@ export interface CliStatus {
   location: string | null;
 }
 
-/** The desktop's "Pair another device" QR code and link. */
-export interface PhonePairing {
+/** The desktop's "Invite a device" QR code and link. */
+export interface Invite {
   url: string;
   /** `data:image/svg+xml` URL. */
   qr: string;

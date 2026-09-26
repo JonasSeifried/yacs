@@ -9,31 +9,35 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use yacs_core::{
     Clip, ClipItem, Envelope, Image, MIN_CHUNK_SIZE, Pairing, Payload, Stream, StreamFile,
-    normalize_phrase,
 };
 
-const PHRASES: &[&str] = &[
-    "correct horse battery staple",
-    "  Correct   HORSE\tbattery\nstaple ",
-    "Ｃafé ﬁle naïve",
-    "tundra velvet anchor pickle orbit meadow",
+/// What Argon2id made of three phrases up to 0.3 ("correct horse battery
+/// staple", "Ｃafé ﬁle naïve", "tundra velvet anchor pickle orbit meadow"), so
+/// the vectors keep their channel ids and keys.
+const ROOTS: &[&str] = &[
+    "e9794e1b5cb23afeb84cdd3a67cde1babd7c2474808a6eee9dfe8289a0e8d91d",
+    "0144c1bbae38c08c5fafaeb39a60990c3fd494ec654210946931d98ee56b2ece",
+    "d50a42466f0649b68344ed84894633b51a49f498c572802df637b6d488d95a12",
 ];
 
 fn main() {
-    let kdf: Vec<_> = PHRASES
+    let pairings: Vec<_> = ROOTS
         .iter()
-        .map(|phrase| {
-            let pairing = Pairing::from_phrase(phrase).unwrap();
+        .map(|root| Pairing::from_root(&hex::decode(root).unwrap().try_into().unwrap()))
+        .collect();
+    let roots: Vec<_> = ROOTS
+        .iter()
+        .zip(&pairings)
+        .map(|(root, pairing)| {
             json!({
-                "phrase": phrase,
-                "normalized": normalize_phrase(phrase),
+                "root": root,
                 "channel_id": pairing.channel_id.to_string(),
                 "key": hex::encode(pairing.key.as_bytes()),
             })
         })
         .collect();
 
-    let pairing = Pairing::from_phrase(PHRASES[3]).unwrap();
+    let pairing = &pairings[2];
     let payloads = [
         Payload::Clip(Clip {
             created_at_ms: 1_758_600_000_000,
@@ -59,7 +63,7 @@ fn main() {
             json!({
                 "channel_id": pairing.channel_id.to_string(),
                 "key": hex::encode(pairing.key.as_bytes()),
-                "envelope": hex::encode(Envelope::seal(&pairing, payload).unwrap().to_bytes()),
+                "envelope": hex::encode(Envelope::seal(pairing, payload).unwrap().to_bytes()),
                 "payload": payload,
             })
         })
@@ -85,7 +89,7 @@ fn main() {
         ],
     };
     let plaintext = stream_plaintext(stream.total());
-    let cipher = stream.cipher(&pairing).unwrap();
+    let cipher = stream.cipher(pairing).unwrap();
     let chunks: Vec<_> = (0..stream.chunk_count())
         .map(|i| {
             let start = (i * u64::from(stream.chunk_size)) as usize;
@@ -107,7 +111,7 @@ fn main() {
 
     let vectors = json!({
         "version": yacs_core::PROTOCOL_VERSION,
-        "kdf": kdf,
+        "roots": roots,
         "envelopes": envelopes,
         "streams": streams,
     });

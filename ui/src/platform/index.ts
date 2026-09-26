@@ -1,7 +1,7 @@
 import type {
   ClipMeta,
   ClipView,
-  PhonePairing,
+  Invite,
   Preferences,
   Sent,
   ServerConfig,
@@ -18,9 +18,13 @@ import { tauriPlatform } from "./tauri";
  */
 export interface Platform {
   status(): Promise<Status>;
-  generatePhrase(): Promise<string>;
-  pair(serverUrl: string, token: string | null, phrase: string): Promise<void>;
-  unpair(): Promise<void>;
+  /** Starts a new space on the relay, once it accepts the token. */
+  createSpace(serverUrl: string, token: string | null, name: string | null): Promise<void>;
+  /** Joins the space in an invite link from another device. */
+  joinSpace(link: string): Promise<void>;
+  /** This computer's own name for the space; resolves to the name as saved. */
+  renameSpace(name: string): Promise<string>;
+  leaveSpace(): Promise<void>;
   savePreferences(preferences: Preferences): Promise<void>;
   serverConfig(): Promise<ServerConfig>;
   listClips(): Promise<ClipMeta[]>;
@@ -42,9 +46,9 @@ export interface Platform {
   cancelTransfer(): Promise<void>;
   deleteClip(id: string): Promise<void>;
   setDefaultTtl(ttlSecs: number): Promise<void>;
-  /** Contains the channel key: only fetch it when the user asks to see it. */
-  phonePairing(): Promise<PhonePairing>;
-  /** Puts the bundled `yacs` command on the PATH, paired like this computer. */
+  /** Contains the space's key: only fetch it when the user asks to see it. */
+  invite(): Promise<Invite>;
+  /** Puts the bundled `yacs` command on the PATH, in this computer's space. */
   installCli(): Promise<void>;
   uninstallCli(): Promise<void>;
   /** Resolves to the new version, if there is one. */

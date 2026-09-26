@@ -8,8 +8,8 @@ mod commands;
 mod hotkey;
 mod live;
 mod pairing;
-mod secrets;
 mod settings;
+mod spaces;
 mod state;
 #[cfg(test)]
 mod test_support;
@@ -68,7 +68,7 @@ pub fn run() {
 
             let state = AppState::load(&app.path().app_config_dir()?);
             let hotkey = state.settings().hotkey.clone();
-            let paired = state.client().is_some();
+            let in_space = state.client().is_some();
             app.manage(state);
             app.manage(update::Updates::default());
             app.manage(live::Live::default());
@@ -84,7 +84,7 @@ pub fn run() {
                     .lock()
                     .expect("lock poisoned") = Some(e);
             }
-            if !paired {
+            if !in_space {
                 windows::show_settings(app.handle());
             }
             update::spawn_checks(app.handle());
@@ -92,9 +92,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::status,
-            commands::generate_phrase,
-            commands::pair,
-            commands::unpair,
+            commands::create_space,
+            commands::join_space,
+            commands::rename_space,
+            commands::leave_space,
             commands::save_preferences,
             commands::server_config,
             commands::list_clips,
@@ -106,7 +107,7 @@ pub fn run() {
             commands::cancel_transfer,
             commands::delete_clip,
             commands::set_default_ttl,
-            commands::phone_pairing,
+            commands::invite,
             commands::install_cli,
             commands::uninstall_cli,
             commands::check_update,

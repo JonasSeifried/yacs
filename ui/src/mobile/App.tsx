@@ -1,15 +1,18 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  DEFAULT_SPACE_NAME,
   type Decrypted,
   LiveUnsupported,
-  type StoredPairing,
+  type Session,
+  type Stored,
   WebClient,
+  enterSpace,
   forgetDownloads,
-  generatePhrase,
-  pair,
+  leaveSpace,
+  loadStored,
+  renameSpace,
   saveDeviceName,
-  storedPairing,
-  unpair,
+  session,
 } from "../platform/web";
 import { EAGER_CONCURRENCY, loadsEagerly, runLimited } from "../shared/async";
 import { clipTitle, isImageMime, previewDocument, previewKind } from "../shared/clip";
@@ -18,13 +21,14 @@ import { formatDuration, formatSize, ttlChoices } from "../shared/time";
 import type { ClipItem, ClipMeta, ServerConfig } from "../shared/types";
 import { canCopy, canSave, copyClip, fileItem, pick, readClipboard, savable, shareFiles } from "./clipboard";
 import {
-  type PairLink,
-  forgetPairLink,
+  type InviteLink,
+  forgetInviteLink,
   guessDeviceName,
+  inviteLinkFromCode,
+  inviteUrl,
   isIos,
   isIosBrowserTab,
-  pairLinkFromCode,
-  parsePairLink,
+  parseInviteLink,
 } from "./link";
 import { canScan, qrDecoder } from "./qr";
 
@@ -39,19 +43,20 @@ const LIVE_RETRY_MIN_MS = 1_000;
 const LIVE_RETRY_MAX_MS = 60_000;
 
 // Read once at startup, then removed from the address bar.
-const initialLink = parsePairLink(location.hash);
-if (initialLink) forgetPairLink();
+const initialLink = parseInviteLink(location.hash);
+if (initialLink) forgetInviteLink();
 
 export function App() {
-  const [stored, setStored] = useState<StoredPairing | null>(storedPairing);
-  const [link, setLink] = useState<PairLink | null>(initialLink);
+  const [stored, setStored] = useState<Stored | null>(loadStored);
+  const [link, setLink] = useState<InviteLink | null>(initialLink);
+  const current = session(stored);
 
-  // A pairing link opened while the app is already open only changes the hash.
+  // An invite link opened while the app is already open only changes the hash.
   useEffect(() => {
     const onHash = () => {
-      const next = parsePairLink(location.hash);
+      const next = parseInviteLink(location.hash);
       if (!next) return;
-      forgetPairLink();
+      forgetInviteLink();
       setLink(next);
     };
     window.addEventListener("hashchange", onHash);
@@ -60,9 +65,9 @@ export function App() {
 
   if (link) {
     return (
-      <PairFromLink
+      <JoinFromLink
         link={link}
-        replacing={stored !== null}
+        stored={stored}
         onDone={(next) => {
           setLink(null);
           if (next) setStored(next);
@@ -70,23 +75,26 @@ export function App() {
       />
     );
   }
-  if (!stored) return <PairForm onPaired={setStored} onLink={setLink} />;
-  return <Home key={stored.secret} stored={stored} onChange={setStored} />;
+  if (!stored || !current) return <Welcome stored={stored} onJoined={setStored} onLink={setLink} />;
+  return <Home key={current.secret} stored={stored} current={current} onChange={setStored} />;
 }
 
-// ── Pairing ────────────────────────────────────────────────────────────────
+// ── Joining a space ────────────────────────────────────────────────────────
 
-function PairFromLink(props: { link: PairLink; replacing: boolean; onDone: (s: StoredPairing | null) => void }) {
-  const [deviceName, setDeviceName] = useState(guessDeviceName);
+/** The "Join?" step: nothing is fetched or stored until the tap. */
+function JoinFromLink(props: { link: InviteLink; stored: Stored | null; onDone: (s: Stored | null) => void }) {
+  const [name, setName] = useState(props.link.name ?? DEFAULT_SPACE_NAME);
+  const [deviceName, setDeviceName] = useState(() => props.stored?.deviceName ?? guessDeviceName());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const replacing = (props.stored?.spaces.length ?? 0) > 0;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      props.onDone(await pair({ secret: props.link.secret }, props.link.token, deviceName));
+      props.onDone(await enterSpace(props.link.secret, name, props.link.token, deviceName));
     } catch (e) {
       setError(errorText(e));
       setBusy(false);
@@ -96,19 +104,20 @@ function PairFromLink(props: { link: PairLink; replacing: boolean; onDone: (s: S
   return (
     <Screen>
       <form className="card pair" onSubmit={submit}>
-        <h1>Pair this device</h1>
+        <h1>Join “{props.link.name ?? DEFAULT_SPACE_NAME}”?</h1>
         <p className="muted">
           Clips will sync through <b>{location.host}</b>, end-to-end encrypted.
-          {props.replacing && " This replaces the pairing this device has now."}
+          {replacing && " This replaces the space this device is in now."}
         </p>
         <IosHomeScreenHint />
         <label>
-          <span>Device name <span className="muted">shown to your other devices</span></span>
-          <input value={deviceName} onChange={(e) => setDeviceName(e.target.value)} required />
+          <span>Space name <span className="muted">only on this device</span></span>
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={64} required />
         </label>
+        <DeviceNameField value={deviceName} onChange={setDeviceName} />
         {error && <p className="error">{error}</p>}
         <button className="primary" disabled={busy}>
-          {busy ? "Pairing…" : "Pair"}
+          {busy ? "Joining…" : "Join"}
         </button>
         <button type="button" className="ghost" onClick={() => props.onDone(null)} disabled={busy}>
           Cancel
@@ -118,35 +127,67 @@ function PairFromLink(props: { link: PairLink; replacing: boolean; onDone: (s: S
   );
 }
 
-function PairForm({ onPaired, onLink }: { onPaired: (s: StoredPairing) => void; onLink: (l: PairLink) => void }) {
+function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; onLink: (l: InviteLink) => void }) {
   const [scanning, setScanning] = useState(false);
-  const [phrase, setPhrase] = useState("");
+  const [pasted, setPasted] = useState("");
+  const [starting, setStarting] = useState(false);
   const [token, setToken] = useState("");
-  const [deviceName, setDeviceName] = useState(guessDeviceName);
+  const [deviceName, setDeviceName] = useState(() => props.stored?.deviceName ?? guessDeviceName());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const submit = async (e: FormEvent) => {
+  const join = (e: FormEvent) => {
+    e.preventDefault();
+    const link = inviteLinkFromCode(pasted);
+    if ("error" in link) return setError(link.error);
+    setError(null);
+    props.onLink(link);
+  };
+  const start = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      onPaired(await pair({ phrase }, token, deviceName));
+      props.onJoined(await enterSpace(null, DEFAULT_SPACE_NAME, token, deviceName));
     } catch (e) {
       setError(errorText(e));
       setBusy(false);
     }
   };
 
-  if (scanning) return <Scanner onLink={onLink} onCancel={() => setScanning(false)} />;
+  if (scanning) return <Scanner onLink={props.onLink} onCancel={() => setScanning(false)} />;
+
+  if (starting) {
+    return (
+      <Screen>
+        <form className="card pair" onSubmit={start}>
+          <h1>Start a new space</h1>
+          <p className="muted">
+            For this device and the ones you invite, through <b>{location.host}</b>. Invite them from Settings once
+            it's started.
+          </p>
+          <label>
+            <span>Access token <span className="muted">if the relay needs one</span></span>
+            <input value={token} onChange={(e) => setToken(e.target.value)} autoCapitalize="none" autoComplete="off" />
+          </label>
+          <DeviceNameField value={deviceName} onChange={setDeviceName} />
+          {error && <p className="error">{error}</p>}
+          <button className="primary" disabled={busy}>
+            {busy ? "Starting…" : "Start space"}
+          </button>
+          <button type="button" className="ghost" onClick={() => setStarting(false)} disabled={busy}>
+            Back
+          </button>
+        </form>
+      </Screen>
+    );
+  }
 
   return (
     <Screen>
-      <form className="card pair" onSubmit={submit}>
-        <h1>Pair with your devices</h1>
-        <p className="muted">
-          Scan the QR code in YACS on your computer (Settings → Pair another device), or type the pairing phrase.
-        </p>
+      <form className="card pair" onSubmit={join}>
+        <h1>Join your devices</h1>
+        <p className="muted">Scan the QR code in YACS on your computer (Settings → Invite a device), or paste an invite link.</p>
         <IosHomeScreenHint />
         {canScan() && (
           <button type="button" className="primary" onClick={() => setScanning(true)}>
@@ -154,40 +195,38 @@ function PairForm({ onPaired, onLink }: { onPaired: (s: StoredPairing) => void; 
           </button>
         )}
         <label>
-          Pairing phrase
-          <textarea
-            value={phrase}
-            onChange={(e) => setPhrase(e.target.value)}
-            rows={2}
+          Invite link
+          <input
+            value={pasted}
+            onChange={(e) => setPasted(e.target.value)}
             required
             autoCapitalize="none"
             autoCorrect="off"
             autoComplete="off"
             spellCheck={false}
-            placeholder="six words from your other device"
+            placeholder={`${location.origin}/#pair=…`}
           />
         </label>
-        <button type="button" className="link" onClick={async () => setPhrase(await generatePhrase())}>
-          Start a new pairing instead
-        </button>
-        <label>
-          <span>Access token <span className="muted">if the relay needs one</span></span>
-          <input value={token} onChange={(e) => setToken(e.target.value)} autoCapitalize="none" autoComplete="off" />
-        </label>
-        <label>
-          <span>Device name <span className="muted">shown to your other devices</span></span>
-          <input value={deviceName} onChange={(e) => setDeviceName(e.target.value)} required />
-        </label>
         {error && <p className="error">{error}</p>}
-        <button className="primary" disabled={busy}>
-          {busy ? "Deriving key…" : "Pair"}
+        <button className={canScan() ? "" : "primary"}>Continue</button>
+        <button type="button" className="link" onClick={() => (setError(null), setStarting(true))}>
+          No other devices yet? Start a new space
         </button>
       </form>
     </Screen>
   );
 }
 
-function Scanner({ onLink, onCancel }: { onLink: (l: PairLink) => void; onCancel: () => void }) {
+function DeviceNameField(props: { value: string; onChange: (value: string) => void }) {
+  return (
+    <label>
+      <span>Device name <span className="muted">shown to your other devices</span></span>
+      <input value={props.value} onChange={(e) => props.onChange(e.target.value)} required />
+    </label>
+  );
+}
+
+function Scanner({ onLink, onCancel }: { onLink: (l: InviteLink) => void; onCancel: () => void }) {
   const video = useRef<HTMLVideoElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -211,7 +250,7 @@ function Scanner({ onLink, onCancel }: { onLink: (l: PairLink) => void; onCancel
           const code = await decode(el).catch(() => null);
           if (stopped) return;
           if (code) {
-            const link = pairLinkFromCode(code);
+            const link = inviteLinkFromCode(code);
             if (!("error" in link)) return onLinkRef.current(link);
             setProblem(link.error);
           }
@@ -233,7 +272,7 @@ function Scanner({ onLink, onCancel }: { onLink: (l: PairLink) => void; onCancel
     <Screen>
       <div className="card pair">
         <h1>Scan the QR code</h1>
-        <p className="muted">On your computer: YACS → Settings → Pair another device.</p>
+        <p className="muted">On your computer: YACS → Settings → Invite a device.</p>
         {error ? (
           <p className="error">{error}</p>
         ) : (
@@ -250,17 +289,17 @@ function Scanner({ onLink, onCancel }: { onLink: (l: PairLink) => void; onCancel
 
 function cameraError(e: unknown): string {
   const name = e instanceof DOMException ? e.name : "";
-  if (name === "NotAllowedError") return "YACS isn't allowed to use the camera. Allow it in your browser's settings, or type the phrase instead.";
-  if (name === "NotFoundError" || name === "OverconstrainedError") return "No camera found. Type the phrase instead.";
+  if (name === "NotAllowedError") return "YACS isn't allowed to use the camera. Allow it in your browser's settings, or paste the invite link instead.";
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "No camera found. Paste the invite link instead.";
   return errorText(e);
 }
 
-/** Pairing in an iPhone browser tab doesn't carry over to the home screen app. */
+/** Joining in an iPhone browser tab doesn't carry over to the home screen app. */
 function IosHomeScreenHint() {
   if (!isIosBrowserTab()) return null;
   return (
     <p className="muted small">
-      Want YACS on your home screen? Add it there first (Share → Add to Home Screen), then pair from inside it: the
+      Want YACS on your home screen? Add it there first (Share → Add to Home Screen), then join from inside it: the
       home screen app doesn't share anything with the browser.
     </p>
   );
@@ -353,8 +392,9 @@ type Toast = { kind: "ok" | "error"; text: string; undo?: string };
 /** A delete waits this long for Undo before it goes to the relay (for every device). */
 const UNDO_MS = 5000;
 
-function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: StoredPairing | null) => void }) {
-  const client = useMemo(() => new WebClient(stored), [stored]);
+function Home({ stored, current, onChange }: { stored: Stored; current: Session; onChange: (s: Stored) => void }) {
+  const { secret, token, deviceName } = current;
+  const client = useMemo(() => new WebClient({ secret, token, deviceName }), [secret, token, deviceName]);
   const [config, setConfig] = useState<ServerConfig | null>(null);
   const [list, setList] = useState<List>({ state: "loading" });
   const [loaded, setLoaded] = useState<Record<string, Loaded>>({});
@@ -524,7 +564,9 @@ function Home({ stored, onChange }: { stored: StoredPairing; onChange: (s: Store
     <Screen>
       <header className="top">
         <span className="brand">YACS</span>
-        <span className="server">{location.host}</span>
+        <span className="server" title={`Through ${location.host}`}>
+          {stored.spaces[0].name}
+        </span>
         <button className="icon" aria-label="Settings" onClick={() => setSettings(true)}>
           <GearIcon />
         </button>
@@ -916,7 +958,9 @@ function ClipPreview({ clip }: { clip: Decrypted }) {
   return <p className="muted">Rich text without a preview. Copy works in apps that take it.</p>;
 }
 
-function SettingsSheet(props: { stored: StoredPairing; onClose: () => void; onChange: (s: StoredPairing | null) => void }) {
+function SettingsSheet(props: { stored: Stored; onClose: () => void; onChange: (s: Stored) => void }) {
+  const space = props.stored.spaces[0];
+  const [name, setName] = useState(space.name);
   const [deviceName, setDeviceName] = useState(props.stored.deviceName);
   const { onClose } = props;
   useEffect(() => {
@@ -934,18 +978,23 @@ function SettingsSheet(props: { stored: StoredPairing; onClose: () => void; onCh
           </button>
         </div>
         <label>
+          <span>Space name <span className="muted">only on this device</span></span>
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={64} />
+        </label>
+        <label>
           Device name
           <input value={deviceName} onChange={(e) => setDeviceName(e.target.value)} />
         </label>
         <button
           className="primary"
           onClick={() => {
-            props.onChange(saveDeviceName(props.stored, deviceName));
+            props.onChange(saveDeviceName(renameSpace(props.stored, name), deviceName));
             props.onClose();
           }}
         >
           Save
         </button>
+        <InviteDevice stored={props.stored} />
         <p className="muted small">
           Install YACS: in Safari tap Share → Add to Home Screen; in Chrome use “Install app”. On Android, installed
           YACS shows up in the share sheet.
@@ -953,14 +1002,52 @@ function SettingsSheet(props: { stored: StoredPairing; onClose: () => void; onCh
         <button
           className="ghost danger"
           onClick={() => {
-            if (!confirm("Unpair this device? You'll need the phrase or QR code to pair it again.")) return;
-            unpair();
-            props.onChange(null);
+            if (!confirm(`Leave “${space.name}”? To come back, you'll need an invite from one of its devices.`)) return;
+            props.onChange(leaveSpace(props.stored));
           }}
         >
-          Unpair this device
+          Leave this space
         </button>
       </div>
+    </div>
+  );
+}
+
+/** Hands out the invite link: share it to a messenger, or copy it for a computer's Settings. */
+function InviteDevice({ stored }: { stored: Stored }) {
+  const [status, setStatus] = useState<string | null>(null);
+  const space = stored.spaces[0];
+  const url = () => inviteUrl({ secret: space.secret, token: stored.token, name: space.name });
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(url());
+      setStatus("Copied. Paste it into Settings → Invite link on the other device.");
+    } catch {
+      setStatus("Couldn't copy here (the clipboard needs HTTPS).");
+    }
+  };
+  const share = async () => {
+    try {
+      await navigator.share({ title: `Join “${space.name}” in YACS`, url: url() });
+    } catch (e) {
+      if (!(e instanceof DOMException && e.name === "AbortError")) setStatus(errorText(e));
+    }
+  };
+  return (
+    <div className="invite">
+      <span>Invite a device</span>
+      <p className="muted small">Anyone with the link can read and send your clips. Only use it for your own devices.</p>
+      <div className="row">
+        {"share" in navigator && (
+          <button type="button" onClick={share}>
+            Share link
+          </button>
+        )}
+        <button type="button" onClick={copy}>
+          Copy link
+        </button>
+      </div>
+      {status && <p className="muted small">{status}</p>}
     </div>
   );
 }

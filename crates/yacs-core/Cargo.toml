@@ -8,7 +8,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-argon2 = { version = "0.6.0", default-features = false, features = ["alloc"] }
 base64 = "0.23.1"
 chacha20poly1305 = { version = "0.11.0", features = ["zeroize"] }
 getrandom = "0.4"
@@ -18,7 +17,6 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_bytes = "0.11.19"
 sha2 = "0.11.0"
 thiserror = "2.0.20"
-unicode-normalization = "0.1.25"
 zeroize = "1.9.0"
 
 [dev-dependencies]

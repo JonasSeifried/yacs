@@ -15,10 +15,9 @@ pub struct WasmPairing(yacs_core::Pairing);
 
 #[wasm_bindgen(js_class = Pairing)]
 impl WasmPairing {
-    /// Deliberately slow (Argon2id with 64 MiB): about a second on a phone.
-    #[wasm_bindgen(js_name = fromPhrase)]
-    pub fn from_phrase(phrase: &str) -> Result<WasmPairing, JsError> {
-        Ok(Self(yacs_core::Pairing::from_phrase(phrase)?))
+    /// A new space with a random key.
+    pub fn generate() -> Result<WasmPairing, JsError> {
+        Ok(Self(yacs_core::Pairing::generate()?))
     }
 
     /// From `secret()` or a pairing link: instant.
@@ -33,7 +32,7 @@ impl WasmPairing {
         self.0.channel_id.to_string()
     }
 
-    /// Channel id and key, to store the pairing.
+    /// Channel id and key, to store the space.
     pub fn secret(&self) -> String {
         self.0.to_secret()
     }
@@ -85,10 +84,4 @@ impl WasmStreamCipher {
     pub fn open(&self, index: u32, chunk: Vec<u8>) -> Result<Vec<u8>, JsError> {
         Ok(self.0.open(index.into(), chunk)?)
     }
-}
-
-/// A new random 6-word pairing phrase.
-#[wasm_bindgen(js_name = generatePhrase)]
-pub fn generate_phrase() -> Result<String, JsError> {
-    Ok(yacs_core::generate_phrase(yacs_core::DEFAULT_PHRASE_WORDS)?)
 }

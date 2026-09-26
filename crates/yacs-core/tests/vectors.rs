@@ -1,14 +1,12 @@
 //! Fixed test vectors shared by every client. If these fail, a device running
-//! this build can no longer pair or decrypt with devices running older builds.
+//! this build can no longer join spaces or decrypt with devices running older builds.
 //!
 //! Runs natively and under WASM:
 //! `cargo test -p yacs-core --target wasm32-unknown-unknown --test vectors`
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use yacs_core::{
-    ChannelId, ChannelKey, Envelope, Error, Pairing, Payload, Stream, normalize_phrase,
-};
+use yacs_core::{ChannelId, ChannelKey, Envelope, Error, Pairing, Payload, Stream};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -16,15 +14,14 @@ use wasm_bindgen_test::wasm_bindgen_test;
 #[derive(Deserialize)]
 struct Vectors {
     version: u8,
-    kdf: Vec<KdfVector>,
+    roots: Vec<RootVector>,
     envelopes: Vec<EnvelopeVector>,
     streams: Vec<StreamVector>,
 }
 
 #[derive(Deserialize)]
-struct KdfVector {
-    phrase: String,
-    normalized: String,
+struct RootVector {
+    root: String,
     channel_id: String,
     key: String,
 }
@@ -74,27 +71,20 @@ fn protocol_version_matches() {
     assert_eq!(vectors().version, yacs_core::PROTOCOL_VERSION);
 }
 
+/// The first three roots are what phrases derived with Argon2id up to 0.3,
+/// so spaces made then keep their channel id and key.
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-fn phrase_derivation_matches() {
-    for v in vectors().kdf {
-        assert_eq!(normalize_phrase(&v.phrase), v.normalized, "{:?}", v.phrase);
+fn root_derivation_matches() {
+    for v in vectors().roots {
+        let root: [u8; 32] = hex::decode(&v.root).unwrap().try_into().unwrap();
         assert_eq!(
-            Pairing::from_phrase(&v.phrase).unwrap(),
+            Pairing::from_root(&root),
             pairing(&v.channel_id, &v.key),
-            "{:?}",
-            v.phrase
+            "{}",
+            v.root
         );
     }
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
-fn equivalent_phrases_pair() {
-    let kdf = vectors().kdf;
-    assert_eq!(kdf[0].normalized, kdf[1].normalized);
-    assert_eq!(kdf[0].channel_id, kdf[1].channel_id);
-    assert_eq!(kdf[0].key, kdf[1].key);
 }
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]

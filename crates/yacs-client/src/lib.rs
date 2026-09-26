@@ -1,7 +1,8 @@
-//! Talks to a YACS relay on behalf of one paired channel. Encrypts before
+//! Talks to a YACS relay on behalf of one space (channel). Encrypts before
 //! sending and decrypts after receiving, so callers only see plaintext clips.
 
 mod chunks;
+pub mod spaces;
 mod sse;
 
 pub use chunks::{LocalFiles, Progress, Sink, stream_of};

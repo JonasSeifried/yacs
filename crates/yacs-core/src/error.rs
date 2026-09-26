@@ -1,8 +1,6 @@
 /// Everything that can go wrong in the YACS protocol layer.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum Error {
-    #[error("pairing phrase is empty")]
-    EmptyPhrase,
     #[error("invalid channel id")]
     InvalidChannelId,
     #[error("invalid pairing secret")]

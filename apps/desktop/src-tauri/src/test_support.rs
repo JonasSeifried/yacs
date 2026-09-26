@@ -6,8 +6,6 @@ use std::sync::Arc;
 use clap::Parser;
 use yacs_server::{Config, SystemClock};
 
-pub const PHRASE: &str = "tundra velvet anchor pickle orbit meadow";
-
 /// Returns the relay's URL; it stores clips until the `TempDir` is dropped.
 pub async fn relay(extra: &[&str]) -> (String, tempfile::TempDir) {
     let data = tempfile::tempdir().unwrap();

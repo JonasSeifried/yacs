@@ -9,13 +9,14 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
+use yacs_client::spaces::{DEFAULT_SPACE_NAME, InviteLink, Space};
 use yacs_client::{Client, LocalFiles, stream_of};
 use yacs_core::api::{ClipMeta, ServerConfig};
-use yacs_core::{Clip, ClipItem, DEFAULT_PHRASE_WORDS, Stream, StreamFile};
+use yacs_core::{Clip, ClipItem, Pairing, Stream, StreamFile};
 
 use crate::clipboard::{Copied, LocalFile};
 use crate::clips::{self, ClipView, Entry};
-use crate::state::AppState;
+use crate::state::{AppState, client_for};
 use crate::transfers::{self, Direction, FolderSink, Transfer, Transfers};
 use crate::update::{self, Updates};
 use crate::{cli, clipboard, hotkey, live, pairing, windows};
@@ -25,8 +26,8 @@ type CmdResult<T> = Result<T, String>;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
-    paired: bool,
-    server_url: Option<String>,
+    /// The space in use; `None` until this computer starts or joins one.
+    space: Option<SpaceStatus>,
     device_name: String,
     hotkey: String,
     hotkey_error: Option<String>,
@@ -46,12 +47,23 @@ pub struct Status {
     cli: cli::CliStatus,
 }
 
+#[derive(Serialize)]
+pub struct SpaceStatus {
+    name: String,
+    relay: String,
+}
+
 #[tauri::command]
 pub fn status(app: AppHandle, state: State<'_, AppState>) -> Status {
     let settings = state.settings().clone();
+    let space = state
+        .client()
+        .and(state.spaces().current().map(|s| SpaceStatus {
+            name: s.name.clone(),
+            relay: s.relay.clone(),
+        }));
     Status {
-        paired: state.client().is_some(),
-        server_url: settings.server_url,
+        space,
         device_name: settings.device_name,
         hotkey: settings.hotkey,
         hotkey_error: state.hotkey_error.lock().expect("lock poisoned").clone(),
@@ -67,55 +79,89 @@ pub fn status(app: AppHandle, state: State<'_, AppState>) -> Status {
     }
 }
 
+/// Start a new space with a random key on `server_url`, once the relay
+/// accepts it. Nothing is saved if that fails.
 #[tauri::command]
-pub fn generate_phrase() -> CmdResult<String> {
-    yacs_core::generate_phrase(DEFAULT_PHRASE_WORDS).map_err(|e| e.to_string())
-}
-
-/// Verify the pairing against the relay, then store it. Nothing is saved if
-/// any step fails.
-#[tauri::command]
-pub async fn pair(
+pub async fn create_space(
     app: AppHandle,
     state: State<'_, AppState>,
     server_url: String,
     token: Option<String>,
-    phrase: String,
+    name: Option<String>,
 ) -> CmdResult<()> {
-    let connected = pairing::connect(&server_url, token.as_deref(), phrase).await?;
+    let pairing = Pairing::generate().map_err(|e| e.to_string())?;
+    let connected = pairing::connect(&server_url, token.as_deref(), pairing.clone()).await?;
+    let name = name.as_deref().unwrap_or(DEFAULT_SPACE_NAME);
+    let space = Space::new(name, &connected.relay, &pairing);
+    use_space(&app, &state, space, connected)
+}
+
+/// Join the space in an invite link from another device, once its relay
+/// accepts it. Nothing is saved if that fails.
+#[tauri::command]
+pub async fn join_space(app: AppHandle, state: State<'_, AppState>, link: String) -> CmdResult<()> {
+    let link = InviteLink::parse(&link).map_err(|e| {
+        format!("{e}. Copy one on a computer in the space from Settings → Invite a device…")
+    })?;
+    let connected =
+        pairing::connect(&link.relay, link.token.as_deref(), link.pairing.clone()).await?;
+    let name = link.name.as_deref().unwrap_or(DEFAULT_SPACE_NAME);
+    let space = Space::new(name, &connected.relay, &link.pairing);
+    use_space(&app, &state, space, connected)
+}
+
+fn use_space(
+    app: &AppHandle,
+    state: &AppState,
+    space: Space,
+    connected: pairing::Connected,
+) -> CmdResult<()> {
     app.state::<Transfers>().cancel();
-    state
-        .secrets
-        .save(&connected.stored)
-        .map_err(|e| e.to_string())?;
     {
-        let mut settings = state.settings();
-        settings.server_url = Some(connected.server_url);
-        state
-            .settings_file
-            .save(&settings)
-            .map_err(|e| e.to_string())?;
+        let mut spaces = state.spaces();
+        let mut next = spaces.clone();
+        next.set_current(space, connected.token);
+        state.spaces_file.save(&next).map_err(|e| e.to_string())?;
+        *spaces = next;
     }
     state.set_client(Some(connected.client));
-    live::restart(&app);
+    live::restart(app);
     let _ = app.emit(windows::EVENT_STATUS_CHANGED, ());
     Ok(())
 }
 
+/// This computer's own name for the space in use. Returns the name as saved.
 #[tauri::command]
-pub fn unpair(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
-    state.secrets.delete().map_err(|e| e.to_string())?;
+pub fn rename_space(app: AppHandle, state: State<'_, AppState>, name: String) -> CmdResult<String> {
+    let name = {
+        let mut spaces = state.spaces();
+        let mut next = spaces.clone();
+        let name = next
+            .rename_current(&name)
+            .ok_or("the name can't be empty")?;
+        state.spaces_file.save(&next).map_err(|e| e.to_string())?;
+        *spaces = next;
+        name
+    };
+    let _ = app.emit(windows::EVENT_STATUS_CHANGED, ());
+    Ok(name)
+}
+
+/// Forget the space in use on this computer. Its clips stay on the relay for
+/// its other devices.
+#[tauri::command]
+pub fn leave_space(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    let client = {
+        let mut spaces = state.spaces();
+        let mut next = spaces.clone();
+        next.leave_current();
+        state.spaces_file.save(&next).map_err(|e| e.to_string())?;
+        *spaces = next;
+        client_for(&spaces)
+    };
     app.state::<Transfers>().cancel();
-    state.set_client(None);
+    state.set_client(client);
     live::restart(&app);
-    {
-        let mut settings = state.settings();
-        settings.server_url = None;
-        state
-            .settings_file
-            .save(&settings)
-            .map_err(|e| e.to_string())?;
-    }
     let _ = app.emit(windows::EVENT_STATUS_CHANGED, ());
     Ok(())
 }
@@ -174,7 +220,7 @@ pub fn save_preferences(
 fn client(state: &AppState) -> CmdResult<Arc<Client>> {
     state
         .client()
-        .ok_or_else(|| "this device isn't paired yet".into())
+        .ok_or_else(|| "this computer isn't in a space yet".into())
 }
 
 #[tauri::command]
@@ -492,17 +538,17 @@ pub fn set_default_ttl(app: AppHandle, state: State<'_, AppState>, ttl_secs: u64
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PhonePairing {
+pub struct Invite {
     url: String,
     /// `data:image/svg+xml` URL of the QR code.
     qr: String,
     warning: Option<String>,
 }
 
-/// For "Pair another device" (QR code and link). Only shown on request: it's the key.
+/// For "Invite a device" (QR code and link). Only shown on request: it's the key.
 #[tauri::command]
-pub fn phone_pairing(state: State<'_, AppState>) -> CmdResult<PhonePairing> {
-    let link = pairing_link(&state)?;
+pub fn invite(state: State<'_, AppState>) -> CmdResult<Invite> {
+    let link = invite_link(&state)?;
     let svg = qrcode::QrCode::new(&link.url)
         .map_err(|e| e.to_string())?
         .render::<qrcode::render::svg::Color>()
@@ -515,32 +561,27 @@ pub fn phone_pairing(state: State<'_, AppState>) -> CmdResult<PhonePairing> {
             .collect::<String>()
             .replace('+', "%20")
     );
-    Ok(PhonePairing {
+    Ok(Invite {
         url: link.url,
         qr,
         warning: link.warning,
     })
 }
 
-fn pairing_link(state: &AppState) -> CmdResult<pairing::PhoneLink> {
-    let client = client(state)?;
-    let server_url = state
-        .settings()
-        .server_url
-        .clone()
-        .ok_or("this device isn't paired yet")?;
-    Ok(pairing::phone_link(
-        &server_url,
-        client.pairing(),
-        client.token(),
-    ))
+fn invite_link(state: &AppState) -> CmdResult<pairing::Invite> {
+    client(state)?;
+    let spaces = state.spaces();
+    let space = spaces
+        .current()
+        .ok_or("this computer isn't in a space yet")?;
+    pairing::invite(space, spaces.token(&space.relay))
 }
 
-/// Puts `yacs` on the PATH and, if this computer is paired, pairs it the
-/// same way. May wait for macOS's admin password prompt.
+/// Puts `yacs` on the PATH and, if this computer is in a space, adds the
+/// command to it. May wait for macOS's admin password prompt.
 #[tauri::command]
 pub async fn install_cli(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
-    let link = pairing_link(&state).ok().map(|link| link.url);
+    let link = invite_link(&state).ok().map(|link| link.url);
     let result = tauri::async_runtime::spawn_blocking(move || cli::install(link.as_deref()))
         .await
         .map_err(|e| e.to_string())?;

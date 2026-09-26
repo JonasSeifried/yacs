@@ -1,75 +1,55 @@
-//! Turning what the user typed into a working, verified connection.
+//! Starting or joining a space: a working, verified connection first, and the
+//! invite link other devices join with.
 
 use yacs_client::Client;
+use yacs_client::spaces::{InviteLink, Space, normalize_relay};
 use yacs_core::Pairing;
-
-use crate::secrets::Stored;
 
 pub struct Connected {
     /// Normalized: trimmed, no trailing slash.
-    pub server_url: String,
+    pub relay: String,
     pub client: Client,
-    pub stored: Stored,
+    pub token: Option<String>,
 }
 
-/// Derive the pairing from the phrase (or take the secret from a pairing
-/// link) and prove the relay is reachable and accepts the token. Nothing is
-/// persisted here, so a failure leaves no trace.
+/// Proves the relay is reachable and accepts the token. Nothing is persisted
+/// here, so a failure leaves no trace.
 pub async fn connect(
-    server_url: &str,
+    relay: &str,
     token: Option<&str>,
-    phrase: String,
+    pairing: Pairing,
 ) -> Result<Connected, String> {
-    let server_url = server_url.trim().trim_end_matches('/').to_owned();
+    let relay = normalize_relay(relay);
     let token = token
         .map(str::trim)
         .filter(|t| !t.is_empty())
         .map(str::to_owned);
-
-    let pairing = match Pairing::from_secret(phrase.trim()) {
-        Ok(pairing) => pairing,
-        // Argon2id is deliberately slow; keep it off the async runtime.
-        Err(_) => tauri::async_runtime::spawn_blocking(move || Pairing::from_phrase(&phrase))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| e.to_string())?,
-    };
-
-    let client =
-        Client::new(&server_url, token.clone(), pairing.clone()).map_err(|e| e.to_string())?;
+    let client = Client::new(&relay, token.clone(), pairing).map_err(|e| e.to_string())?;
     client
         .config()
         .await
-        .map_err(|e| format!("couldn't connect to {server_url}: {e}"))?;
-
+        .map_err(|e| format!("couldn't connect to {relay}: {e}"))?;
     Ok(Connected {
-        server_url,
+        relay,
         client,
-        stored: Stored { pairing, token },
+        token,
     })
 }
 
-/// What "Pair another device" shows as a QR code and link: the relay's web
-/// app with the pairing in the fragment, which browsers never send to the
-/// server. Phones open it; computers and `yacs pair` take it pasted.
-pub struct PhoneLink {
+/// What "Invite a device" shows as a QR code and link: the relay's web app
+/// with the space in the fragment, which browsers never send to the server.
+/// Phones open it; computers and `yacs join` take it pasted.
+pub struct Invite {
     pub url: String,
     /// Why other devices might not get far with this link, if there's a reason.
     pub warning: Option<String>,
 }
 
-pub fn phone_link(server_url: &str, pairing: &Pairing, token: Option<&str>) -> PhoneLink {
-    let mut url = format!(
-        "{}/#pair={}",
-        server_url.trim_end_matches('/'),
-        pairing.to_secret()
-    );
-    if let Some(token) = token {
-        url.push_str("&token=");
-        url.extend(url::form_urlencoded::byte_serialize(token.as_bytes()));
-    }
-
-    let parsed = url::Url::parse(server_url).ok();
+pub fn invite(space: &Space, token: Option<&str>) -> Result<Invite, String> {
+    let url = InviteLink::new(space, token)
+        .map_err(|e| e.to_string())?
+        .to_url();
+    let parsed = url::Url::parse(&space.relay).ok();
     let host = parsed
         .as_ref()
         .and_then(|u| u.host_str())
@@ -77,20 +57,20 @@ pub fn phone_link(server_url: &str, pairing: &Pairing, token: Option<&str>) -> P
     let local = matches!(host, "localhost" | "[::1]") || host.starts_with("127.");
     let warning = if local {
         Some(format!(
-            "Other devices can't reach {host}: it's this computer. Pair this computer with the relay's network address (its IP or domain) to pair other devices."
+            "Other devices can't reach {host}: it's this computer. Start the space with the relay's network address (its IP or domain) to invite other devices."
         ))
     } else if parsed.is_some_and(|u| u.scheme() == "http") {
         Some("The relay uses http://, so a phone's browser won't allow Copy and Paste or installing the app. Put it behind HTTPS (see deploy/ in the repo).".into())
     } else {
         None
     };
-    PhoneLink { url, warning }
+    Ok(Invite { url, warning })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{PHRASE, relay};
+    use crate::test_support::relay;
 
     fn pairing() -> Pairing {
         Pairing {
@@ -100,19 +80,24 @@ mod tests {
     }
 
     #[test]
-    fn phone_link_carries_the_pairing_in_the_fragment() {
-        let link = phone_link("https://clip.example.com/", &pairing(), Some("s3cret &x"));
+    fn invite_carries_the_space_in_the_fragment() {
+        let space = Space::new("Home", "https://clip.example.com/", &pairing());
+        let link = invite(&space, Some("s3cret &x")).unwrap();
         let secret = pairing().to_secret();
         assert_eq!(
             link.url,
-            format!("https://clip.example.com/#pair={secret}&token=s3cret+%26x")
+            format!("https://clip.example.com/#pair={secret}&token=s3cret+%26x&name=Home")
         );
         assert_eq!(link.warning, None);
         let (_, fragment) = link.url.split_once('#').unwrap();
         assert!(!link.url[..link.url.len() - fragment.len()].contains(&secret));
 
-        let link = phone_link("http://192.168.0.5:8080", &pairing(), None);
-        assert_eq!(link.url, format!("http://192.168.0.5:8080/#pair={secret}"));
+        let space = Space::new("Home", "http://192.168.0.5:8080", &pairing());
+        let link = invite(&space, None).unwrap();
+        assert_eq!(
+            link.url,
+            format!("http://192.168.0.5:8080/#pair={secret}&name=Home")
+        );
         assert!(link.warning.unwrap().contains("HTTPS"));
 
         for local in [
@@ -120,7 +105,8 @@ mod tests {
             "http://localhost:8080",
             "http://[::1]:8080",
         ] {
-            let warning = phone_link(local, &pairing(), None).warning.unwrap();
+            let space = Space::new("Home", local, &pairing());
+            let warning = invite(&space, None).unwrap().warning.unwrap();
             assert!(warning.contains("can't reach"), "{local}: {warning}");
         }
     }
@@ -128,39 +114,26 @@ mod tests {
     #[tokio::test]
     async fn connects_and_normalizes_input() {
         let (url, _data) = relay(&[]).await;
-        let connected = connect(&format!("  {url}/ "), Some("  "), PHRASE.into())
+        let connected = connect(&format!("  {url}/ "), Some("  "), pairing())
             .await
             .unwrap();
-        assert_eq!(connected.server_url, url);
-        assert_eq!(connected.stored.token, None);
-        assert_eq!(
-            connected.stored.pairing,
-            Pairing::from_phrase(PHRASE).unwrap()
-        );
-    }
-
-    #[tokio::test]
-    async fn takes_the_secret_from_a_pairing_link() {
-        let (url, _data) = relay(&[]).await;
-        let pairing = Pairing::from_phrase(PHRASE).unwrap();
-        let connected = connect(&url, None, format!(" {} ", pairing.to_secret()))
-            .await
-            .unwrap();
-        assert_eq!(connected.stored.pairing, pairing);
+        assert_eq!(connected.relay, url);
+        assert_eq!(connected.token, None);
+        assert_eq!(connected.client.pairing(), &pairing());
     }
 
     #[tokio::test]
     async fn checks_the_access_token() {
         let (url, _data) = relay(&["--access-token", "s3cret"]).await;
-        let err = connect(&url, None, PHRASE.into()).await.err().unwrap();
+        let err = connect(&url, None, pairing()).await.err().unwrap();
         assert!(err.contains("access token"), "{err}");
-        let ok = connect(&url, Some("s3cret"), PHRASE.into()).await.unwrap();
-        assert_eq!(ok.stored.token.as_deref(), Some("s3cret"));
+        let ok = connect(&url, Some("s3cret"), pairing()).await.unwrap();
+        assert_eq!(ok.token.as_deref(), Some("s3cret"));
     }
 
     #[tokio::test]
     async fn reports_unusable_input() {
-        let err = connect("http://127.0.0.1:1", None, PHRASE.into())
+        let err = connect("http://127.0.0.1:1", None, pairing())
             .await
             .err()
             .unwrap();
@@ -168,15 +141,10 @@ mod tests {
             err.starts_with("couldn't connect to http://127.0.0.1:1"),
             "{err}"
         );
-        let err = connect("ftp://example.com", None, PHRASE.into())
+        let err = connect("ftp://example.com", None, pairing())
             .await
             .err()
             .unwrap();
         assert!(err.contains("http://"), "{err}");
-        let err = connect("http://127.0.0.1:1", None, "   ".into())
-            .await
-            .err()
-            .unwrap();
-        assert!(err.contains("empty"), "{err}");
     }
 }

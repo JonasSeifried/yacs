@@ -4,8 +4,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use yacs_client::spaces::{DEFAULT_SPACE_NAME, InviteLink, Space, Spaces, normalize_relay};
 use yacs_client::{Client, stream_of};
-use yacs_core::api::ClipMeta;
+use yacs_core::api::{ClipMeta, ServerConfig};
 
 use crate::content::Content;
 use yacs_core::{Clip, ClipItem, Pairing, Payload};
@@ -18,7 +19,8 @@ mod update;
 
 const EXAMPLES: &str = "\
 Examples:
-  yacs pair                          pair once; paste the link from the desktop app
+  yacs join                          once: paste an invite link from the desktop app
+  yacs space new --server URL        or start a new space, then `yacs invite` other devices
   yacs send ~/.ssh/id_ed25519.pub    a text file arrives as text, an image as an image
   yacs send report.pdf               other files arrive as files
   yacs send disk.iso                 big files too, in chunks, with a progress line
@@ -29,11 +31,11 @@ Examples:
   yacs update                        get the newest version
   yacs relay update                  on the relay's machine: update the relay (Docker)";
 
-/// Share your clipboard through a self-hosted YACS relay.
+/// Share your clipboard with your other devices through a YACS relay.
 #[derive(Parser)]
 #[command(name = "yacs", version, after_help = EXAMPLES)]
 struct Cli {
-    /// Relay URL, e.g. https://clip.example.com. Not needed after `yacs pair`.
+    /// Relay URL, e.g. https://clip.example.com. Not needed after `yacs join`.
     #[arg(long, env = "YACS_SERVER", global = true)]
     server: Option<String>,
 
@@ -41,10 +43,10 @@ struct Cli {
     #[arg(long, env = "YACS_TOKEN", hide_env_values = true, global = true)]
     token: Option<String>,
 
-    /// Pairing phrase, instead of the saved pairing. Prefer the env var over
-    /// the flag so it doesn't end up in your shell history.
-    #[arg(long, env = "YACS_PHRASE", hide_env_values = true, global = true)]
-    phrase: Option<String>,
+    /// A space's secret from `yacs space export`, instead of the saved space.
+    /// Prefer the env var over the flag so it doesn't end up in your shell history.
+    #[arg(long, env = "YACS_SPACE", hide_env_values = true, global = true)]
+    space_secret: Option<String>,
 
     /// Name shown to your other devices. Defaults to the host name.
     #[arg(long, env = "YACS_DEVICE_NAME", global = true)]
@@ -56,14 +58,30 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Pair this machine once, so other commands need no flags.
+    /// Join a space once, so other commands need no flags.
     ///
-    /// Asks for the pairing link (on a paired computer: Settings → Pair
-    /// another device… → Copy link) or the phrase, checks it with the relay and saves
-    /// it, readable only by you.
-    Pair,
-    /// Forget the saved pairing. Clips on the relay stay.
-    Unpair,
+    /// Asks for an invite link (on a computer in the space: Settings → Invite
+    /// a device… → Copy link, or `yacs invite`), checks it with the relay and
+    /// saves the space, readable only by you. Replaces the space saved before.
+    #[command(alias = "pair")]
+    Join {
+        /// What to call the space here. Defaults to the name in the link.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Leave the space: forget its key on this machine. Its clips stay for its other devices.
+    #[command(alias = "unpair")]
+    Leave,
+    /// List the spaces this machine is in.
+    Spaces,
+    /// Print an invite link for another device. Anyone with it can read and
+    /// send the space's clips.
+    Invite,
+    /// Start, rename or export a space.
+    Space {
+        #[command(subcommand)]
+        command: SpaceCommand,
+    },
     /// Send a file, text, or stdin.
     Send {
         /// File to send; `-` or nothing reads stdin. Text files arrive as
@@ -79,7 +97,7 @@ enum Command {
         #[arg(long, value_parser = humantime::parse_duration)]
         ttl: Option<Duration>,
     },
-    /// List the channel's clips, newest first.
+    /// List the space's clips, newest first.
     List,
     /// Print the newest clip, or the one with the given id.
     Recv {
@@ -92,7 +110,7 @@ enum Command {
     },
     /// Delete one clip for all devices.
     Delete { id: String },
-    /// Delete the channel's whole history.
+    /// Delete the space's whole history.
     Clear,
     /// Show the relay and its limits.
     Info,
@@ -107,6 +125,22 @@ enum Command {
         #[command(subcommand)]
         command: RelayCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum SpaceCommand {
+    /// Start a new space on the relay given with --server, and save it.
+    /// Replaces the space saved before.
+    New {
+        /// What to call the space here.
+        #[arg(long, default_value = DEFAULT_SPACE_NAME)]
+        name: String,
+    },
+    /// Rename the space on this machine. Other devices keep their own name for it.
+    Rename { name: String },
+    /// Print the space's secret, for YACS_SPACE in scripts and containers
+    /// (with YACS_SERVER). Anyone with it can read and send the space's clips.
+    Export,
 }
 
 #[derive(Subcommand)]
@@ -128,27 +162,30 @@ async fn main() -> std::process::ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    match cli.command {
-        Command::Pair => return pair(&cli).await,
-        Command::Update { check } => return update::run(check).await,
+    match &cli.command {
+        Command::Join { name } => return join(&cli, name.as_deref()).await,
+        Command::Space {
+            command: SpaceCommand::New { name },
+        } => return new_space(&cli, name).await,
+        Command::Update { check } => return update::run(*check).await,
         Command::Relay {
             command: RelayCommand::Update,
         } => return relay::update(),
-        Command::Unpair => {
-            let path = config::path()?;
-            if config::remove(&path)? {
-                eprintln!("Forgot the pairing ({}).", path.display());
-            } else {
-                eprintln!("Not paired.");
-            }
-            return Ok(());
+        Command::Leave | Command::Spaces | Command::Invite | Command::Space { .. } => {
+            return manage(&cli.command);
         }
         _ => {}
     }
     let (server, client) = connect(&cli)?;
 
     match cli.command {
-        Command::Pair | Command::Unpair | Command::Update { .. } | Command::Relay { .. } => {
+        Command::Join { .. }
+        | Command::Leave
+        | Command::Spaces
+        | Command::Invite
+        | Command::Space { .. }
+        | Command::Update { .. }
+        | Command::Relay { .. } => {
             unreachable!("handled above")
         }
         Command::Send {
@@ -231,67 +268,102 @@ fn print_sent(what: &str, meta: &ClipMeta) {
     );
 }
 
-const NOT_PAIRED: &str = "not paired: run `yacs pair` (or set YACS_SERVER and YACS_PHRASE)";
+const NOT_IN_A_SPACE: &str =
+    "not in a space: run `yacs join` with an invite link, or set YACS_SERVER and YACS_SPACE";
 
-/// Flags and env vars win over the saved pairing, which is only used for its
+/// Flags and env vars win over the saved space, which is only used for its
 /// own relay: a token never goes to a relay it wasn't saved for.
 fn connect(cli: &Cli) -> Result<(String, Client)> {
-    let flag_server = cli.server.as_deref().map(normalize_server);
-    let saved = match (&flag_server, &cli.phrase) {
-        (Some(_), Some(_)) => None,
-        _ => config::load(&config::path()?)?,
-    }
-    .filter(|s| flag_server.as_ref().is_none_or(|url| *url == s.server));
-
-    let Some(server) = flag_server.or_else(|| saved.as_ref().map(|s| s.server.clone())) else {
-        bail!(NOT_PAIRED);
+    let flag_server = cli.server.as_deref().map(normalize_relay);
+    let saved = config::load(&config::path()?)?;
+    let space = saved.current();
+    let (server, pairing) = match (&cli.space_secret, space) {
+        (Some(secret), _) => {
+            let pairing = Pairing::from_secret(secret.trim())
+                .context("YACS_SPACE isn't a space's secret; print one with `yacs space export`")?;
+            let server = flag_server.or_else(|| space.map(|s| s.relay.clone()));
+            (server.context(NOT_IN_A_SPACE)?, pairing)
+        }
+        (None, Some(space)) => {
+            if let Some(url) = flag_server.filter(|url| *url != space.relay) {
+                bail!(
+                    "this machine's space \"{}\" is on {}, not {url}; set YACS_SPACE to use another space",
+                    space.name,
+                    space.relay
+                );
+            }
+            (space.relay.clone(), space.pairing()?)
+        }
+        (None, None) if std::env::var_os("YACS_PHRASE").is_some() => bail!(
+            "YACS_PHRASE is no longer used: set YACS_SPACE to what `yacs space export` prints on a machine in the space"
+        ),
+        (None, None) => bail!(NOT_IN_A_SPACE),
     };
     let token = cli
         .token
         .clone()
-        .or_else(|| saved.as_ref().and_then(|s| s.token.clone()));
-    let pairing = match (&cli.phrase, &saved) {
-        (Some(phrase), _) => Pairing::from_phrase(phrase)?,
-        (None, Some(saved)) => saved.pairing()?,
-        (None, None) if std::io::stdin().is_terminal() => {
-            Pairing::from_phrase(&prompt_secret("Pairing phrase: ")?)?
-        }
-        (None, None) => bail!(NOT_PAIRED),
-    };
+        .or_else(|| saved.token(&server).map(str::to_owned));
     let client = Client::new(&server, token, pairing)?;
     Ok((server, client))
 }
 
-async fn pair(cli: &Cli) -> Result<()> {
-    let path = config::path()?;
-    let (server, mut token, pairing) = match &cli.phrase {
-        Some(phrase) => (
-            server_or_prompt(cli)?,
-            cli.token.clone(),
-            Pairing::from_phrase(phrase)?,
-        ),
-        None => {
-            if std::io::stdin().is_terminal() {
-                eprintln!(
-                    "Paste the pairing link (on a paired computer: Settings → Pair another device… → Copy link),\nor type the pairing phrase. Neither is shown."
-                );
-            }
-            let input = prompt_secret("Link or phrase: ")?;
-            match PairLink::parse(&input)? {
-                Some(link) => (link.server, cli.token.clone().or(link.token), link.pairing),
-                None => (
-                    server_or_prompt(cli)?,
-                    cli.token.clone(),
-                    Pairing::from_phrase(&input)?,
-                ),
-            }
-        }
-    };
+async fn join(cli: &Cli, name: Option<&str>) -> Result<()> {
+    if std::io::stdin().is_terminal() {
+        eprintln!(
+            "Paste an invite link (on a computer in the space: Settings → Invite a device… → Copy link,\nor `yacs invite`). It isn't shown."
+        );
+    }
+    let input = prompt_secret("Invite link: ")?;
+    let link = InviteLink::parse(&input).map_err(|e| {
+        anyhow::anyhow!(
+            "{e}; copy one on a computer in the space from Settings → Invite a device…, or run `yacs invite` there"
+        )
+    })?;
+    let name = name.or(link.name.as_deref()).unwrap_or(DEFAULT_SPACE_NAME);
+    let token = cli.token.clone().or(link.token);
+    let (token, config) = check(&link.relay, token, &link.pairing).await?;
+    let space = Space::new(name, &link.relay, &link.pairing);
+    let path = save_current(space.clone(), token)?;
+    eprintln!(
+        "Joined \"{}\" on {} (relay {}).",
+        space.name,
+        space.relay,
+        relay_version(&config)
+    );
+    eprintln!("Saved to {}; `yacs leave` forgets it.", path.display());
+    Ok(())
+}
 
-    let config = loop {
-        let client = Client::new(&server, token.clone(), pairing.clone())?;
+async fn new_space(cli: &Cli, name: &str) -> Result<()> {
+    let server = server_or_prompt(cli)?;
+    let pairing = Pairing::generate()?;
+    let (token, config) = check(&server, cli.token.clone(), &pairing).await?;
+    let space = Space::new(name, &server, &pairing);
+    let path = save_current(space.clone(), token)?;
+    eprintln!(
+        "Started \"{}\" on {} (relay {}).",
+        space.name,
+        space.relay,
+        relay_version(&config)
+    );
+    eprintln!(
+        "Saved to {}. Add other devices with the link from `yacs invite`.",
+        path.display()
+    );
+    Ok(())
+}
+
+/// Proves the relay is reachable and takes the token, asking for one if it's
+/// missing. Returns the token that worked.
+async fn check(
+    server: &str,
+    mut token: Option<String>,
+    pairing: &Pairing,
+) -> Result<(Option<String>, ServerConfig)> {
+    loop {
+        let client = Client::new(server, token.clone(), pairing.clone())?;
         match client.config().await {
-            Ok(config) => break config,
+            Ok(config) => return Ok((token, config)),
             Err(yacs_client::Error::Unauthorized)
                 if token.is_none() && std::io::stdin().is_terminal() =>
             {
@@ -301,54 +373,85 @@ async fn pair(cli: &Cli) -> Result<()> {
                 }
                 token = Some(entered);
             }
-            Err(e) => return Err(e).with_context(|| format!("couldn't pair with {server}")),
+            Err(e) => return Err(e).with_context(|| format!("couldn't reach {server}")),
         }
-    };
-
-    config::save(&path, &config::Saved::new(server.clone(), token, &pairing))?;
-    let version = config.version.as_deref().unwrap_or("before 0.2.0");
-    eprintln!("Paired with {server} (relay {version}).");
-    eprintln!("Saved to {}; `yacs unpair` forgets it.", path.display());
-    Ok(())
+    }
 }
 
-/// `https://relay/#pair=v1.<channel>.<key>&token=…`, from the desktop app.
-struct PairLink {
-    server: String,
-    token: Option<String>,
-    pairing: Pairing,
+fn save_current(space: Space, token: Option<String>) -> Result<PathBuf> {
+    let path = config::path()?;
+    let mut saved = config::load(&path).unwrap_or_default();
+    if let Some(old) = saved
+        .current()
+        .filter(|old| old.pairing().ok() != space.pairing().ok())
+    {
+        eprintln!("This replaces \"{}\" on {}.", old.name, old.relay);
+    }
+    saved.set_current(space, token);
+    config::save(&path, &saved)?;
+    Ok(path)
 }
 
-impl PairLink {
-    /// `None` if `input` isn't a link at all (so it's a phrase).
-    fn parse(input: &str) -> Result<Option<Self>> {
-        let input = input.trim();
-        if !(input.starts_with("https://") || input.starts_with("http://")) {
-            return Ok(None);
-        }
-        let mut url = url::Url::parse(input).context("that link isn't a valid URL")?;
-        let fragment = url.fragment().unwrap_or_default().to_owned();
-        let mut secret = None;
-        let mut token = None;
-        for (key, value) in url::form_urlencoded::parse(fragment.as_bytes()) {
-            match &*key {
-                "pair" => secret = Some(value.into_owned()),
-                "token" if !value.is_empty() => token = Some(value.into_owned()),
-                _ => {}
+fn relay_version(config: &ServerConfig) -> &str {
+    config.version.as_deref().unwrap_or("before 0.2.0")
+}
+
+/// The commands that only read or change the saved spaces.
+fn manage(command: &Command) -> Result<()> {
+    let path = config::path()?;
+    let mut saved = config::load(&path)?;
+    let current = |saved: &Spaces| saved.current().cloned().context(NOT_IN_A_SPACE);
+    match command {
+        Command::Leave => match saved.leave_current() {
+            Some(space) => {
+                config::save_or_remove(&path, &saved)?;
+                eprintln!(
+                    "Left \"{}\". Its clips stay on {} for its other devices.",
+                    space.name, space.relay
+                );
+            }
+            None => eprintln!("Not in a space."),
+        },
+        Command::Spaces => {
+            if saved.spaces.is_empty() {
+                eprintln!("Not in a space. Join one with `yacs join`.");
+            }
+            for space in &saved.spaces {
+                println!("{}\t{}", space.name, space.relay);
             }
         }
-        let Some(secret) = secret else {
-            bail!("that link has no pairing in it; copy it from Settings → Pair another device…");
-        };
-        let pairing =
-            Pairing::from_secret(&secret).context("the pairing in that link is damaged")?;
-        url.set_fragment(None);
-        Ok(Some(Self {
-            server: normalize_server(url.as_str()),
-            token,
-            pairing,
-        }))
+        Command::Invite => {
+            let space = current(&saved)?;
+            let link = InviteLink::new(&space, saved.token(&space.relay))?;
+            println!("{}", link.to_url());
+            eprintln!(
+                "Open it on a phone, or paste it into Settings on a computer or into `yacs join`.\nAnyone with it can read and send the clips of \"{}\": only use it for your own devices.",
+                space.name
+            );
+        }
+        Command::Space {
+            command: SpaceCommand::Rename { name },
+        } => {
+            let old = current(&saved)?.name;
+            let Some(name) = saved.rename_current(name) else {
+                bail!("the name can't be empty");
+            };
+            config::save(&path, &saved)?;
+            eprintln!("Renamed \"{old}\" to \"{name}\" on this machine.");
+        }
+        Command::Space {
+            command: SpaceCommand::Export,
+        } => {
+            let space = current(&saved)?;
+            println!("{}", space.secret());
+            eprintln!(
+                "Use it as YACS_SPACE, with YACS_SERVER={}. Anyone with it can read and send the space's clips.",
+                space.relay
+            );
+        }
+        _ => unreachable!("not a command that manages spaces"),
     }
+    Ok(())
 }
 
 fn server_or_prompt(cli: &Cli) -> Result<String> {
@@ -359,11 +462,7 @@ fn server_or_prompt(cli: &Cli) -> Result<String> {
     if server.trim().is_empty() {
         bail!("no relay URL given");
     }
-    Ok(normalize_server(&server))
-}
-
-fn normalize_server(url: &str) -> String {
-    url.trim().trim_end_matches('/').to_owned()
+    Ok(normalize_relay(&server))
 }
 
 /// Hidden when typed; read as a plain line when piped in.
@@ -518,38 +617,5 @@ fn human_size(bytes: u64) -> String {
         1000..1_000_000 => format!("{:.1} KB", bytes as f64 / 1e3),
         1_000_000..1_000_000_000 => format!("{:.1} MB", bytes as f64 / 1e6),
         _ => format!("{:.1} GB", bytes as f64 / 1e9),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reads_pairing_links() {
-        let pairing = Pairing {
-            channel_id: yacs_core::ChannelId::from_bytes([7; 32]),
-            key: yacs_core::ChannelKey::from_bytes([9; 32]),
-        };
-        let secret = pairing.to_secret();
-
-        let link = PairLink::parse(&format!(
-            " https://clip.example.com/#pair={secret}&token=s3cret+%26x\n"
-        ))
-        .unwrap()
-        .unwrap();
-        assert_eq!(link.server, "https://clip.example.com");
-        assert_eq!(link.token.as_deref(), Some("s3cret &x"));
-        assert_eq!(link.pairing, pairing);
-
-        let link = PairLink::parse(&format!("http://10.0.0.2:8080/yacs/#pair={secret}"))
-            .unwrap()
-            .unwrap();
-        assert_eq!(link.server, "http://10.0.0.2:8080/yacs");
-        assert_eq!(link.token, None);
-
-        assert!(PairLink::parse("tundra velvet anchor").unwrap().is_none());
-        assert!(PairLink::parse("https://clip.example.com/").is_err());
-        assert!(PairLink::parse("https://clip.example.com/#pair=v1.nope").is_err());
     }
 }

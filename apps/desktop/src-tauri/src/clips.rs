@@ -273,7 +273,7 @@ mod tests {
     use yacs_core::{Image, Pairing};
 
     use super::*;
-    use crate::test_support::{PHRASE, relay};
+    use crate::test_support::relay;
 
     fn entry(id: &str, size: u64, items: Vec<ClipItem>) -> Entry {
         Entry {
@@ -418,7 +418,7 @@ mod tests {
     #[tokio::test]
     async fn sends_then_loads_from_cache_or_relay() {
         let (url, _data) = relay(&[]).await;
-        let client = Client::new(&url, None, Pairing::from_phrase(PHRASE).unwrap()).unwrap();
+        let client = Client::new(&url, None, Pairing::generate().unwrap()).unwrap();
 
         let cache = Mutex::new(ClipCache::new(CACHE_BYTES));
         let items = vec![ClipItem::Text("hi".into())];

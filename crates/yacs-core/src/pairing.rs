@@ -1,46 +1,29 @@
-//! Turning a shared pairing phrase into a public channel id and a private key.
+//! A space's public channel id and private key, both derived from 32 random
+//! root bytes.
 //!
 //! ```text
-//! phrase ── normalize ── Argon2id(salt = ARGON2_SALT) ── root
-//! root   ── HKDF-SHA256(info = HKDF_INFO_CHANNEL)     ── channel id  (sent to the server)
-//! root   ── HKDF-SHA256(info = HKDF_INFO_KEY)         ── channel key (never leaves the device)
+//! root ── HKDF-SHA256(info = HKDF_INFO_CHANNEL) ── channel id  (sent to the server)
+//! root ── HKDF-SHA256(info = HKDF_INFO_KEY)     ── channel key (never leaves the device)
 //! ```
 //!
 //! Every client must derive byte-identical values, so all parameters here are
 //! part of protocol version 1. Changing any of them requires a new version.
+//! Spaces made up to 0.3 derived their root from a phrase with Argon2id;
+//! their stored channel id and key work the same.
 
 use core::fmt;
 use core::str::FromStr;
 
-use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hkdf::Hkdf;
 use sha2::Sha256;
-use unicode_normalization::UnicodeNormalization;
 use zeroize::Zeroize;
 
 use crate::error::{Error, Result};
 
-/// Argon2id memory cost in KiB (64 MiB).
-pub const ARGON2_M_COST: u32 = 64 * 1024;
-/// Argon2id iterations.
-pub const ARGON2_T_COST: u32 = 3;
-/// Argon2id lanes.
-pub const ARGON2_P_COST: u32 = 1;
-/// Fixed on purpose: both devices must derive the same root without talking to each other.
-pub const ARGON2_SALT: &[u8] = b"yacs/v1/argon2id";
 pub const HKDF_INFO_CHANNEL: &[u8] = b"yacs/v1/channel";
 pub const HKDF_INFO_KEY: &[u8] = b"yacs/v1/key";
-
-/// Canonical form of a phrase: NFKC, lowercase, words separated by single spaces.
-///
-/// This makes `"  Correct HORSE\tbattery "` and `"correct horse battery"` pair
-/// with each other, which matters when a phrase is typed on a phone keyboard.
-pub fn normalize_phrase(phrase: &str) -> String {
-    let normalized: String = phrase.nfkc().collect::<String>().to_lowercase();
-    normalized.split_whitespace().collect::<Vec<_>>().join(" ")
-}
 
 /// Public identifier of a channel. Not secret from the server, but anyone who
 /// knows it can list, fetch (still encrypted) and delete the channel's clips,
@@ -118,40 +101,33 @@ pub struct Pairing {
 }
 
 impl Pairing {
-    /// Derive a pairing from a phrase. Deliberately slow (Argon2id, ~64 MiB),
-    /// so run it once at pairing time and store the result.
-    pub fn from_phrase(phrase: &str) -> Result<Self> {
-        let phrase = normalize_phrase(phrase);
-        if phrase.is_empty() {
-            return Err(Error::EmptyPhrase);
-        }
-
-        let params = Params::new(ARGON2_M_COST, ARGON2_T_COST, ARGON2_P_COST, Some(32))
-            .expect("argon2 params are valid constants");
+    /// A new space: fresh random root bytes.
+    pub fn generate() -> Result<Self> {
         let mut root = [0u8; 32];
-        Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-            .hash_password_into(phrase.as_bytes(), ARGON2_SALT, &mut root)
-            .expect("argon2 salt and output length are valid constants");
-
-        let hkdf = Hkdf::<Sha256>::new(None, &root);
+        getrandom::fill(&mut root).map_err(|_| Error::Rng)?;
+        let pairing = Self::from_root(&root);
         root.zeroize();
+        Ok(pairing)
+    }
 
+    /// The channel id and key of the space with this root.
+    pub fn from_root(root: &[u8; 32]) -> Self {
+        let hkdf = Hkdf::<Sha256>::new(None, root);
         let mut channel_id = [0u8; 32];
         let mut key = [0u8; 32];
         hkdf.expand(HKDF_INFO_CHANNEL, &mut channel_id)
             .expect("32 bytes is a valid HKDF-SHA256 output length");
         hkdf.expand(HKDF_INFO_KEY, &mut key)
             .expect("32 bytes is a valid HKDF-SHA256 output length");
-
-        Ok(Self {
+        Self {
             channel_id: ChannelId(channel_id),
             key: ChannelKey(key),
-        })
+        }
     }
 
-    /// The derived pairing as one string, `v1.<channel id>.<key>` (base64url),
-    /// for pairing links: a device given this skips the phrase and Argon2id.
-    /// As secret as the phrase itself.
+    /// The space as one string, `v1.<channel id>.<key>` (base64url), for
+    /// storing it, pairing links and `YACS_SPACE`. Anyone with it can read
+    /// and send the space's clips.
     pub fn to_secret(&self) -> String {
         format!(
             "{SECRET_PREFIX}{}.{}",
@@ -185,18 +161,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_case_whitespace_and_unicode() {
-        assert_eq!(
-            normalize_phrase("  Correct   HORSE\tbattery\nstaple "),
-            "correct horse battery staple"
-        );
-        // Fullwidth letters and ligatures fold to their plain forms under NFKC.
-        assert_eq!(normalize_phrase("Ｃafé ﬁle"), "café file");
-    }
-
-    #[test]
-    fn rejects_empty_phrase() {
-        assert_eq!(Pairing::from_phrase(" \t "), Err(Error::EmptyPhrase));
+    fn generated_spaces_differ() {
+        let a = Pairing::generate().unwrap();
+        let b = Pairing::generate().unwrap();
+        assert_ne!(a.channel_id, b.channel_id);
+        assert_ne!(a.key, b.key);
+        assert_ne!(a.channel_id.as_bytes(), a.key.as_bytes());
     }
 
     #[test]

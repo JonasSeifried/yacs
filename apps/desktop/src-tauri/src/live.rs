@@ -1,4 +1,4 @@
-//! Listens to the relay's event stream while paired, so an open Spotlight
+//! Listens to the relay's event stream while in a space, so an open Spotlight
 //! updates by itself and a new clip is already decrypted when it's opened.
 
 use std::sync::{Arc, Mutex};
@@ -28,8 +28,8 @@ pub struct Live {
     wake: Arc<Notify>,
 }
 
-/// Listen for the current pairing, replacing any earlier listener. Call it
-/// whenever the pairing changes.
+/// Listen for the space in use, replacing any earlier listener. Call it
+/// whenever that changes.
 pub fn restart(app: &AppHandle) {
     let live = app.state::<Live>();
     let mut task = live.task.lock().expect("live lock poisoned");

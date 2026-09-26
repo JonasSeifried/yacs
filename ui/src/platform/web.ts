@@ -1,9 +1,9 @@
 // The PWA's backend: crypto in WASM (`yacs-wasm`, the same Rust code the
 // desktop runs), network via fetch to the relay that served the page.
-// The pairing is kept in localStorage; the page's CSP allows no third-party
-// scripts that could read it.
+// Spaces are kept in localStorage; the page's CSP allows no third-party
+// scripts that could read them.
 
-import init, { Pairing, newStream, generatePhrase as wasmGeneratePhrase } from "../wasm/yacs";
+import init, { Pairing, newStream } from "../wasm/yacs";
 import type { DownloadMessage, DownloadMode, DownloadRequest } from "../mobile/download.worker";
 import { OPFS_DIR } from "../mobile/download.worker";
 import { isIos } from "../mobile/link";
@@ -13,18 +13,46 @@ import { chunkSizeFor } from "../shared/stream";
 import type { ChannelEvent, Clip, ClipItem, ClipMeta, ClipView, ServerConfig, StreamInfo } from "../shared/types";
 import { API, relayRequest, relayUpload } from "./relay";
 
-const STORAGE_KEY = "yacs.pairing";
+const STORAGE_KEY = "yacs.spaces";
+/** Before spaces: one pairing, `{ secret, token, deviceName }`. */
+const LEGACY_KEY = "yacs.pairing";
+export const DEFAULT_SPACE_NAME = "My devices";
+/** As in the apps (`yacs_client::spaces`). */
+const MAX_NAME_CHARS = 64;
 /** The relay sends a keep-alive every 20 s; this much silence means the connection is dead. */
 const LIVE_IDLE_MS = 60_000;
 
 /** The relay predates live updates (0.2.0). */
 export class LiveUnsupported extends Error {}
 
-export interface StoredPairing {
+/**
+ * What this browser keeps. The app only talks to the relay that served it, so
+ * unlike the apps' lists (`yacs_client::spaces`) spaces carry no relay, and
+ * there's one token. The first space is the one in use.
+ */
+export interface Stored {
+  spaces: StoredSpace[];
+  token: string | null;
+  deviceName: string;
+}
+
+export interface StoredSpace {
+  /** This device's own name for it. */
+  name: string;
   /** `v1.<channel id>.<key>`, see `Pairing::to_secret` in yacs-core. */
+  secret: string;
+}
+
+/** The space a `WebClient` works with. */
+export interface Session {
   secret: string;
   token: string | null;
   deviceName: string;
+}
+
+export function session(stored: Stored | null): Session | null {
+  const space = stored?.spaces[0];
+  return space ? { secret: space.secret, token: stored!.token, deviceName: stored!.deviceName } : null;
 }
 
 /** A decrypted clip: `view` for display, `clip` with every format for copying. */
@@ -38,51 +66,77 @@ export type OnProgress = (done: number, total: number) => void;
 let wasm: Promise<unknown> | null = null;
 const ready = () => (wasm ??= init());
 
-export function storedPairing(): StoredPairing | null {
+/** Null if this browser was never in a space. A pairing from before spaces becomes "My devices". */
+export function loadStored(): Stored | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as StoredPairing) : null;
+    if (raw) return JSON.parse(raw) as Stored;
+    const legacy = localStorage.getItem(LEGACY_KEY);
+    if (!legacy) return null;
+    const { secret, token, deviceName } = JSON.parse(legacy) as Session;
+    const stored = save({ spaces: [{ name: DEFAULT_SPACE_NAME, secret }], token, deviceName });
+    localStorage.removeItem(LEGACY_KEY);
+    return stored;
   } catch {
     return null;
   }
 }
 
-export async function generatePhrase(): Promise<string> {
-  await ready();
-  return wasmGeneratePhrase();
-}
-
-/**
- * Derive (or restore) the pairing, prove the relay accepts it, then store it.
- * Nothing is stored if any step fails.
- */
-export async function pair(source: { phrase: string } | { secret: string }, token: string | null, deviceName: string) {
-  await ready();
-  // Argon2id takes a moment and blocks the thread: let the UI paint "Pairing…" first.
-  await new Promise((r) => setTimeout(r, 50));
-  const pairing = "phrase" in source ? Pairing.fromPhrase(source.phrase) : Pairing.fromSecret(source.secret);
-  const stored: StoredPairing = { secret: pairing.secret(), token: token?.trim() || null, deviceName: deviceName.trim() || "Phone" };
-  pairing.free();
-  await new WebClient(stored).config();
+function save(stored: Stored): Stored {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
   return stored;
 }
 
-export function unpair() {
-  localStorage.removeItem(STORAGE_KEY);
+/** Trimmed, whitespace collapsed, at most 64 characters; empty if blank. */
+export function cleanName(name: string): string {
+  return Array.from(name.trim().replace(/\s+/g, " ")).slice(0, MAX_NAME_CHARS).join("").trimEnd();
 }
 
-export function saveDeviceName(stored: StoredPairing, deviceName: string): StoredPairing {
-  const next = { ...stored, deviceName: deviceName.trim() || stored.deviceName };
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  return next;
+/**
+ * Join the space in an invite link (or start one: `secret` null), once the
+ * relay accepts it. Replaces the space in use; nothing is stored if the relay
+ * says no.
+ */
+export async function enterSpace(secret: string | null, name: string, token: string | null, deviceName: string): Promise<Stored> {
+  await ready();
+  if (secret === null) {
+    const pairing = Pairing.generate();
+    secret = pairing.secret();
+    pairing.free();
+  } else {
+    Pairing.fromSecret(secret).free(); // throws if the link is damaged
+  }
+  const next: Stored = {
+    spaces: [{ name: cleanName(name) || DEFAULT_SPACE_NAME, secret }],
+    token: token?.trim() || null,
+    deviceName: deviceName.trim() || "Phone",
+  };
+  await new WebClient(session(next)!).config();
+  return save(next);
+}
+
+export function renameSpace(stored: Stored, name: string): Stored {
+  const [space, ...rest] = stored.spaces;
+  const cleaned = cleanName(name);
+  if (!space || !cleaned) return stored;
+  return save({ ...stored, spaces: [{ ...space, name: cleaned }, ...rest] });
+}
+
+/** Forgets the space in use. The device name stays. */
+export function leaveSpace(stored: Stored): Stored {
+  const spaces = stored.spaces.slice(1);
+  return save({ ...stored, spaces, token: spaces.length ? stored.token : null });
+}
+
+export function saveDeviceName(stored: Stored, deviceName: string): Stored {
+  return save({ ...stored, deviceName: deviceName.trim() || stored.deviceName });
 }
 
 export class WebClient {
   private pairing: Promise<Pairing>;
   private cache = new Map<string, Decrypted>();
 
-  constructor(private stored: StoredPairing) {
+  constructor(private stored: Session) {
     this.pairing = ready().then(() => Pairing.fromSecret(stored.secret));
   }
 

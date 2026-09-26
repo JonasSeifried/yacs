@@ -1,5 +1,5 @@
 //! Non-secret preferences, stored as JSON in the app's config dir.
-//! Secrets (channel key, access token) live in their own file, see `secrets`.
+//! Spaces (keys, access tokens) live in their own file, see `spaces`.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -13,8 +13,6 @@ pub const DEFAULT_TTL_SECS: u64 = 15 * 60;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Relay this device is paired through. `None` until paired.
-    pub server_url: Option<String>,
     pub device_name: String,
     pub hotkey: String,
     /// Preselected expiry in the Spotlight TTL dropdown.
@@ -24,7 +22,6 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            server_url: None,
             device_name: gethostname::gethostname().to_string_lossy().into_owned(),
             hotkey: DEFAULT_HOTKEY.into(),
             default_ttl_secs: DEFAULT_TTL_SECS,
@@ -81,7 +78,6 @@ mod tests {
         assert_eq!(file.load(), Settings::default());
 
         let settings = Settings {
-            server_url: Some("https://clip.example.com".into()),
             device_name: "MacBook".into(),
             hotkey: "Alt+Space".into(),
             default_ttl_secs: 3600,
