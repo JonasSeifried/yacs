@@ -294,7 +294,13 @@ async fn rate_limit(
     next: Next,
 ) -> Result<Response, ApiError> {
     if state.config.public && !state.limiter.allow(client_ip(&req), state.clock.now_ms()) {
-        return Err(ApiError::RateLimited);
+        // Only here: other 429s (quotas) don't pass by waiting a moment.
+        let secs = (60 / state.config.requests_per_minute).max(1);
+        return Ok((
+            [(header::RETRY_AFTER, HeaderValue::from(secs))],
+            ApiError::RateLimited,
+        )
+            .into_response());
     }
     Ok(next.run(req).await)
 }

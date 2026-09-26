@@ -7,8 +7,8 @@ use clap::{Parser, Subcommand};
 use yacs_client::spaces::{
     Accepted, DEFAULT_SPACE_NAME, Link, Space, Spaces, clean_name, invite_url, normalize_relay,
 };
-use yacs_client::{Client, CodeOutcome, join_with_code, stream_of};
-use yacs_core::api::{ClipMeta, ServerConfig};
+use yacs_client::{Client, CodeOutcome, PUBLIC_RELAY, join_with_code, stream_of};
+use yacs_core::api::{ClipMeta, Plan, ServerConfig, SpaceLimits};
 
 use crate::content::Content;
 use yacs_core::{Clip, ClipItem, Pairing, Payload};
@@ -21,8 +21,9 @@ mod update;
 
 const EXAMPLES: &str = "\
 Examples:
-  yacs join                          once: paste an invite link from the desktop app
-  yacs space new --relay URL         or start a new space, then `yacs invite` other devices
+  yacs join                          once: paste an invite link or type a code from another device
+  yacs space new                     or start a space on the free relay, then `yacs invite` other devices
+  yacs space new --relay URL         the same on your own relay
   yacs send ~/.ssh/id_ed25519.pub    a text file arrives as text, an image as an image
   yacs send report.pdf               other files arrive as files
   yacs send disk.iso                 big files too, in chunks, with a progress line
@@ -37,8 +38,9 @@ Examples:
 #[derive(Parser)]
 #[command(name = "yacs", version, after_help = EXAMPLES)]
 struct Cli {
-    /// Relay URL, e.g. https://clip.example.com. Not needed after `yacs join`.
-    /// The older names, `--server` and YACS_SERVER, work too.
+    /// Relay URL, e.g. https://clip.example.com. Not needed after `yacs join`;
+    /// new spaces default to the free relay. The older names, `--server` and
+    /// YACS_SERVER, work too.
     #[arg(
         long = "relay",
         value_name = "URL",
@@ -48,8 +50,15 @@ struct Cli {
     )]
     server: Option<String>,
 
-    /// Access token, if the relay requires one.
-    #[arg(long, env = "YACS_TOKEN", hide_env_values = true, global = true)]
+    /// Your relay's account key (YACS_ACCESS_TOKEN on the relay): creating a
+    /// space there needs it, joining one doesn't.
+    #[arg(
+        long = "account-key",
+        visible_alias = "token",
+        env = "YACS_TOKEN",
+        hide_env_values = true,
+        global = true
+    )]
     token: Option<String>,
 
     /// A space's secret from `yacs space export`, instead of the saved space.
@@ -143,8 +152,8 @@ enum Command {
 
 #[derive(Subcommand)]
 enum SpaceCommand {
-    /// Start a new space on the relay given with --relay, and save it.
-    /// Replaces the space saved before.
+    /// Start a new space, on the relay given with --relay or else the free
+    /// one, and save it. Replaces the space saved before.
     New {
         /// What to call the space here.
         #[arg(long, default_value = DEFAULT_SPACE_NAME)]
@@ -276,13 +285,18 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Command::Clear => client.clear().await?,
         Command::Info => {
-            let c = client.config().await?;
+            let (c, limits) = client.check().await?;
             let version = c.version.as_deref().unwrap_or("before 0.2.0");
             println!("relay        {server} ({version})");
-            println!("default ttl  {}", human_duration(c.default_ttl_secs * 1000));
-            println!("max ttl      {}", human_duration(c.max_ttl_secs * 1000));
-            println!("max clip     {}", human_size(c.max_size_bytes));
-            println!("history      {} clips", c.max_clips);
+            match limits {
+                Some(limits) => print_limits(&limits),
+                None => {
+                    println!("default ttl  {}", human_duration(c.default_ttl_secs * 1000));
+                    println!("max ttl      {}", human_duration(c.max_ttl_secs * 1000));
+                    println!("max clip     {}", human_size(c.max_size_bytes));
+                    println!("history      {} clips", c.max_clips);
+                }
+            }
             match &c.chunked {
                 Some(chunked) => println!(
                     "big files    yes, in chunks of {}",
@@ -293,6 +307,34 @@ async fn run(cli: Cli) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_limits(limits: &SpaceLimits) {
+    let plan = match limits.plan {
+        Plan::Free => "free",
+        Plan::Unlimited => "the relay's own limits",
+        Plan::Other => "other",
+    };
+    println!("plan         {plan}");
+    println!(
+        "default ttl  {}",
+        human_duration(limits.default_ttl_secs * 1000)
+    );
+    println!(
+        "max ttl      {}",
+        human_duration(limits.max_ttl_secs * 1000)
+    );
+    if let Some(max) = limits.max_clip_bytes {
+        println!("max clip     {}", human_size(max));
+    }
+    if let Some(daily) = limits.daily_transfer_bytes {
+        println!(
+            "transfer     {} of {} today",
+            human_size(limits.transfer_used_bytes),
+            human_size(daily)
+        );
+    }
+    println!("history      {} clips", limits.max_clips);
 }
 
 /// Shows codes until one is used (or Ctrl+C): a new one after a wrong guess
@@ -407,7 +449,7 @@ async fn join(cli: &Cli, name: Option<&str>) -> Result<()> {
             Some(server) => normalize_relay(server),
             None => match config::load(&config::path()?)?.current() {
                 Some(space) => space.relay.clone(),
-                None => server_or_prompt(cli)?,
+                None => PUBLIC_RELAY.to_owned(),
             },
         };
         let invite = join_with_code(&relay, &code, &device_name(cli)).await?;
@@ -430,7 +472,7 @@ async fn join(cli: &Cli, name: Option<&str>) -> Result<()> {
         .or(joining.name.as_deref())
         .unwrap_or(DEFAULT_SPACE_NAME);
     let token = cli.token.clone().or(joining.token);
-    let (token, config) = check(&joining.relay, token, &joining.pairing).await?;
+    let (token, config, _) = check(&joining.relay, token, &joining.pairing).await?;
     let space = Space::new(name, &joining.relay, &joining.pairing);
     let path = save_current(space.clone(), token)?;
     let from = joining
@@ -448,13 +490,20 @@ async fn join(cli: &Cli, name: Option<&str>) -> Result<()> {
 }
 
 async fn new_space(cli: &Cli, name: &str) -> Result<()> {
-    let server = server_or_prompt(cli)?;
+    let server = cli
+        .server
+        .as_deref()
+        .map_or_else(|| PUBLIC_RELAY.to_owned(), normalize_relay);
     let pairing = Pairing::generate()?;
-    let (token, config) = check(&server, cli.token.clone(), &pairing).await?;
+    let (token, config, limits) = check(&server, cli.token.clone(), &pairing).await?;
     let space = Space::new(name, &server, &pairing);
     let path = save_current(space.clone(), token)?;
+    let plan = match limits.map(|l| l.plan) {
+        Some(Plan::Free) => ", free plan; `yacs info` shows its limits",
+        _ => "",
+    };
     eprintln!(
-        "Started \"{}\" on {} (relay {}).",
+        "Started \"{}\" on {} (relay {}{plan}).",
         space.name,
         space.relay,
         relay_version(&config)
@@ -466,23 +515,24 @@ async fn new_space(cli: &Cli, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Proves the relay is reachable and takes the token, asking for one if it's
-/// missing. Returns the token that worked.
+/// Proves the relay is reachable and lets this machine into the space
+/// (registering a new one), asking for the account key if it takes one.
+/// Returns the key that worked.
 async fn check(
     server: &str,
     mut token: Option<String>,
     pairing: &Pairing,
-) -> Result<(Option<String>, ServerConfig)> {
+) -> Result<(Option<String>, ServerConfig, Option<SpaceLimits>)> {
     loop {
         let client = Client::new(server, token.clone(), pairing.clone())?;
-        match client.config().await {
-            Ok(config) => return Ok((token, config)),
+        match client.check().await {
+            Ok((config, limits)) => return Ok((token, config, limits)),
             Err(yacs_client::Error::Unauthorized)
                 if token.is_none() && std::io::stdin().is_terminal() =>
             {
-                let entered = prompt_secret("The relay needs its access token: ")?;
+                let entered = prompt_secret("The relay needs its account key: ")?;
                 if entered.is_empty() {
-                    bail!("the relay needs an access token");
+                    bail!("the relay needs its account key to create a space");
                 }
                 token = Some(entered);
             }
@@ -558,17 +608,6 @@ fn manage(command: &Command) -> Result<()> {
     Ok(())
 }
 
-fn server_or_prompt(cli: &Cli) -> Result<String> {
-    let server = match &cli.server {
-        Some(server) => server.clone(),
-        None => prompt_line("Relay URL: ")?,
-    };
-    if server.trim().is_empty() {
-        bail!("no relay URL given");
-    }
-    Ok(normalize_relay(&server))
-}
-
 /// Hidden when typed; read as a plain line when piped in.
 fn prompt_secret(label: &str) -> Result<String> {
     let value = if std::io::stdin().is_terminal() {
@@ -577,12 +616,6 @@ fn prompt_secret(label: &str) -> Result<String> {
         read_line()?
     };
     Ok(value.trim().to_owned())
-}
-
-fn prompt_line(label: &str) -> Result<String> {
-    eprint!("{label}");
-    std::io::stderr().flush()?;
-    Ok(read_line()?.trim().to_owned())
 }
 
 fn read_line() -> Result<String> {

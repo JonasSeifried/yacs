@@ -61,7 +61,7 @@ impl Client {
     }
 
     /// Waits until someone types the code, then hands them an invite to this
-    /// space (with this client's token). Cancel by dropping the future and
+    /// space. Cancel by dropping the future and
     /// calling [`close_code`](Self::close_code).
     pub async fn complete_code(
         &self,
@@ -82,7 +82,12 @@ impl Client {
             self.close_code(nameplate).await;
             return Ok(CodeOutcome::WrongCode);
         };
-        let invite = Invite::new(space_name, inviter_name, self.token(), &self.pairing);
+        let invite = Invite::new(
+            space_name,
+            inviter_name,
+            self.invite_token().await?,
+            &self.pairing,
+        );
         let req = self
             .http
             .put(self.rendezvous(&format!("{nameplate}/a/1")))

@@ -17,7 +17,7 @@ use reqwest::header::{self, HeaderMap};
 use reqwest::{RequestBuilder, Response, StatusCode, Url};
 use yacs_core::api::{
     ChannelEvent, ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody, HEADER_CHUNKED, HEADER_CLIP_ID,
-    HEADER_CREATED_AT, HEADER_EXPIRES_AT, HEADER_SIZE, ServerConfig,
+    HEADER_CREATED_AT, HEADER_EXPIRES_AT, HEADER_SIZE, ServerConfig, SpaceLimits,
 };
 use yacs_core::{Envelope, Invite, InviteSecret, InviteSlot, Pairing, Payload};
 
@@ -27,16 +27,19 @@ pub enum Error {
     InvalidUrl(String),
     #[error("could not reach the server: {0}")]
     Http(#[from] reqwest::Error),
-    #[error("the server rejected the access token")]
+    #[error("the relay needs its account key to create a space, or didn't take the one given")]
     Unauthorized,
-    #[error("the clip is too large for this server")]
-    TooLarge,
+    /// The relay's reason, e.g. the space's plan limit.
+    #[error("{0}")]
+    TooLarge(String),
     #[error("the server's storage is full")]
     StorageFull,
     #[error("rate limited by the server, try again shortly")]
     RateLimited,
-    #[error("too many uploads are running on this channel; try again when one is done")]
-    TooManyUploads,
+    /// A limit that waiting a moment won't lift, in the relay's words: the
+    /// space's daily transfer, too many uploads at once, too many new spaces.
+    #[error("{0}")]
+    Limited(String),
     #[error("server error {status}: {message}")]
     Server { status: u16, message: String },
     #[error("the server sent a malformed response")]
@@ -65,6 +68,9 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The relay run by YACS's author, which anyone may use on the free plan.
+pub const PUBLIC_RELAY: &str = "https://yacs.jonasseifried.com";
+
 /// A live event stream sends a keep-alive every 20 s; this much silence means
 /// the connection is dead (e.g. after the computer slept).
 const EVENTS_IDLE: Duration = Duration::from_secs(60);
@@ -79,6 +85,7 @@ pub struct Client {
     invites_url: Url,
     rendezvous_url: Url,
     config_url: Url,
+    limits_url: Url,
     token: Option<String>,
     pairing: Pairing,
 }
@@ -111,6 +118,7 @@ impl Client {
             invites_url: api(&format!("channels/{}/invites", pairing.channel_id))?,
             rendezvous_url: api(&format!("channels/{}/rendezvous", pairing.channel_id))?,
             config_url: api("config")?,
+            limits_url: api(&format!("channels/{}/limits", pairing.channel_id))?,
             token: token.filter(|t| !t.is_empty()),
             pairing,
         })
@@ -127,6 +135,40 @@ impl Client {
     pub async fn config(&self) -> Result<ServerConfig> {
         let res = self.send(self.http.get(self.config_url.clone())).await?;
         res.json().await.map_err(|_| Error::BadResponse)
+    }
+
+    /// What this space may do. `None` from relays before 0.5.0, where only
+    /// [`config`](Self::config) says.
+    pub async fn limits(&self) -> Result<Option<SpaceLimits>> {
+        match self.send(self.http.get(self.limits_url.clone())).await {
+            Ok(res) => res.json().await.map(Some).map_err(|_| Error::BadResponse),
+            Err(Error::Server { status: 404, .. }) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Proves the relay is reachable and lets this client into the space,
+    /// registering the space if it's new (which may take the account key).
+    pub async fn check(&self) -> Result<(ServerConfig, Option<SpaceLimits>)> {
+        let config = self.config().await?;
+        let limits = match config.accounts {
+            Some(_) => self.limits().await?,
+            // Before 0.5.0 the key guarded `config` already.
+            None => None,
+        };
+        Ok((config, limits))
+    }
+
+    /// The key an invite carries: only to relays before 0.5.0, whose spaces
+    /// all needed it. Newer ones know the space.
+    pub(crate) async fn invite_token(&self) -> Result<Option<&str>> {
+        let Some(token) = self.token() else {
+            return Ok(None);
+        };
+        Ok(match self.config().await?.accounts {
+            Some(_) => None,
+            None => Some(token),
+        })
     }
 
     /// Encrypt and upload. `ttl: None` uses the server default; the server clamps it to its max.
@@ -220,10 +262,15 @@ impl Client {
     }
 
     /// Parks a one-time invite to this space on the relay, for a day, and
-    /// returns its secret for the link. It carries this client's token.
+    /// returns its secret for the link.
     pub async fn invite(&self, space_name: &str, inviter: &str) -> Result<InviteSecret> {
         let secret = InviteSecret::generate()?;
-        let invite = Invite::new(space_name, inviter, self.token(), &self.pairing);
+        let invite = Invite::new(
+            space_name,
+            inviter,
+            self.invite_token().await?,
+            &self.pairing,
+        );
         let mut url = self.invites_url.clone();
         url.path_segments_mut()
             .expect("http(s) URLs have path segments")
@@ -325,19 +372,32 @@ async fn checked(res: Response) -> Result<Response> {
     if status.is_success() {
         return Ok(res);
     }
+    let rate_limited = res.headers().contains_key(header::RETRY_AFTER);
+    let message = async {
+        let text = res.text().await.unwrap_or_default();
+        serde_json::from_str::<ErrorBody>(&text)
+            .map(|b| b.error)
+            .ok()
+    };
     Err(match status {
         StatusCode::UNAUTHORIZED => Error::Unauthorized,
-        StatusCode::PAYLOAD_TOO_LARGE => Error::TooLarge,
         StatusCode::INSUFFICIENT_STORAGE => Error::StorageFull,
-        StatusCode::TOO_MANY_REQUESTS => Error::RateLimited,
+        // Relays before 0.5.0 sent no reason, and a proxy's page isn't one.
+        StatusCode::PAYLOAD_TOO_LARGE => Error::TooLarge(
+            message
+                .await
+                .unwrap_or_else(|| "the clip is too large for this relay".into()),
+        ),
+        StatusCode::TOO_MANY_REQUESTS if rate_limited => Error::RateLimited,
+        StatusCode::TOO_MANY_REQUESTS => match message.await {
+            Some(message) => Error::Limited(message),
+            None => Error::RateLimited,
+        },
         _ => {
-            let text = res.text().await.unwrap_or_default();
-            let message = serde_json::from_str::<ErrorBody>(&text)
-                .map(|b| b.error)
-                .unwrap_or(text);
+            let message = message.await;
             Error::Server {
                 status: status.as_u16(),
-                message,
+                message: message.unwrap_or_default(),
             }
         }
     })

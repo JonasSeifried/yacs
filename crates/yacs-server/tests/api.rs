@@ -1331,7 +1331,11 @@ async fn a_public_relay_limits_request_rates() {
         }
     };
     assert_eq!(status("203.0.113.1").await, StatusCode::OK);
-    assert_eq!(status("203.0.113.1").await, StatusCode::TOO_MANY_REQUESTS);
+    let limited = app
+        .call(Method::GET, "/api/v1/config", &from("203.0.113.1"), vec![])
+        .await;
+    assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(limited.headers[header::RETRY_AFTER], "12");
     assert_eq!(status("203.0.113.2").await, StatusCode::OK);
     app.clock.advance(Duration::from_secs(12));
     assert_eq!(status("203.0.113.1").await, StatusCode::OK);

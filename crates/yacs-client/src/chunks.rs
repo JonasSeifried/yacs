@@ -116,10 +116,7 @@ impl Client {
             .query(&query)
             .header(reqwest::header::CONTENT_TYPE, ENVELOPE_CONTENT_TYPE)
             .body(header);
-        let res = match self.send(req).await {
-            Err(Error::RateLimited) => return Err(Error::TooManyUploads),
-            res => res?,
-        };
+        let res = self.send(req).await?;
         let id = res
             .json::<UploadCreated>()
             .await

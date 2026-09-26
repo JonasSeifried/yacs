@@ -220,7 +220,7 @@ fn another_space_cannot_read_and_sees_its_own_empty_channel() {
 fn access_token_is_sent_and_enforced() {
     let relay = relay(&["--access-token", "s3cret"]);
     let err = stderr_of_failure(&mut yacs(&relay, &["send", "-t", "x"]));
-    assert!(err.contains("access token"), "{err}");
+    assert!(err.contains("account key"), "{err}");
     yacs(&relay, &["send", "-t", "x"])
         .env("YACS_TOKEN", "s3cret")
         .assert()
@@ -369,6 +369,43 @@ fn info_shows_server_limits() {
 }
 
 #[test]
+fn a_space_on_a_public_relay_gets_the_free_plan() {
+    let relay = relay(&["--public", "--free-max-size", "1KB"]);
+    let err = saved(&relay, &["space", "new"])
+        .env("YACS_RELAY", &relay.url)
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    let err = String::from_utf8(err).unwrap();
+    assert!(err.contains("free plan"), "{err}");
+
+    let info = stdout(&mut saved(&relay, &["info"]));
+    assert!(info.contains("plan         free"), "{info}");
+    assert!(info.contains("max ttl      1h"), "{info}");
+    assert!(info.contains("max clip     1.0 KB"), "{info}");
+    assert!(
+        info.contains("transfer     0 B of 500.0 MB today"),
+        "{info}"
+    );
+
+    let err = stderr_of_failure(&mut saved(&relay, &["send", "-t", &"x".repeat(2000)]));
+    assert!(
+        err.contains("too large for this space: at most 1.0 kB"),
+        "{err}"
+    );
+    let sent = saved(&relay, &["send", "-t", "small", "--ttl", "24h"])
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    let sent = String::from_utf8(sent).unwrap();
+    assert!(sent.contains("expires in 1h"), "{sent}");
+}
+
+#[test]
 fn not_in_a_space_is_a_clear_error() {
     let relay = relay(&[]);
     let err = stderr_of_failure(saved(&relay, &["list"]).env("YACS_SPACE", secret()));
@@ -389,7 +426,7 @@ fn invite_link(relay: &Relay, token: Option<&str>) -> String {
 fn joins_with_a_link_and_remembers_it() {
     let relay = relay(&["--access-token", "s3cret"]);
     let err = stderr_of_failure(saved(&relay, &["join"]).write_stdin(invite_link(&relay, None)));
-    assert!(err.contains("access token"), "{err}");
+    assert!(err.contains("account key"), "{err}");
     assert!(!relay.home.path().join("cli.json").exists());
     let err = stderr_of_failure(saved(&relay, &["join"]).write_stdin("tundra velvet anchor"));
     assert!(err.contains("isn't an invite link"), "{err}");
@@ -498,6 +535,32 @@ fn starts_a_space_and_invites_another_machine() {
     }
 }
 
+/// On relays from 0.5.0 the key stays with the machine that has it: the
+/// space is registered, so the invited one needs none.
+#[test]
+fn invites_leave_the_account_key_at_home() {
+    let relay = relay(&["--access-token", "s3cret"]);
+    saved(&relay, &["space", "new"])
+        .env("YACS_RELAY", &relay.url)
+        .env("YACS_TOKEN", "s3cret")
+        .assert()
+        .success();
+    saved(&relay, &["send", "-t", "hi"]).assert().success();
+    let link = stdout(&mut saved(&relay, &["invite"]));
+
+    let other = TempDir::new().unwrap();
+    let config = other.path().join("cli.json");
+    saved(&relay, &["join"])
+        .env("YACS_CONFIG", &config)
+        .write_stdin(link)
+        .assert()
+        .success();
+    let saved_there = std::fs::read_to_string(&config).unwrap();
+    assert!(!saved_there.contains("s3cret"), "{saved_there}");
+    let got = stdout(saved(&relay, &["recv"]).env("YACS_CONFIG", &config));
+    assert_eq!(got, "hi");
+}
+
 #[test]
 fn saved_token_only_goes_to_its_own_relay() {
     let relay = relay(&["--access-token", "s3cret"]);
@@ -511,7 +574,7 @@ fn saved_token_only_goes_to_its_own_relay() {
             .env("YACS_SERVER", &other.url)
             .env("YACS_SPACE", secret()),
     );
-    assert!(err.contains("access token"), "{err}");
+    assert!(err.contains("account key"), "{err}");
     let err = stderr_of_failure(saved(&relay, &["list"]).env("YACS_SERVER", &other.url));
     assert!(err.contains("not "), "{err}");
 }

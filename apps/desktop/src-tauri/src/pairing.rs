@@ -13,8 +13,9 @@ pub struct Connected {
     pub token: Option<String>,
 }
 
-/// Proves the relay is reachable and accepts the token. Nothing is persisted
-/// here, so a failure leaves no trace.
+/// Proves the relay is reachable and lets this device into the space,
+/// registering a new one (which may take the account key). Nothing is
+/// persisted here, so a failure leaves no trace.
 pub async fn connect(
     relay: &str,
     token: Option<&str>,
@@ -27,7 +28,7 @@ pub async fn connect(
         .map(str::to_owned);
     let client = Client::new(&relay, token.clone(), pairing).map_err(|e| e.to_string())?;
     client
-        .config()
+        .check()
         .await
         .map_err(|e| format!("couldn't connect to {relay}: {e}"))?;
     Ok(Connected {
@@ -134,12 +135,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn checks_the_access_token() {
+    async fn checks_the_account_key() {
         let (url, _data) = relay(&["--access-token", "s3cret"]).await;
         let err = connect(&url, None, pairing()).await.err().unwrap();
-        assert!(err.contains("access token"), "{err}");
+        assert!(err.contains("account key"), "{err}");
+        let err = connect(&url, Some("nope"), pairing()).await.err().unwrap();
+        assert!(err.contains("account key"), "{err}");
         let ok = connect(&url, Some("s3cret"), pairing()).await.unwrap();
         assert_eq!(ok.token.as_deref(), Some("s3cret"));
+        // The space is registered now: joining it needs no key.
+        connect(&url, None, pairing()).await.unwrap();
     }
 
     #[tokio::test]
