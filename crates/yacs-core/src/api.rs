@@ -145,6 +145,28 @@ pub enum ChannelEvent {
 // [`ChannelEvent::InviteUsed`] to its space. `ttl` is at most
 // [`crate::MAX_INVITE_TTL_SECS`], which is also the default.
 
+// Rendezvous for typed codes (see `crate::Code`): side `a` is the inviter,
+// a member of the space, side `b` the device that typed the code. Each
+// message is written once and at most 4096 bytes; reads wait up to `wait`
+// seconds (at most 25) and answer 204 if nothing came. A rendezvous lasts
+// `crate::CODE_TTL_SECS`, at most 2 per space; 404 means it's gone.
+//
+// ```text
+// POST   …/channels/{channel}/rendezvous             body: message a/0 → 201 RendezvousOpened
+// PUT    …/channels/{channel}/rendezvous/{n}/a/{i}   write a/i
+// GET    …/channels/{channel}/rendezvous/{n}/b/{i}   read b/i
+// DELETE …/channels/{channel}/rendezvous/{n}         close it
+// GET    /api/v1/rendezvous/{n}/a/{i}                read a/i (no token: the joiner has none);
+//                                                    reading a/1 closes the rendezvous
+// PUT    /api/v1/rendezvous/{n}/b/{i}                write b/i (no token)
+// ```
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RendezvousOpened {
+    /// The number the code starts with.
+    pub nameplate: u16,
+}
+
 /// Body of every non-2xx JSON response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {

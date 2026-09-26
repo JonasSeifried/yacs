@@ -8,6 +8,7 @@ import {
   WebClient,
   enterSpace,
   forgetDownloads,
+  joinWithCode,
   leaveSpace,
   loadStored,
   renameSpace,
@@ -29,6 +30,7 @@ import {
   inviteUrl,
   isIos,
   isIosBrowserTab,
+  looksLikeCode,
   parseInviteLink,
 } from "./link";
 import { canScan, qrDecoder } from "./qr";
@@ -98,8 +100,8 @@ function JoinFromLink(props: { link: InviteLink; stored: Stored | null; onDone: 
     setBusy(true);
     setError(null);
     try {
-      if (link.kind === "invite") {
-        const invite = await takeInvite(link.secret);
+      if (link.kind === "invite" || link.kind === "code") {
+        const invite = link.kind === "invite" ? await takeInvite(link.secret) : await joinWithCode(link.code, deviceName);
         props.onDone(await enterSpace(invite.space, invite.name, invite.token, deviceName));
       } else {
         props.onDone(await enterSpace(link.secret, link.name ?? DEFAULT_SPACE_NAME, link.token, deviceName));
@@ -122,7 +124,7 @@ function JoinFromLink(props: { link: InviteLink; stored: Stored | null; onDone: 
         <DeviceNameField value={deviceName} onChange={setDeviceName} />
         {error && <p className="error">{error}</p>}
         <button className="primary" disabled={busy}>
-          {busy ? "Joining…" : "Join"}
+          {busy ? (link.kind === "code" ? "Waiting for the other device…" : "Joining…") : "Join"}
         </button>
         <button type="button" className="ghost" onClick={() => props.onDone(null)} disabled={busy}>
           Cancel
@@ -143,6 +145,10 @@ function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; 
 
   const join = (e: FormEvent) => {
     e.preventDefault();
+    if (looksLikeCode(pasted)) {
+      setError(null);
+      return props.onLink({ kind: "code", code: pasted.trim() });
+    }
     const link = inviteLinkFromCode(pasted);
     if ("error" in link) return setError(link.error);
     setError(null);
@@ -192,7 +198,10 @@ function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; 
     <Screen>
       <form className="card pair" onSubmit={join}>
         <h1>Join your devices</h1>
-        <p className="muted">Scan the QR code in YACS on your computer (Settings → Invite a device), or paste an invite link.</p>
+        <p className="muted">
+          Scan the QR code in YACS on your computer (Settings → Invite a device), or paste the invite link or type the
+          code shown there.
+        </p>
         <IosHomeScreenHint />
         {canScan() && (
           <button type="button" className="primary" onClick={() => setScanning(true)}>
@@ -200,7 +209,7 @@ function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; 
           </button>
         )}
         <label>
-          Invite link
+          Invite link or code
           <input
             value={pasted}
             onChange={(e) => setPasted(e.target.value)}
@@ -209,7 +218,7 @@ function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; 
             autoCorrect="off"
             autoComplete="off"
             spellCheck={false}
-            placeholder={`${location.origin}/#join=…`}
+            placeholder="7-tulip-apple"
           />
         </label>
         {error && <p className="error">{error}</p>}

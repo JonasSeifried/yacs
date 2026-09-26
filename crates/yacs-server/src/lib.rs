@@ -6,6 +6,7 @@ pub mod clock;
 mod config;
 mod events;
 mod invites;
+mod rendezvous;
 pub mod store;
 mod web;
 
@@ -21,6 +22,7 @@ pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::Config;
 pub use events::Events;
 pub use invites::Invites;
+pub use rendezvous::Rendezvous;
 pub use store::Store;
 
 const REAP_INTERVAL: Duration = Duration::from_secs(60);
@@ -43,12 +45,14 @@ pub async fn run(
     let config = Arc::new(config);
     let events = Arc::new(Events::default());
     let invites = Arc::new(Invites::default());
+    let rendezvous = Arc::new(Rendezvous::default());
     let app = router(AppState {
         store: store.clone(),
         config: config.clone(),
         clock: clock.clone(),
         events: events.clone(),
         invites: invites.clone(),
+        rendezvous: rendezvous.clone(),
     });
 
     let reaper_events = events.clone();
@@ -58,6 +62,7 @@ pub async fn run(
             interval.tick().await;
             reaper_events.prune();
             invites.prune(clock.now_ms());
+            rendezvous.prune(clock.now_ms());
             match store.reap(clock.now_ms()).await {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(removed = n, "reaped expired clips"),

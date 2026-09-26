@@ -223,6 +223,13 @@ button.danger {
   text-align: right;
 }
 
+.code {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 0.02em;
+  user-select: all;
+}
+
 .space-name {
   margin-bottom: 12px;
 }
@@ -234,6 +241,12 @@ button.danger {
   margin: 18px 0;
   font-size: 12px;
   color: var(--muted);
+}
+
+/* In the invite panel, whose items don't stretch. */
+.pair-device .divider {
+  align-self: stretch;
+  margin: 8px 0 0;
 }
 
 .divider::before,

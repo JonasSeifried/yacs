@@ -126,6 +126,12 @@ export interface CliStatus {
   location: string | null;
 }
 
+/** The code in the desktop's Invite panel, as it changes. */
+export type CodeEvent =
+  | { kind: "code"; code: string; /** After someone typed a wrong one. */ replaced: boolean }
+  | { kind: "joined"; device: string }
+  | { kind: "failed"; error: string };
+
 /** The desktop's "Invite a device" QR code and link, for a one-time invite. */
 export interface Invite {
   url: string;

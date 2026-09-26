@@ -1,6 +1,7 @@
 import type {
   ClipMeta,
   ClipView,
+  CodeEvent,
   Invite,
   Preferences,
   Sent,
@@ -20,8 +21,8 @@ export interface Platform {
   status(): Promise<Status>;
   /** Starts a new space on the relay, once it accepts the token. */
   createSpace(serverUrl: string, token: string | null, name: string | null): Promise<void>;
-  /** Joins the space in an invite link from another device. */
-  joinSpace(link: string): Promise<void>;
+  /** Joins the space in an invite link, or behind a code on `relay`, from another device. */
+  joinSpace(link: string, relay: string | null): Promise<void>;
   /** This computer's own name for the space; resolves to the name as saved. */
   renameSpace(name: string): Promise<string>;
   leaveSpace(): Promise<void>;
@@ -48,6 +49,11 @@ export interface Platform {
   setDefaultTtl(ttlSecs: number): Promise<void>;
   /** A new one-time invite on the relay, for a day. Only make one when the user asks. */
   invite(): Promise<Invite>;
+  /** Takes back an invite whose link nobody got. */
+  revokeInvite(slot: string): Promise<void>;
+  /** Shows codes (see `onInviteCode`) until one is used or `stopCode`. */
+  startCode(): Promise<void>;
+  stopCode(): Promise<void>;
   /** Puts the bundled `yacs` command on the PATH, in this computer's space. */
   installCli(): Promise<void>;
   uninstallCli(): Promise<void>;
@@ -67,6 +73,7 @@ export interface Platform {
   onSettingsShown(handler: () => void): Promise<() => void>;
   /** The relay reported new or deleted clips (only sent while Spotlight is open). */
   onClipsChanged(handler: () => void): Promise<() => void>;
+  onInviteCode(handler: (event: CodeEvent) => void): Promise<() => void>;
   /** One of the space's invites was taken (by its slot). */
   onInviteUsed(handler: (slot: string) => void): Promise<() => void>;
   /** Progress of a big transfer, and how it ended. */

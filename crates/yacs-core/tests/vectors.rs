@@ -6,7 +6,10 @@
 
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use yacs_core::{ChannelId, ChannelKey, Envelope, Error, InviteSecret, Pairing, Payload, Stream};
+use yacs_core::{
+    ChannelId, ChannelKey, Code, CodeInviter, CodeJoiner, Envelope, Error, InviteSecret, Pairing,
+    Payload, Stream,
+};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen_test::wasm_bindgen_test;
@@ -16,6 +19,7 @@ struct Vectors {
     version: u8,
     roots: Vec<RootVector>,
     invites: Vec<InviteVector>,
+    codes: Vec<CodeVector>,
     envelopes: Vec<EnvelopeVector>,
     streams: Vec<StreamVector>,
 }
@@ -35,6 +39,20 @@ struct InviteVector {
     space_name: String,
     inviter: String,
     token: Option<String>,
+    channel_id: String,
+    key: String,
+}
+
+#[derive(Deserialize)]
+struct CodeVector {
+    code: String,
+    inviter_rng: u8,
+    joiner_rng: u8,
+    message: String,
+    answer: String,
+    device_name: String,
+    sealed_invite: String,
+    space_name: String,
     channel_id: String,
     key: String,
 }
@@ -116,6 +134,30 @@ fn stored_invites_open() {
 
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
+fn code_exchange_matches() {
+    for v in vectors().codes {
+        let code: Code = v.code.parse().unwrap();
+        let answer = hex::decode(&v.answer).unwrap();
+        let (inviter, message) = CodeInviter::start_with_rng(&code, Counter(v.inviter_rng));
+        assert_eq!(hex::encode(&message), v.message);
+
+        // The joiner's SPAKE2 message is the answer's first part.
+        let joiner = CodeJoiner::start_with_rng(&code, Counter(v.joiner_rng));
+        let (fresh, joiner_key) = joiner.answer(&message, &v.device_name).unwrap();
+        assert_eq!(fresh[..34], answer[..34]);
+
+        let (device_name, _) = inviter.finish(code.nameplate(), &answer).unwrap();
+        assert_eq!(device_name, v.device_name);
+        let invite = joiner_key
+            .open_invite(&hex::decode(&v.sealed_invite).unwrap())
+            .unwrap();
+        assert_eq!(invite.space_name, v.space_name);
+        assert_eq!(invite.pairing(), pairing(&v.channel_id, &v.key));
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test)]
 fn stored_envelopes_open() {
     for v in vectors().envelopes {
         let p = pairing(&v.channel_id, &v.key);
@@ -175,3 +217,32 @@ fn stream_chunks_match() {
         }
     }
 }
+
+/// A fixed "random" byte stream, so SPAKE2 messages come out the same everywhere.
+struct Counter(u8);
+
+impl rand_core::TryRng for Counter {
+    type Error = core::convert::Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        let mut bytes = [0; 4];
+        self.try_fill_bytes(&mut bytes)?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        let mut bytes = [0; 8];
+        self.try_fill_bytes(&mut bytes)?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        for byte in dst {
+            *byte = self.0;
+            self.0 = self.0.wrapping_add(1);
+        }
+        Ok(())
+    }
+}
+
+impl rand_core::TryCryptoRng for Counter {}

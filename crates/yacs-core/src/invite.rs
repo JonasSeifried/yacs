@@ -15,8 +15,6 @@ use core::str::FromStr;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use chacha20poly1305::aead::{Aead, Generate, KeyInit, Payload};
-use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
 use hkdf::Hkdf;
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -24,14 +22,12 @@ use zeroize::Zeroize;
 
 use crate::error::{Error, Result};
 use crate::pairing::{ChannelId, ChannelKey, Pairing};
+use crate::sealed;
 
 pub const HKDF_INFO_SLOT: &[u8] = b"yacs/v2/invite/slot";
 pub const HKDF_INFO_WRAP: &[u8] = b"yacs/v2/invite/key";
 /// Bound into every sealed invite, with the slot.
 const AAD_PREFIX: &[u8] = b"yacs/v2/invite";
-/// The first byte of a sealed invite.
-const FORMAT: u8 = 1;
-const NONCE_LEN: usize = 24;
 /// What the relay takes for one invite: a name, a device name and a token fit easily.
 pub const MAX_SEALED_INVITE: usize = 4096;
 /// How long a relay keeps an unused invite at most.
@@ -59,47 +55,11 @@ impl InviteSecret {
     }
 
     pub fn seal(&self, invite: &Invite) -> Result<Vec<u8>> {
-        let mut plaintext = postcard::to_allocvec(invite).map_err(|_| Error::Malformed)?;
-        let nonce = XNonce::try_generate().map_err(|_| Error::Rng)?;
-        let ciphertext = self.cipher().encrypt(
-            &nonce,
-            Payload {
-                msg: &plaintext,
-                aad: &self.aad(),
-            },
-        );
-        plaintext.zeroize();
-        let ciphertext = ciphertext.map_err(|_| Error::Encrypt)?;
-        let mut sealed = Vec::with_capacity(1 + NONCE_LEN + ciphertext.len());
-        sealed.push(FORMAT);
-        sealed.extend_from_slice(&nonce);
-        sealed.extend_from_slice(&ciphertext);
-        Ok(sealed)
+        seal_invite(&self.expand(HKDF_INFO_WRAP), &self.aad(), invite)
     }
 
     pub fn open(&self, sealed: &[u8]) -> Result<Invite> {
-        let (&format, rest) = sealed.split_first().ok_or(Error::Truncated)?;
-        if format != FORMAT {
-            return Err(Error::UnsupportedVersion(format));
-        }
-        if rest.len() < NONCE_LEN {
-            return Err(Error::Truncated);
-        }
-        let (nonce, ciphertext) = rest.split_at(NONCE_LEN);
-        let nonce: [u8; NONCE_LEN] = nonce.try_into().expect("split at NONCE_LEN");
-        let mut plaintext = self
-            .cipher()
-            .decrypt(
-                &XNonce::from(nonce),
-                Payload {
-                    msg: ciphertext,
-                    aad: &self.aad(),
-                },
-            )
-            .map_err(|_| Error::Decrypt)?;
-        let invite = postcard::from_bytes(&plaintext).map_err(|_| Error::Malformed);
-        plaintext.zeroize();
-        invite
+        open_invite(&self.expand(HKDF_INFO_WRAP), &self.aad(), sealed)
     }
 
     fn expand(&self, info: &[u8]) -> [u8; 32] {
@@ -110,16 +70,25 @@ impl InviteSecret {
         out
     }
 
-    fn cipher(&self) -> XChaCha20Poly1305 {
-        let mut key = self.expand(HKDF_INFO_WRAP);
-        let cipher = XChaCha20Poly1305::new(&Key::from(key));
-        key.zeroize();
-        cipher
-    }
-
     fn aad(&self) -> Vec<u8> {
         [AAD_PREFIX, self.slot().as_bytes()].concat()
     }
+}
+
+/// An invite, sealed under `key`: by an invite secret, or by the key a code
+/// exchange agreed on.
+pub(crate) fn seal_invite(key: &[u8; 32], aad: &[u8], invite: &Invite) -> Result<Vec<u8>> {
+    let mut plaintext = postcard::to_allocvec(invite).map_err(|_| Error::Malformed)?;
+    let sealed = sealed::seal(key, aad, &plaintext);
+    plaintext.zeroize();
+    sealed
+}
+
+pub(crate) fn open_invite(key: &[u8; 32], aad: &[u8], sealed: &[u8]) -> Result<Invite> {
+    let mut plaintext = sealed::open(key, aad, sealed)?;
+    let invite = postcard::from_bytes(&plaintext).map_err(|_| Error::Malformed);
+    plaintext.zeroize();
+    invite
 }
 
 impl Drop for InviteSecret {
@@ -276,7 +245,7 @@ mod tests {
         *tampered.last_mut().unwrap() ^= 1;
         assert_eq!(secret.open(&tampered), Err(Error::Decrypt));
         assert_eq!(secret.open(&[]), Err(Error::Truncated));
-        assert_eq!(secret.open(&[FORMAT, 1, 2]), Err(Error::Truncated));
+        assert_eq!(secret.open(&[1, 1, 2]), Err(Error::Truncated));
         assert_eq!(secret.open(&[9; 40]), Err(Error::UnsupportedVersion(9)));
     }
 

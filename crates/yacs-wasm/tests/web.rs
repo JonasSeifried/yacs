@@ -3,7 +3,8 @@
 
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::wasm_bindgen_test;
-use yacs_wasm::{WasmPairing, invite_slot, new_stream, open_invite};
+use yacs_core::{CodeInviter, Invite, Pairing};
+use yacs_wasm::{WasmCodeJoiner, WasmPairing, invite_slot, new_stream, open_invite};
 
 fn clip() -> JsValue {
     js_sys::JSON::parse(
@@ -119,4 +120,26 @@ fn invites_seal_and_open() {
     );
     assert!(open_invite("v2.nope", &sealed).is_err());
     assert!(invite_slot("nope").is_err());
+}
+
+#[wasm_bindgen_test]
+fn joins_with_a_code() {
+    let (inviter, message) = CodeInviter::start().unwrap();
+    let code = inviter.code(7).to_string();
+    let mut joiner = WasmCodeJoiner::new(&code).unwrap();
+    assert_eq!(joiner.nameplate(), 7);
+    assert!(joiner.open_invite(&[1]).is_err());
+    let answer = joiner.answer(&message, "iPhone").unwrap();
+    assert!(joiner.answer(&message, "iPhone").is_err());
+
+    let (device, key) = inviter.finish(7, &answer).unwrap();
+    assert_eq!(device, "iPhone");
+    let pairing = Pairing::from_root(&[3; 32]);
+    let sealed = key
+        .seal_invite(&Invite::new("Home", "MacBook", None, &pairing))
+        .unwrap();
+    let opened = joiner.open_invite(&sealed).unwrap();
+    let space = js_sys::Reflect::get(&opened, &"space".into()).unwrap();
+    assert_eq!(space.as_string().unwrap(), pairing.to_secret());
+    assert!(WasmCodeJoiner::new("nope").is_err());
 }

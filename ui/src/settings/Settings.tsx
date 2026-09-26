@@ -2,7 +2,16 @@ import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useRef, use
 import { platform } from "../platform";
 import { acceleratorFromEvent, formatAccelerator } from "../shared/hotkey";
 import { ttlChoices } from "../shared/time";
-import type { Invite, ManualShortcut, Os, Preferences, ServerConfig, SpaceStatus, Status } from "../shared/types";
+import type {
+  CodeEvent,
+  Invite,
+  ManualShortcut,
+  Os,
+  Preferences,
+  ServerConfig,
+  SpaceStatus,
+  Status,
+} from "../shared/types";
 import { relayBehind } from "../shared/version";
 
 export function Settings() {
@@ -207,7 +216,7 @@ function SpaceSettings({ space }: { space: SpaceStatus }) {
         <span className="dot" /> Syncing through <strong>{space.relay}</strong>
       </p>
       {error && <p className="error">{error}</p>}
-      <InviteDevice />
+      <InviteDevice relay={space.relay} />
       <div className="actions">
         <button className="danger" onClick={leave}>
           Leave this space
@@ -263,50 +272,88 @@ function SpaceName({ name }: { name: string }) {
   );
 }
 
-function InviteDevice() {
+function InviteDevice({ relay }: { relay: string }) {
   const [invite, setInvite] = useState<Invite | null>(null);
-  const [used, setUsed] = useState(false);
+  /** Who joined, once someone did: with the link (null) or the code (their device name). */
+  const [joined, setJoined] = useState<{ device: string | null } | null>(null);
+  const [code, setCode] = useState<CodeEvent | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  /** The link went somewhere (copied), so it has to stay valid. */
+  const shared = useRef(false);
+  const current = useRef<Invite | null>(null);
+  current.current = invite;
 
-  // Don't leave the invite on screen when the window is hidden and shown again.
-  useEffect(() => {
-    const hide = () => document.visibilityState === "hidden" && (setInvite(null), setUsed(false));
-    document.addEventListener("visibilitychange", hide);
-    return () => document.removeEventListener("visibilitychange", hide);
+  /** A link only this screen showed needn't stay on the relay once it's done with. */
+  const retire = useCallback(() => {
+    const shown = current.current;
+    if (shown && !shared.current) platform.revokeInvite(shown.slot).catch(() => {});
+    platform.stopCode();
   }, []);
 
-  // The relay says when the invite on screen was taken.
+  const hide = useCallback(() => {
+    retire();
+    setInvite(null);
+    setJoined(null);
+    setCode(null);
+  }, [retire]);
+
+  // Don't leave the invite on screen, or its code open, when the window is hidden.
   useEffect(() => {
-    if (!invite) return;
-    const unsubscribe = platform.onInviteUsed((slot) => slot === invite.slot && setUsed(true));
-    return () => void unsubscribe.then((u) => u());
-  }, [invite]);
+    const onVisibility = () => document.visibilityState === "hidden" && hide();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      retire();
+    };
+  }, [hide, retire]);
+
+  // Codes can arrive as soon as they're started: listen all along.
+  useEffect(() => {
+    const codes = platform.onInviteCode((event) => {
+      if (event.kind === "joined") {
+        setJoined({ device: event.device });
+        retire();
+      } else setCode(event);
+    });
+    return () => void codes.then((u) => u());
+  }, [retire]);
+
+  // The relay says when the link on screen was used.
+  useEffect(() => {
+    if (!invite || joined) return;
+    const used = platform.onInviteUsed((slot) => {
+      if (slot !== invite.slot) return;
+      setJoined({ device: null });
+      platform.stopCode();
+    });
+    return () => void used.then((u) => u());
+  }, [invite, joined]);
 
   const show = async () => {
     setBusy(true);
     setError(null);
+    retire();
     try {
+      shared.current = false;
       setInvite(await platform.invite());
-      setUsed(false);
+      setJoined(null);
+      setCode(null);
+      await platform.startCode();
     } catch (e) {
       setError(String(e));
     } finally {
       setBusy(false);
     }
   };
-  const hide = () => {
-    setInvite(null);
-    setUsed(false);
-  };
 
   if (!invite) {
     return (
       <div className="pair-device">
         <p className="hint">
-          Makes a one-time invite: a QR code for a phone's camera, and a link to paste on another computer or into{" "}
-          <code>yacs join</code> on a server.
+          Makes a one-time invite: a QR code for a phone's camera, a link to paste on another computer or into{" "}
+          <code>yacs join</code> on a server, and a code to type.
         </p>
         {error && <p className="error">{error}</p>}
         <button onClick={show} disabled={busy}>
@@ -315,11 +362,11 @@ function InviteDevice() {
       </div>
     );
   }
-  if (used) {
+  if (joined) {
     return (
       <div className="pair-device">
         <p className="paired">
-          <span className="dot" /> The invite was used: a device joined.
+          <span className="dot" /> {joined.device ? `${joined.device} joined.` : "The invite was used: a device joined."}
         </p>
         {error && <p className="error">{error}</p>}
         <div className="actions">
@@ -336,13 +383,14 @@ function InviteDevice() {
       <img className="qr" src={invite.qr} alt="Invite QR code" />
       {invite.warning && <p className="error">{invite.warning}</p>}
       <p className="hint">
-        Works once, within 24 hours. Whoever opens it first joins your space, so send the link only to the device you
-        mean.
+        Scan it with the other device's camera, or send it the link. Works once, within 24 hours: whoever opens it first
+        joins your space, so send the link only to the device you mean.
       </p>
       <div className="actions">
         <button
           onClick={async () => {
             await navigator.clipboard.writeText(invite.url);
+            shared.current = true;
             setCopied(true);
             setTimeout(() => setCopied(false), 1500);
           }}
@@ -351,6 +399,17 @@ function InviteDevice() {
         </button>
         <button onClick={hide}>Hide</button>
       </div>
+      {code?.kind === "code" && (
+        <>
+          <p className="divider">or type this code on the other device</p>
+          <p className="code mono">{code.code}</p>
+          <p className="hint">
+            {code.replaced && "Someone typed a wrong code, so here's a new one. "}
+            Works while this window is open. The other device also needs the relay: {relay}
+          </p>
+        </>
+      )}
+      {code?.kind === "failed" && <p className="hint">No code this time: {code.error}</p>}
     </div>
   );
 }
@@ -374,9 +433,11 @@ function SetUpSpace() {
       setBusy(null);
     }
   };
+  // A code (`7-tulip-apple`) doesn't say where its relay is, unlike a link.
+  const isCode = /^\s*\d/.test(link);
   const join = (e: FormEvent) => {
     e.preventDefault();
-    run("join", () => platform.joinSpace(link));
+    run("join", () => platform.joinSpace(link, isCode ? serverUrl : null));
   };
   const create = (e: FormEvent) => {
     e.preventDefault();
@@ -387,17 +448,29 @@ function SetUpSpace() {
     <>
       <form onSubmit={join}>
         <label>
-          Invite link
+          Invite link or code
           <input
             required
             value={link}
             onChange={(e) => setLink(e.target.value)}
-            placeholder="https://…/#join=…"
+            placeholder="https://…/#join=…  or  7-tulip-apple"
             autoComplete="off"
             spellCheck={false}
           />
-          <span className="hint">On a computer in the space: Settings → Invite a device… → Copy link.</span>
+          <span className="hint">On a computer in the space: Settings → Invite a device….</span>
         </label>
+        {isCode && (
+          <label>
+            Relay URL <span className="optional">shown under the code</span>
+            <input
+              type="url"
+              required
+              placeholder="https://clip.example.com"
+              value={serverUrl}
+              onChange={(e) => setServerUrl(e.target.value)}
+            />
+          </label>
+        )}
         {error?.form === "join" && <p className="error">{error.text}</p>}
         <div className="actions">
           <button className="primary" type="submit" disabled={busy !== null}>

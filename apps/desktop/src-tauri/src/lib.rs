@@ -4,6 +4,7 @@
 mod cli;
 mod clipboard;
 mod clips;
+mod codes;
 mod commands;
 mod hotkey;
 mod live;
@@ -73,6 +74,7 @@ pub fn run() {
             app.manage(update::Updates::default());
             app.manage(live::Live::default());
             app.manage(transfers::Transfers::default());
+            app.manage(codes::Codes::default());
             live::restart(app.handle());
 
             windows::create(app.handle())?;
@@ -108,6 +110,9 @@ pub fn run() {
             commands::delete_clip,
             commands::set_default_ttl,
             commands::invite,
+            commands::revoke_invite,
+            commands::start_code,
+            commands::stop_code,
             commands::install_cli,
             commands::uninstall_cli,
             commands::check_update,

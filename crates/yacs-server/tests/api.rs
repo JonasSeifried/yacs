@@ -8,15 +8,16 @@ use clap::Parser;
 use http_body_util::BodyExt;
 use tempfile::TempDir;
 use tower::ServiceExt;
+use yacs_core::api::RendezvousOpened;
 use yacs_core::api::{
     ChannelEvent, ChunkedConfig, ClipMeta, HEADER_CHUNKED, HEADER_CLIP_ID, HEADER_SIZE,
     ServerConfig, UploadCreated, UploadStatus,
 };
 use yacs_core::{
-    CHUNK_TAG_LEN, ChannelId, ChannelKey, Clip, ClipItem, Envelope, Invite, InviteSecret,
-    MAX_CHUNK_SIZE, MAX_SEALED_INVITE, MIN_CHUNK_SIZE, Pairing, Payload,
+    CHUNK_TAG_LEN, ChannelId, ChannelKey, Clip, ClipItem, Code, CodeInviter, CodeJoiner, Envelope,
+    Invite, InviteSecret, MAX_CHUNK_SIZE, MAX_SEALED_INVITE, MIN_CHUNK_SIZE, Pairing, Payload,
 };
-use yacs_server::{AppState, Config, Events, Invites, ManualClock, Store, router};
+use yacs_server::{AppState, Config, Events, Invites, ManualClock, Rendezvous, Store, router};
 
 const START_MS: u64 = 1_758_600_000_000;
 const MINUTE: Duration = Duration::from_secs(60);
@@ -66,6 +67,7 @@ async fn app(args: &[&str]) -> TestApp {
         clock: clock.clone(),
         events: events.clone(),
         invites: Arc::new(Invites::default()),
+        rendezvous: Arc::new(Rendezvous::default()),
     });
     TestApp {
         router,
@@ -1008,4 +1010,126 @@ async fn inviting_needs_the_token_taking_an_invite_doesnt() {
     assert_eq!(put.status, StatusCode::CREATED);
     assert_eq!(app.delete(&uri).await.status, StatusCode::UNAUTHORIZED);
     assert_eq!(app.get(&taken_uri(&secret)).await.status, StatusCode::OK);
+}
+
+fn rendezvous(channel: &str) -> String {
+    format!("/api/v1/channels/{channel}/rendezvous")
+}
+
+#[tokio::test]
+async fn a_code_exchange_through_the_relay() {
+    let app = app(&["--access-token", "s3cret"]).await;
+    let ch = channel(1);
+    let auth = [("authorization", "Bearer s3cret")];
+    let invite = Invite::new(
+        "Home",
+        "MacBook",
+        Some("s3cret"),
+        &Pairing::from_root(&[1; 32]),
+    );
+
+    // The inviter opens a rendezvous with its first message.
+    let (inviter, message) = CodeInviter::start().unwrap();
+    assert_eq!(
+        app.post(&rendezvous(&ch), message.clone()).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let opened = app
+        .call(Method::POST, &rendezvous(&ch), &auth, message)
+        .await;
+    assert_eq!(opened.status, StatusCode::CREATED);
+    let nameplate = opened.json::<RendezvousOpened>().nameplate;
+    assert_eq!(nameplate, 1);
+    // What the inviter shows, typed on the other device.
+    let code: Code = inviter.code(nameplate).to_string().parse().unwrap();
+
+    // The joiner, without a token.
+    let a0 = app
+        .get(&format!("/api/v1/rendezvous/{nameplate}/a/0"))
+        .await;
+    assert_eq!(a0.status, StatusCode::OK);
+    let (answer, joiner_key) = CodeJoiner::start(&code)
+        .answer(&a0.body, "Anna's iPhone")
+        .unwrap();
+    let b0 = format!("/api/v1/rendezvous/{nameplate}/b/0");
+    assert_eq!(
+        app.put(&b0, answer.clone()).await.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(app.put(&b0, answer).await.status, StatusCode::CONFLICT);
+
+    // Only members read the answer and write the invite.
+    let member_b0 = format!("{}/{nameplate}/b/0?wait=0", rendezvous(&ch));
+    assert_eq!(app.get(&member_b0).await.status, StatusCode::UNAUTHORIZED);
+    let got = app.call(Method::GET, &member_b0, &auth, vec![]).await;
+    assert_eq!(got.status, StatusCode::OK);
+    let (device, inviter_key) = inviter.finish(nameplate, &got.body).unwrap();
+    assert_eq!(device, "Anna's iPhone");
+    let a1 = format!("{}/{nameplate}/a/1", rendezvous(&ch));
+    let sealed = inviter_key.seal_invite(&invite).unwrap();
+    let put = app.call(Method::PUT, &a1, &auth, sealed).await;
+    assert_eq!(put.status, StatusCode::NO_CONTENT);
+
+    let taken = app
+        .get(&format!("/api/v1/rendezvous/{nameplate}/a/1?wait=0"))
+        .await;
+    assert_eq!(taken.status, StatusCode::OK);
+    assert_eq!(joiner_key.open_invite(&taken.body).unwrap(), invite);
+    // That was the end of it.
+    let gone = app
+        .get(&format!("/api/v1/rendezvous/{nameplate}/a/0"))
+        .await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn codes_wait_expire_and_close() {
+    let app = app(&[]).await;
+    let ch = channel(1);
+    let opened = app.post(&rendezvous(&ch), vec![1]).await;
+    let nameplate = opened.json::<RendezvousOpened>().nameplate;
+    let b0 = format!("{}/{nameplate}/b/0?wait=0", rendezvous(&ch));
+    assert_eq!(app.get(&b0).await.status, StatusCode::NO_CONTENT);
+    let other = format!("{}/{nameplate}/b/0?wait=0", rendezvous(&channel(2)));
+    assert_eq!(app.get(&other).await.status, StatusCode::NOT_FOUND);
+
+    app.clock.advance(Duration::from_secs(10 * 60));
+    assert_eq!(app.get(&b0).await.status, StatusCode::NOT_FOUND);
+
+    let opened = app.post(&rendezvous(&ch), vec![1]).await;
+    let nameplate = opened.json::<RendezvousOpened>().nameplate;
+    let close = format!("{}/{nameplate}", rendezvous(&ch));
+    assert_eq!(
+        app.delete(&format!("{}/{nameplate}", rendezvous(&channel(2))))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(app.delete(&close).await.status, StatusCode::NO_CONTENT);
+    let a0 = format!("/api/v1/rendezvous/{nameplate}/a/0");
+    assert_eq!(app.get(&a0).await.status, StatusCode::NOT_FOUND);
+
+    for (uri, body) in [
+        (rendezvous(&ch), vec![]),
+        (rendezvous(&ch), vec![1; 4097]),
+        (format!("/api/v1/rendezvous/{nameplate}/b/9"), vec![1]),
+    ] {
+        let res = app
+            .call(
+                if uri.ends_with("/9") {
+                    Method::PUT
+                } else {
+                    Method::POST
+                },
+                &uri,
+                &[],
+                body,
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::BAD_REQUEST, "{uri}");
+    }
+    app.post(&rendezvous(&ch), vec![1]).await;
+    app.post(&rendezvous(&ch), vec![1]).await;
+    let third = app.post(&rendezvous(&ch), vec![1]).await;
+    assert_eq!(third.status, StatusCode::TOO_MANY_REQUESTS);
 }

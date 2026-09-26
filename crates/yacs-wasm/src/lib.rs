@@ -9,7 +9,10 @@
 
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
-use yacs_core::{Clip, Envelope, Invite, InviteSecret, Payload, Stream, StreamCipher, StreamFile};
+use yacs_core::{
+    Clip, Code, CodeJoiner, CodeKey, Envelope, Invite, InviteSecret, Payload, Stream, StreamCipher,
+    StreamFile,
+};
 
 #[wasm_bindgen(js_name = Pairing)]
 pub struct WasmPairing(yacs_core::Pairing);
@@ -95,6 +98,66 @@ struct OpenedInvite {
     token: Option<String>,
 }
 
+/// Joining with a typed code (see `yacs_core::code`): read `a/0` from the
+/// relay's rendezvous at `nameplate`, write `answer(…)` to `b/0`, then open
+/// what arrives in `a/1`.
+#[wasm_bindgen(js_name = CodeJoiner)]
+pub struct WasmCodeJoiner {
+    joiner: Option<CodeJoiner>,
+    key: Option<CodeKey>,
+    nameplate: u16,
+}
+
+#[wasm_bindgen(js_class = CodeJoiner)]
+impl WasmCodeJoiner {
+    /// Throws if `code` isn't a code.
+    #[wasm_bindgen(constructor)]
+    pub fn new(code: &str) -> Result<WasmCodeJoiner, JsError> {
+        let code: Code = code.parse()?;
+        Ok(Self {
+            joiner: Some(CodeJoiner::start(&code)),
+            key: None,
+            nameplate: code.nameplate(),
+        })
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn nameplate(&self) -> u16 {
+        self.nameplate
+    }
+
+    /// The answer to the inviter's message; call it once.
+    pub fn answer(&mut self, message: &[u8], device_name: &str) -> Result<Vec<u8>, JsError> {
+        let joiner = self
+            .joiner
+            .take()
+            .ok_or_else(|| JsError::new("already answered"))?;
+        let (answer, key) = joiner.answer(message, device_name)?;
+        self.key = Some(key);
+        Ok(answer)
+    }
+
+    /// The invite from `a/1`, like `openInvite`. Throws if the code was wrong.
+    #[wasm_bindgen(js_name = openInvite)]
+    pub fn open_invite(&self, sealed: &[u8]) -> Result<JsValue, JsError> {
+        let key = self
+            .key
+            .as_ref()
+            .ok_or_else(|| JsError::new("answer first"))?;
+        opened(&key.open_invite(sealed)?)
+    }
+}
+
+fn opened(invite: &Invite) -> Result<JsValue, JsError> {
+    let opened = OpenedInvite {
+        space: invite.pairing().to_secret(),
+        name: invite.space_name.clone(),
+        inviter: invite.inviter.clone(),
+        token: invite.token.clone(),
+    };
+    Ok(serde_wasm_bindgen::to_value(&opened)?)
+}
+
 /// Where the relay keeps the invite behind `secret` (from a `#join=` link).
 #[wasm_bindgen(js_name = inviteSlot)]
 pub fn invite_slot(secret: &str) -> Result<String, JsError> {
@@ -104,14 +167,7 @@ pub fn invite_slot(secret: &str) -> Result<String, JsError> {
 /// Opens the sealed invite fetched from the relay.
 #[wasm_bindgen(js_name = openInvite)]
 pub fn open_invite(secret: &str, sealed: &[u8]) -> Result<JsValue, JsError> {
-    let invite = secret.parse::<InviteSecret>()?.open(sealed)?;
-    let opened = OpenedInvite {
-        space: invite.pairing().to_secret(),
-        name: invite.space_name.clone(),
-        inviter: invite.inviter.clone(),
-        token: invite.token.clone(),
-    };
-    Ok(serde_wasm_bindgen::to_value(&opened)?)
+    opened(&secret.parse::<InviteSecret>()?.open(sealed)?)
 }
 
 /// A new `Stream` item for `files` (`[{ name, mime, size }]`, in the order

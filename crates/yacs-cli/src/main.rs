@@ -4,8 +4,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use yacs_client::spaces::{DEFAULT_SPACE_NAME, Link, Space, Spaces, invite_url, normalize_relay};
-use yacs_client::{Client, stream_of};
+use yacs_client::spaces::{
+    Accepted, DEFAULT_SPACE_NAME, Link, Space, Spaces, clean_name, invite_url, normalize_relay,
+};
+use yacs_client::{Client, CodeOutcome, join_with_code, stream_of};
 use yacs_core::api::{ClipMeta, ServerConfig};
 
 use crate::content::Content;
@@ -74,8 +76,14 @@ enum Command {
     Leave,
     /// List the spaces this machine is in.
     Spaces,
-    /// Print an invite link for another device: it works once, within 24 hours.
-    Invite,
+    /// Invite another device: prints a link that works once, within 24
+    /// hours, and in a terminal also shows a code to type on the other device,
+    /// waiting until it's used.
+    Invite {
+        /// Only the code, and wait for it even when not in a terminal.
+        #[arg(long)]
+        code: bool,
+    },
     /// Start, rename or export a space.
     Space {
         #[command(subcommand)]
@@ -187,19 +195,24 @@ async fn run(cli: Cli) -> Result<()> {
         | Command::Relay { .. } => {
             unreachable!("handled above")
         }
-        Command::Invite => {
+        Command::Invite { code } => {
             let saved = config::load(&config::path()?)?;
             let name = saved
                 .current()
                 .filter(|s| {
                     s.relay == server && s.pairing().ok().as_ref() == Some(client.pairing())
                 })
-                .map_or(DEFAULT_SPACE_NAME, |s| &s.name);
-            let secret = client.invite(name, &device_name).await?;
-            println!("{}", invite_url(&server, &secret));
-            eprintln!(
-                "Works once, within 24 hours: open it on a phone, or paste it into Settings on a computer or into `yacs join`.\nWhoever opens it first joins \"{name}\", so only send it to the device you mean."
-            );
+                .map_or(DEFAULT_SPACE_NAME, |s| s.name.as_str());
+            if !code {
+                let secret = client.invite(name, &device_name).await?;
+                println!("{}", invite_url(&server, &secret));
+                eprintln!(
+                    "Works once, within 24 hours: open it on a phone, or paste it into Settings on a computer or into `yacs join`.\nWhoever opens it first joins \"{name}\", so only send it to the device you mean."
+                );
+            }
+            if code || std::io::stderr().is_terminal() {
+                offer_codes(&client, &server, name, &device_name, code).await?;
+            }
         }
         Command::Send {
             file,
@@ -271,6 +284,52 @@ async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+/// Shows codes until one is used (or Ctrl+C): a new one after a wrong guess
+/// or when one expires.
+async fn offer_codes(
+    client: &Client,
+    server: &str,
+    space_name: &str,
+    device_name: &str,
+    only_code: bool,
+) -> Result<()> {
+    let mut first = true;
+    loop {
+        let offer = client.offer_code().await?;
+        let nameplate = offer.nameplate();
+        let code = offer.code();
+        if only_code {
+            println!("{code}");
+        } else {
+            eprintln!(
+                "{}Or type this code on the other device: {code}",
+                if first { "\n" } else { "" }
+            );
+        }
+        if first {
+            eprintln!(
+                "It works while this runs (Ctrl+C stops it). The other device also needs the relay: {server}"
+            );
+            first = false;
+        }
+        let outcome = tokio::select! {
+            outcome = client.complete_code(offer, space_name, device_name) => outcome?,
+            _ = tokio::signal::ctrl_c() => {
+                client.close_code(nameplate).await;
+                return Ok(());
+            }
+        };
+        match outcome {
+            CodeOutcome::Joined { device } => {
+                eprintln!("{device} joined \"{space_name}\".");
+                return Ok(());
+            }
+            CodeOutcome::WrongCode => eprintln!("Someone typed a wrong code, so here's a new one."),
+            CodeOutcome::Expired => {}
+        }
+    }
+}
+
 /// Shown to other devices. Defaults to the host name.
 fn device_name(cli: &Cli) -> String {
     cli.device_name
@@ -327,16 +386,35 @@ fn connect(cli: &Cli) -> Result<(String, Client)> {
 async fn join(cli: &Cli, name: Option<&str>) -> Result<()> {
     if std::io::stdin().is_terminal() {
         eprintln!(
-            "Paste an invite link (on a computer in the space: Settings → Invite a device… → Copy link,\nor `yacs invite`). It isn't shown."
+            "Paste an invite link or type the code (on a computer in the space: Settings → Invite a device…,\nor `yacs invite`). It isn't shown."
         );
     }
-    let input = prompt_secret("Invite link: ")?;
-    let link = Link::parse(&input).map_err(|e| {
-        anyhow::anyhow!(
-            "{e}; copy one on a computer in the space from Settings → Invite a device…, or run `yacs invite` there"
-        )
-    })?;
-    let joining = link.accept().await?;
+    let input = prompt_secret("Invite link or code: ")?;
+    let joining = if yacs_core::looks_like_code(&input) {
+        let code: yacs_core::Code = input.parse()?;
+        let relay = match &cli.server {
+            Some(server) => normalize_relay(server),
+            None => match config::load(&config::path()?)?.current() {
+                Some(space) => space.relay.clone(),
+                None => server_or_prompt(cli)?,
+            },
+        };
+        let invite = join_with_code(&relay, &code, &device_name(cli)).await?;
+        Accepted {
+            relay,
+            pairing: invite.pairing(),
+            token: invite.token.clone(),
+            name: clean_name(&invite.space_name),
+            inviter: clean_name(&invite.inviter),
+        }
+    } else {
+        let link = Link::parse(&input).map_err(|e| {
+            anyhow::anyhow!(
+                "{e}; copy one on a computer in the space from Settings → Invite a device…, or run `yacs invite` there"
+            )
+        })?;
+        link.accept().await?
+    };
     let name = name
         .or(joining.name.as_deref())
         .unwrap_or(DEFAULT_SPACE_NAME);

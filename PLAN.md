@@ -264,7 +264,7 @@ The apps use the left column; code and protocol keep the right one.
 | --- | --- | --- |
 | **Space** ("My devices", "Anna & me") | channel | Devices and people sharing one key. Its clips, history and limits. |
 | **Invite** / **Join** | pairing | Adding a device or a person to a space. One flow for both. |
-| **Code** (`7-guitar-apple`) | pairing code | Typed invite, works while the Invite window is open. |
+| **Code** (`7-tulip-apple`) | pairing code | Typed invite, works while the Invite window is open. |
 | **Invite link** (also shown as QR) | invite | Sent invite, works once within 24 h. |
 | **Account key** (`yacs_acct_…`) | token | Makes spaces premium on the public relay; on your own relay, allows creating spaces. Replaces "access token" in the apps. |
 | **Relay** | relay, `yacs-server` | Shown only for your own relay; the public one is "Hosted by YACS". `YACS_RELAY` becomes the env var's name, `YACS_SERVER` keeps working. |
@@ -291,7 +291,7 @@ Invite to "My devices"
   Works once, within 24 hours
 
   ── or type this code on the other device ──
-         7-guitar-apple
+         7-tulip-apple
   Works while this window is open
 ```
 The joining side has one field: *"Paste an invite link or type a code"*, and it works out which. When a code has expired: *"This code has expired. Open Invite on the other device and try again."* For a code, the joiner also needs the relay: the public one by default, otherwise the Invite window shows it under the code and the Join form has a relay field (a link carries its relay as its host).
@@ -301,23 +301,26 @@ The joining side has one field: *"Paste an invite link or type a code"*, and it 
 - **The token rides along until phase 9**, sealed and one-time: today a self-hosted relay needs it for every request, so the invitee can't do without it. Phase 9 makes joining work without it (registered channels), and then it leaves the invite.
 - The relay keeps open invites in memory (at most 20 per space, 24 h), like open uploads: a restart drops them, and the inviter makes a new one. `GET /api/v1/invites/{slot}` needs no token.
 - One use: the relay deletes the invite on the first fetch and tells the space (`invite_used` on its SSE stream). The joining page asks *"Join?"* first and fetches only on the tap, so link previewers in messengers can't burn it.
+- The desktop takes a link back (`DELETE`) once its panel closes or a device joined by code, unless the link was copied: then it may be on its way somewhere.
 - If someone intercepts the link, the real invitee gets "already used", which shows something is wrong, and *Reset space* is the fix. After use, a copy in a chat backup is worthless. That's why these links can be sent over any messenger.
 
 **Code** (synchronous, short secret):
-- `nameplate-word-word`: the number picks a rendezvous slot on the relay; two words from the EFF short wordlist (1,296 words) are about 20.7 bits.
-- **SPAKE2** (RustCrypto `spake2`, symmetric mode, builds for WASM) through the slot: A posts its message, B answers with its message plus a key confirmation carrying its device name (encrypted), A checks it and sends the sealed invite. An attacker, the relay included, gets **one online guess per code**: the relay accepts one answer per slot, and A burns the code on a failed confirmation and shows a fresh one. Offline guessing isn't possible.
+- `nameplate-word-word`: the number picks a rendezvous slot on the relay (the lowest free one; a slot rests 10 min after it ends, so a code typed late finds nothing instead of someone's new code); two words from the EFF short wordlist (1,295 words without "yo-yo", whose hyphen would clash) are about 20.7 bits. The SPAKE2 password is the words only: the relay picks the nameplate once it has A's first message; the nameplate is bound into the sealed parts instead.
+- **SPAKE2** (RustCrypto `spake2` 0.5.0-pre.0, pinned: the release on the same `getrandom` 0.4 as the rest; symmetric mode, builds for WASM) through the slot (`yacs_core::code`): A posts its message, B answers with its message plus a key confirmation carrying its device name (encrypted), A checks it and sends the sealed invite. An attacker, the relay included, gets **one online guess per code**: the relay accepts one answer per slot, and A burns the code on a failed confirmation and shows a fresh one. Offline guessing isn't possible.
 - It's live, so both devices have to be online. The window communicates that ("works while this window is open"); a code lasts until the window closes, at most 10 min, then it refreshes itself.
 - The inviter's window turns into *"Anna's iPhone joined ✓"*.
 
-Relay routes (sketch, sizes ≤ 4 KB, only for members, i.e. under a known channel):
+Relay routes (all in memory, sizes ≤ 4 KB; routes under a channel need the token, the others serve the device that has none yet):
 ```
 PUT    /api/v1/channels/{c}/invites/{slot}?ttl=86400   sealed invite → 201
 GET    /api/v1/invites/{slot}                           → 200 once, then 404; `invite_used` on channel c
 DELETE /api/v1/channels/{c}/invites/{slot}              revoke
-POST   /api/v1/channels/{c}/rendezvous                  → 201 { nameplate }  (at most 2 open per space)
-PUT    /api/v1/rendezvous/{nameplate}/{a|b}/{n}         one message, each written once
-GET    /api/v1/rendezvous/{nameplate}/{a|b}/{n}?wait    long-poll for the other side's message
-DELETE /api/v1/channels/{c}/rendezvous/{nameplate}      window closed, or burned
+POST   /api/v1/channels/{c}/rendezvous                  body: a/0 → 201 { nameplate }  (at most 2 open per space)
+PUT    /api/v1/channels/{c}/rendezvous/{nameplate}/a/{i}  inviter writes (members only), each once
+GET    /api/v1/channels/{c}/rendezvous/{nameplate}/b/{i}  inviter reads, waiting up to ?wait=25 s (204: nothing yet)
+DELETE /api/v1/channels/{c}/rendezvous/{nameplate}        window closed, or burned
+GET    /api/v1/rendezvous/{nameplate}/a/{i}              joiner reads (no token); reading a/1 ends it
+PUT    /api/v1/rendezvous/{nameplate}/b/{i}              joiner writes (no token), each once
 ```
 
 ### Accounts, premium and limits
@@ -366,7 +369,7 @@ This reorders the original roadmap: crypto and the protocol come first, so the U
 | **5: v1.x** | Breadth | ✅ SSE live updates (0.2.0) and the relay version in desktop Settings; ✅ CLI for servers: `yacs pair` saves the pairing (from the desktop's link or the phrase), `yacs send FILE`, static release binaries, `yacs update` (signed), `yacs relay update` (Docker compose); the desktop apps bundle `yacs` and put it on the PATH on request (macOS, Windows); ✅ Linux desktop (0.2.3); files through the relay, up to its size limit | |
 | **6: Large files** ✅ (0.3.0; 80 MB verified on Android + iPhone in 0.3.1) | Any size through the relay | Chunked, streamed uploads and downloads on every client (section 7) | A multi-GB file goes phone ↔ desktop through the relay, memory stays flat |
 | **7: Native mobile** (on hold) | Tauri mobile | Native clipboard plugins + share extensions | |
-| **8: Spaces + invites** (in progress: spaces, names, the vocabulary and one-time invite links done; codes next) | Pairing without moving secrets by hand (section 8) | Vocabulary in all apps; spaces stored as a list (one shown), with a name you can edit in Settings and the PWA; random space keys, phrase + Argon2id removed; invite links/QR and codes (SPAKE2) with the relay routes; Join field; `yacs join` / `yacs invite` / `yacs space export` | A second computer joins by typing a code, a phone by scanning, a friend by a link sent over a messenger |
+| **8: Spaces + invites** ✅ (codes: desktop and CLI show them, every client types them; the phone app doesn't show codes yet) | Pairing without moving secrets by hand (section 8) | Vocabulary in all apps; spaces stored as a list (one shown), with a name you can edit in Settings and the PWA; random space keys, phrase + Argon2id removed; invite links/QR and codes (SPAKE2) with the relay routes; Join field; `yacs join` / `yacs invite` / `yacs space export` | A second computer joins by typing a code, a phone by scanning, a friend by a link sent over a messenger |
 | **9: Public relay** | People without a server | Public mode (per-IP limits, free plan); account keys + channel registration (self-hosted token becomes the owner's key); per-space limits in `/limits`; onboarding "free relay or your own"; `yacs.jonasseifried.com` live with privacy policy + Impressum | A new user installs the app and syncs a phone without setting anything up |
 | **10: Multiple spaces UI** | Spaces with friends | Spotlight switcher and new-clip dots, Settings list (invite, reset, leave), PWA picker, `--space` in the CLI | Personal and shared spaces side by side on every client |
 | **11: Send as link** | Files for people without YACS | `/d/<id>#<key>` downloads in the web app, byte-counted download limit, plan limits | A link sent to someone without YACS downloads once, then stops working |

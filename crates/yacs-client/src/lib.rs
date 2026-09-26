@@ -2,10 +2,12 @@
 //! sending and decrypts after receiving, so callers only see plaintext clips.
 
 mod chunks;
+mod code;
 pub mod spaces;
 mod sse;
 
 pub use chunks::{LocalFiles, Progress, Sink, stream_of};
+pub use code::{CodeOutcome, Offer, join_with_code};
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -17,7 +19,7 @@ use yacs_core::api::{
     ChannelEvent, ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody, HEADER_CHUNKED, HEADER_CLIP_ID,
     HEADER_CREATED_AT, HEADER_EXPIRES_AT, HEADER_SIZE, ServerConfig,
 };
-use yacs_core::{Envelope, Invite, InviteSecret, Pairing, Payload};
+use yacs_core::{Envelope, Invite, InviteSecret, InviteSlot, Pairing, Payload};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -43,6 +45,14 @@ pub enum Error {
     NoInvites,
     #[error("this invite was already used or has expired; make a new one on the other device")]
     InviteGone,
+    #[error("no code like that is open; check the number, or show a new code on the other device")]
+    CodeNotFound,
+    #[error(
+        "that code didn't work; check it and try again with the new code the other device shows"
+    )]
+    WrongCode,
+    #[error("someone else already used this code; show a new one on the other device")]
+    CodeTaken,
     #[error("the live update connection went quiet")]
     Stalled,
     #[error("cancelled")]
@@ -67,6 +77,7 @@ pub struct Client {
     clips_url: Url,
     uploads_url: Url,
     invites_url: Url,
+    rendezvous_url: Url,
     config_url: Url,
     token: Option<String>,
     pairing: Pairing,
@@ -98,6 +109,7 @@ impl Client {
             clips_url: api(&format!("channels/{}/clips", pairing.channel_id))?,
             uploads_url: api(&format!("channels/{}/uploads", pairing.channel_id))?,
             invites_url: api(&format!("channels/{}/invites", pairing.channel_id))?,
+            rendezvous_url: api(&format!("channels/{}/rendezvous", pairing.channel_id))?,
             config_url: api("config")?,
             token: token.filter(|t| !t.is_empty()),
             pairing,
@@ -230,6 +242,19 @@ impl Client {
         }
     }
 
+    /// Takes an unused invite back. Returns whether it was still there.
+    pub async fn revoke_invite(&self, slot: &InviteSlot) -> Result<bool> {
+        let mut url = self.invites_url.clone();
+        url.path_segments_mut()
+            .expect("http(s) URLs have path segments")
+            .push(&slot.to_string());
+        match self.send(self.http.delete(url)).await {
+            Ok(_) => Ok(true),
+            Err(Error::Server { status: 404, .. }) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     fn clip_url(&self, id: &str) -> Url {
         let mut url = self.clips_url.clone();
         url.path_segments_mut()
@@ -263,6 +288,17 @@ impl Client {
 /// Takes the invite behind `secret` from `relay`, which hands it out once:
 /// `None` if it was taken already, expired or never existed.
 pub async fn take_invite(relay: &str, secret: &InviteSecret) -> Result<Option<Invite>> {
+    let url = relay_url(relay, &format!("invites/{}", secret.slot()))?;
+    let res = match checked(open_http()?.get(url).send().await?).await {
+        Ok(res) => res,
+        Err(Error::Server { status: 404, .. }) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    Ok(Some(secret.open(&res.bytes().await?)?))
+}
+
+/// `{relay}/api/v1/{path}`.
+fn relay_url(relay: &str, path: &str) -> Result<Url> {
     let base = Url::parse(relay).map_err(|e| Error::InvalidUrl(e.to_string()))?;
     if !matches!(base.scheme(), "http" | "https") {
         return Err(Error::InvalidUrl(
@@ -270,19 +306,17 @@ pub async fn take_invite(relay: &str, secret: &InviteSecret) -> Result<Option<In
         ));
     }
     let base = base.as_str().trim_end_matches('/');
-    let url = Url::parse(&format!("{base}/api/v1/invites/{}", secret.slot()))
-        .map_err(|e| Error::InvalidUrl(e.to_string()))?;
-    let http = reqwest::Client::builder()
+    Url::parse(&format!("{base}/api/v1/{path}")).map_err(|e| Error::InvalidUrl(e.to_string()))
+}
+
+/// For requests before this device is in the space, which need no token.
+/// Long enough for the relay's 25 s waits.
+fn open_http() -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
         .user_agent(concat!("yacs/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .build()?;
-    let res = match checked(http.get(url).send().await?).await {
-        Ok(res) => res,
-        Err(Error::Server { status: 404, .. }) => return Ok(None),
-        Err(e) => return Err(e),
-    };
-    Ok(Some(secret.open(&res.bytes().await?)?))
+        .timeout(Duration::from_secs(40))
+        .build()?)
 }
 
 /// The response if it succeeded, the relay's error otherwise.

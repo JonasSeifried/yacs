@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
-use yacs_client::spaces::{DEFAULT_SPACE_NAME, Link, Space};
+use yacs_client::spaces::{Accepted, DEFAULT_SPACE_NAME, Link, Space, clean_name};
 use yacs_client::{Client, LocalFiles, stream_of};
 use yacs_core::api::{ClipMeta, ServerConfig};
 use yacs_core::{Clip, ClipItem, Pairing, Stream, StreamFile};
@@ -19,7 +19,7 @@ use crate::clips::{self, ClipView, Entry};
 use crate::state::{AppState, client_for};
 use crate::transfers::{self, Direction, FolderSink, Transfer, Transfers};
 use crate::update::{self, Updates};
-use crate::{cli, clipboard, hotkey, live, pairing, windows};
+use crate::{cli, clipboard, codes, hotkey, live, pairing, windows};
 
 type CmdResult<T> = Result<T, String>;
 
@@ -96,14 +96,38 @@ pub async fn create_space(
     use_space(&app, &state, space, connected)
 }
 
-/// Join the space in an invite link from another device, once its relay
-/// accepts it. Nothing is saved if that fails.
+/// Join the space in an invite link, or behind a code (on `relay`), from
+/// another device, once its relay accepts it. Nothing is saved if that fails.
 #[tauri::command]
-pub async fn join_space(app: AppHandle, state: State<'_, AppState>, link: String) -> CmdResult<()> {
-    let link = Link::parse(&link).map_err(|e| {
-        format!("{e}. Copy one on a computer in the space from Settings → Invite a device…")
-    })?;
-    let joining = link.accept().await.map_err(|e| e.to_string())?;
+pub async fn join_space(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    link: String,
+    relay: Option<String>,
+) -> CmdResult<()> {
+    let joining = if yacs_core::looks_like_code(&link) {
+        let code: yacs_core::Code = link.parse().map_err(|e: yacs_core::Error| e.to_string())?;
+        let relay = relay
+            .map(|r| r.trim().to_owned())
+            .filter(|r| !r.is_empty())
+            .ok_or("enter the relay's URL: the other device shows it under the code")?;
+        let device_name = state.settings().device_name.clone();
+        let invite = yacs_client::join_with_code(&relay, &code, &device_name)
+            .await
+            .map_err(|e| e.to_string())?;
+        Accepted {
+            relay,
+            pairing: invite.pairing(),
+            token: invite.token.clone(),
+            name: clean_name(&invite.space_name),
+            inviter: clean_name(&invite.inviter),
+        }
+    } else {
+        let link = Link::parse(&link).map_err(|e| {
+            format!("{e}. Copy one on a computer in the space from Settings → Invite a device…")
+        })?;
+        link.accept().await.map_err(|e| e.to_string())?
+    };
     let connected = pairing::connect(
         &joining.relay,
         joining.token.as_deref(),
@@ -122,6 +146,7 @@ fn use_space(
     connected: pairing::Connected,
 ) -> CmdResult<()> {
     app.state::<Transfers>().cancel();
+    codes::stop(app);
     {
         let mut spaces = state.spaces();
         let mut next = spaces.clone();
@@ -165,6 +190,7 @@ pub fn leave_space(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> 
         client_for(&spaces)
     };
     app.state::<Transfers>().cancel();
+    codes::stop(&app);
     state.set_client(client);
     live::restart(&app);
     let _ = app.emit(windows::EVENT_STATUS_CHANGED, ());
@@ -588,6 +614,29 @@ pub async fn invite(state: State<'_, AppState>) -> CmdResult<Invite> {
         warning: link.warning,
         slot: secret.slot().to_string(),
     })
+}
+
+/// Takes back an invite nobody got the link of, e.g. when the panel closes.
+#[tauri::command]
+pub async fn revoke_invite(state: State<'_, AppState>, slot: String) -> CmdResult<()> {
+    let slot: yacs_core::InviteSlot = slot.parse().map_err(|e: yacs_core::Error| e.to_string())?;
+    client(&state)?
+        .revoke_invite(&slot)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Shows codes in the Invite panel until one is used or `stop_code`; they
+/// arrive as `invite-code` events.
+#[tauri::command]
+pub fn start_code(app: AppHandle) -> CmdResult<()> {
+    codes::start(&app)
+}
+
+#[tauri::command]
+pub fn stop_code(app: AppHandle) {
+    codes::stop(&app);
 }
 
 /// Puts `yacs` on the PATH and, if this computer is in a space, adds the

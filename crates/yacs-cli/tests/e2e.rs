@@ -533,3 +533,104 @@ async fn client_hears_about_new_clips_right_away() {
     let (_, Payload::Clip(received)) = client.get(&clip.id).await.unwrap().unwrap();
     assert_eq!(received.items, [ClipItem::Text("live".into())]);
 }
+
+/// `yacs invite --code` in the background: returns it and a reader for the
+/// codes it prints, one per line.
+fn invite_with_codes(
+    relay: &Relay,
+) -> (
+    std::process::Child,
+    std::io::Lines<std::io::BufReader<std::process::ChildStdout>>,
+) {
+    use std::io::BufRead;
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_yacs"))
+        .env_clear()
+        .env("YACS_CONFIG", relay.home.path().join("cli.json"))
+        .env("YACS_DEVICE_NAME", "inviter")
+        .args(["invite", "--code"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let lines = std::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    (child, lines)
+}
+
+#[test]
+fn joins_by_typing_a_code() {
+    let relay = relay(&["--access-token", "s3cret"]);
+    saved(&relay, &["space", "new", "--name", "Lab"])
+        .env("YACS_SERVER", &relay.url)
+        .env("YACS_TOKEN", "s3cret")
+        .assert()
+        .success();
+    saved(&relay, &["send", "-t", "typed"]).assert().success();
+
+    let (inviter, mut codes) = invite_with_codes(&relay);
+    let code = codes.next().unwrap().unwrap();
+    assert!(code.split('-').count() == 3, "{code}");
+
+    let other = TempDir::new().unwrap();
+    let joined = saved(&relay, &["join"])
+        .env("YACS_CONFIG", other.path().join("cli.json"))
+        .env("YACS_SERVER", &relay.url)
+        .write_stdin(format!("{}\n", code.replace('-', " ").to_uppercase()))
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    let joined = String::from_utf8(joined).unwrap();
+    assert!(joined.contains("Joined \"Lab\""), "{joined}");
+    assert!(joined.contains("invited by inviter"), "{joined}");
+
+    // The inviter is done, and the other machine got the token too.
+    let out = inviter.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let said = String::from_utf8(out.stderr).unwrap();
+    assert!(said.contains("e2e joined \"Lab\""), "{said}");
+    let mut recv = saved(&relay, &["recv"]);
+    recv.env("YACS_CONFIG", other.path().join("cli.json"));
+    assert_eq!(stdout(&mut recv), "typed");
+}
+
+#[test]
+fn a_wrong_code_is_used_up_and_replaced() {
+    let relay = relay(&[]);
+    saved(&relay, &["space", "new"])
+        .env("YACS_SERVER", &relay.url)
+        .assert()
+        .success();
+    let (mut inviter, mut codes) = invite_with_codes(&relay);
+    let code = codes.next().unwrap().unwrap();
+    let nameplate = code.split('-').next().unwrap();
+    let wrong = format!("{nameplate}-acid-acorn");
+    let wrong = if wrong == code {
+        format!("{nameplate}-acid-acre")
+    } else {
+        wrong
+    };
+
+    let other = TempDir::new().unwrap();
+    let join = |input: String| {
+        let mut cmd = saved(&relay, &["join"]);
+        cmd.env("YACS_CONFIG", other.path().join("cli.json"))
+            .env("YACS_SERVER", &relay.url)
+            .write_stdin(input);
+        cmd
+    };
+    let err = stderr_of_failure(&mut join(wrong));
+    assert!(err.contains("didn't work"), "{err}");
+    // The right words are no good anymore either: that code is gone, and
+    // its number isn't handed out again for a while.
+    let err = stderr_of_failure(&mut join(code.clone()));
+    assert!(err.contains("no code like that"), "{err}");
+
+    let fresh = codes.next().unwrap().unwrap();
+    assert_ne!(fresh, code);
+    join(fresh).assert().success();
+    assert!(inviter.wait().unwrap().success());
+
+    let err = stderr_of_failure(&mut join("7-notaword-acid".into()));
+    assert!(err.contains("isn't an invite code"), "{err}");
+}

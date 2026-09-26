@@ -8,7 +8,14 @@
 
 export type InviteLink =
   | { kind: "invite"; secret: string }
-  | { kind: "space"; secret: string; token: string | null; name: string | null };
+  | { kind: "space"; secret: string; token: string | null; name: string | null }
+  /** Typed rather than a link: `7-tulip-apple`, shown by a device in the space. */
+  | { kind: "code"; code: string };
+
+/** A code rather than a link: it starts with its number. */
+export function looksLikeCode(text: string): boolean {
+  return /^\s*\d/.test(text) && !text.includes("://");
+}
 
 export function parseInviteLink(hash: string): InviteLink | null {
   const params = new URLSearchParams(hash.replace(/^#/, ""));

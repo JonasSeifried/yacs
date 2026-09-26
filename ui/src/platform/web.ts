@@ -3,7 +3,7 @@
 // Spaces are kept in localStorage; the page's CSP allows no third-party
 // scripts that could read them.
 
-import init, { Pairing, inviteSlot, newStream, openInvite } from "../wasm/yacs";
+import init, { CodeJoiner, Pairing, inviteSlot, newStream, openInvite } from "../wasm/yacs";
 import type { DownloadMessage, DownloadMode, DownloadRequest } from "../mobile/download.worker";
 import { OPFS_DIR } from "../mobile/download.worker";
 import { isIos } from "../mobile/link";
@@ -132,6 +132,41 @@ export async function takeInvite(secret: string): Promise<TakenInvite> {
     throw new Error("This invite was already used or has expired. Make a new one on the other device (Settings → Invite a device).");
   }
   return openInvite(secret, new Uint8Array(await res.arrayBuffer())) as TakenInvite;
+}
+
+/**
+ * Types `code` (shown by a device in the space) into the relay's rendezvous
+ * and returns the invite. Waits while the other device answers.
+ */
+export async function joinWithCode(code: string, deviceName: string): Promise<TakenInvite> {
+  await ready();
+  const joiner = new CodeJoiner(code.trim());
+  try {
+    const base = `${API}/rendezvous/${joiner.nameplate}`;
+    /** A message the other device leaves, or null once the rendezvous is gone. */
+    const read = async (path: string) => {
+      for (;;) {
+        const res = await relayRequest(`${base}/${path}?wait=25`, null, {}, [204, 404]);
+        if (res.status === 404) return null;
+        if (res.status === 200) return new Uint8Array(await res.arrayBuffer());
+      }
+    };
+    const message = await read("a/0");
+    if (!message) throw new Error("No code like that is open. Check the number, or show a new code on the other device.");
+    const answer = joiner.answer(message, deviceName) as Uint8Array<ArrayBuffer>;
+    const put = await relayRequest(`${base}/b/0`, null, { method: "PUT", body: answer }, [404, 409]);
+    if (put.status === 409) throw new Error("Someone else already used this code. Show a new one on the other device.");
+    if (put.status === 404) throw new Error("That code expired. Show a new one on the other device.");
+    const sealed = await read("a/1");
+    try {
+      if (sealed) return joiner.openInvite(sealed) as TakenInvite;
+    } catch {
+      // Falls through: the code was wrong.
+    }
+    throw new Error("That code didn't work. Check it and try again with the new code the other device shows.");
+  } finally {
+    joiner.free();
+  }
 }
 
 export function renameSpace(stored: Stored, name: string): Stored {

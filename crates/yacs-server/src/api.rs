@@ -17,17 +17,19 @@ use tracing::Level;
 use ulid::Ulid;
 use yacs_core::api::{
     ChannelEvent, ChunkedConfig, ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody, HEADER_CHUNKED,
-    HEADER_CLIP_ID, HEADER_CREATED_AT, HEADER_EXPIRES_AT, HEADER_SIZE, ServerConfig, UploadCreated,
-    UploadStatus,
+    HEADER_CLIP_ID, HEADER_CREATED_AT, HEADER_EXPIRES_AT, HEADER_SIZE, RendezvousOpened,
+    ServerConfig, UploadCreated, UploadStatus,
 };
 use yacs_core::{
-    ChannelId, Envelope, InviteSlot, MAX_CHUNK_SIZE, MAX_INVITE_TTL_SECS, MAX_SEALED_INVITE,
+    CODE_TTL_SECS, ChannelId, Envelope, InviteSlot, MAX_CHUNK_SIZE, MAX_INVITE_TTL_SECS,
+    MAX_SEALED_INVITE,
 };
 
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::events::Events;
 use crate::invites::{InviteError, Invites};
+use crate::rendezvous::{MAX_INDEX, MAX_MESSAGE, Rendezvous, RendezvousError, Side};
 use crate::store::{ChunkLayout, IO_BUFFER, PutError, Store, UploadError};
 
 #[derive(Clone)]
@@ -37,6 +39,7 @@ pub struct AppState {
     pub clock: Arc<dyn Clock>,
     pub events: Arc<Events>,
     pub invites: Arc<Invites>,
+    pub rendezvous: Arc<Rendezvous>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -61,6 +64,19 @@ pub fn router(state: AppState) -> Router {
             "/channels/{channel}/invites/{slot}",
             put(create_invite).delete(revoke_invite),
         )
+        .route("/channels/{channel}/rendezvous", post(open_rendezvous))
+        .route(
+            "/channels/{channel}/rendezvous/{nameplate}",
+            axum::routing::delete(close_rendezvous),
+        )
+        .route(
+            "/channels/{channel}/rendezvous/{nameplate}/a/{index}",
+            put(inviter_writes),
+        )
+        .route(
+            "/channels/{channel}/rendezvous/{nameplate}/b/{index}",
+            get(inviter_reads),
+        )
         .route("/channels/{channel}/uploads", post(create_upload))
         .route(
             "/channels/{channel}/uploads/{id}",
@@ -78,7 +94,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token))
         // The invited device has no token yet.
-        .route("/invites/{slot}", get(take_invite));
+        .route("/invites/{slot}", get(take_invite))
+        .route("/rendezvous/{nameplate}/a/{index}", get(joiner_reads))
+        .route("/rendezvous/{nameplate}/b/{index}", put(joiner_writes));
 
     Router::new()
         .nest("/api/v1", api)
@@ -108,6 +126,7 @@ enum ApiError {
     Conflict(&'static str),
     TooManyUploads,
     TooManyInvites,
+    TooManyCodes,
     StorageFull,
     Internal(io::Error),
 }
@@ -130,6 +149,10 @@ impl IntoResponse for ApiError {
             Self::TooManyInvites => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many open invites for this channel",
+            ),
+            Self::TooManyCodes => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many codes open for this channel",
             ),
             Self::StorageFull => (StatusCode::INSUFFICIENT_STORAGE, "server storage is full"),
             Self::Internal(e) => {
@@ -155,6 +178,16 @@ impl From<PutError> for ApiError {
         match e {
             PutError::Full => Self::StorageFull,
             PutError::Io(e) => Self::Internal(e),
+        }
+    }
+}
+
+impl From<RendezvousError> for ApiError {
+    fn from(e: RendezvousError) -> Self {
+        match e {
+            RendezvousError::NotFound => Self::NotFound,
+            RendezvousError::Taken => Self::Conflict("that message was written already"),
+            RendezvousError::TooMany | RendezvousError::Full => Self::TooManyCodes,
         }
     }
 }
@@ -322,6 +355,135 @@ async fn take_invite(
         sealed,
     )
         .into_response())
+}
+
+#[derive(Deserialize)]
+struct WaitQuery {
+    /// Seconds to wait for the message; at most 25.
+    wait: Option<u64>,
+}
+
+fn check_message(body: &[u8]) -> Result<(), ApiError> {
+    if body.is_empty() || body.len() > MAX_MESSAGE {
+        return Err(ApiError::BadRequest("a message is 1 to 4096 bytes"));
+    }
+    Ok(())
+}
+
+fn check_index(index: u8) -> Result<u8, ApiError> {
+    match index <= MAX_INDEX {
+        true => Ok(index),
+        false => Err(ApiError::BadRequest("no such message")),
+    }
+}
+
+async fn open_rendezvous(
+    State(state): State<AppState>,
+    Path(channel): Path<String>,
+    body: Bytes,
+) -> Result<(StatusCode, Json<RendezvousOpened>), ApiError> {
+    let channel = parse_channel(&channel)?;
+    check_message(&body)?;
+    let now = state.clock.now_ms();
+    let nameplate = state
+        .rendezvous
+        .open(channel, body, now, now + CODE_TTL_SECS * 1000)?;
+    Ok((StatusCode::CREATED, Json(RendezvousOpened { nameplate })))
+}
+
+async fn close_rendezvous(
+    State(state): State<AppState>,
+    Path((channel, nameplate)): Path<(String, u16)>,
+) -> Result<StatusCode, ApiError> {
+    let channel = parse_channel(&channel)?;
+    match state
+        .rendezvous
+        .close(&channel, nameplate, state.clock.now_ms())
+    {
+        true => Ok(StatusCode::NO_CONTENT),
+        false => Err(ApiError::NotFound),
+    }
+}
+
+async fn inviter_writes(
+    State(state): State<AppState>,
+    Path((channel, nameplate, index)): Path<(String, u16, u8)>,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    let channel = parse_channel(&channel)?;
+    check_message(&body)?;
+    let now = state.clock.now_ms();
+    state.rendezvous.put(
+        nameplate,
+        Side::A,
+        check_index(index)?,
+        body,
+        Some(&channel),
+        now,
+    )?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn joiner_writes(
+    State(state): State<AppState>,
+    Path((nameplate, index)): Path<(u16, u8)>,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    check_message(&body)?;
+    let now = state.clock.now_ms();
+    state
+        .rendezvous
+        .put(nameplate, Side::B, check_index(index)?, body, None, now)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn inviter_reads(
+    State(state): State<AppState>,
+    Path((channel, nameplate, index)): Path<(String, u16, u8)>,
+    Query(query): Query<WaitQuery>,
+) -> Result<Response, ApiError> {
+    let channel = parse_channel(&channel)?;
+    let index = check_index(index)?;
+    read_message(&state, nameplate, Side::B, index, Some(&channel), query).await
+}
+
+async fn joiner_reads(
+    State(state): State<AppState>,
+    Path((nameplate, index)): Path<(u16, u8)>,
+    Query(query): Query<WaitQuery>,
+) -> Result<Response, ApiError> {
+    let index = check_index(index)?;
+    read_message(&state, nameplate, Side::A, index, None, query).await
+}
+
+async fn read_message(
+    state: &AppState,
+    nameplate: u16,
+    side: Side,
+    index: u8,
+    channel: Option<&ChannelId>,
+    query: WaitQuery,
+) -> Result<Response, ApiError> {
+    let wait = std::time::Duration::from_secs(query.wait.unwrap_or(25));
+    let clock = state.clock.clone();
+    let message = state
+        .rendezvous
+        .read(nameplate, side, index, channel, || clock.now_ms(), wait)
+        .await?;
+    Ok(match message {
+        Some(message) => (
+            [
+                (
+                    header::CONTENT_TYPE,
+                    HeaderValue::from_static(ENVELOPE_CONTENT_TYPE),
+                ),
+                (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            ],
+            message,
+        )
+            .into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    })
 }
 
 #[derive(Deserialize)]

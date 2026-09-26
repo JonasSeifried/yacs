@@ -7,6 +7,8 @@ pub enum Error {
     InvalidSecret,
     #[error("invalid invite")]
     InvalidInvite,
+    #[error("that isn't an invite code (like 7-tulip-apple)")]
+    InvalidCode,
     #[error("envelope is too short")]
     Truncated,
     #[error("unsupported protocol version {0}")]

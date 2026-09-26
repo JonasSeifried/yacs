@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inviteLinkFromCode, inviteUrl, parseInviteLink } from "./link";
+import { inviteLinkFromCode, inviteUrl, looksLikeCode, parseInviteLink } from "./link";
 
 describe("parseInviteLink", () => {
   it("reads one-time invites", () => {
@@ -47,5 +47,14 @@ describe("inviteUrl", () => {
     expect(url).toBe("https://clip.example.com/#join=v2.abc");
     expect(inviteLinkFromCode(url, "https://clip.example.com")).toEqual({ kind: "invite", secret: "v2.abc" });
     expect(inviteUrl("v2.abc", "https://c.example/yacs/")).toBe("https://c.example/yacs/#join=v2.abc");
+  });
+});
+
+describe("looksLikeCode", () => {
+  it("tells codes from links", () => {
+    expect(looksLikeCode(" 7-tulip-apple")).toBe(true);
+    expect(looksLikeCode("12 tulip apple")).toBe(true);
+    expect(looksLikeCode("https://clip.example.com/#join=v2.abc")).toBe(false);
+    expect(looksLikeCode("tulip")).toBe(false);
   });
 });

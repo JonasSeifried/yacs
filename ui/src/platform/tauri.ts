@@ -1,12 +1,12 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { TransferChanged } from "../shared/types";
+import type { CodeEvent, TransferChanged } from "../shared/types";
 import type { Platform } from ".";
 
 export const tauriPlatform: Platform = {
   status: () => invoke("status"),
   createSpace: (serverUrl, token, name) => invoke("create_space", { serverUrl, token, name }),
-  joinSpace: (link) => invoke("join_space", { link }),
+  joinSpace: (link, relay) => invoke("join_space", { link, relay }),
   renameSpace: (name) => invoke("rename_space", { name }),
   leaveSpace: () => invoke("leave_space"),
   savePreferences: (preferences) => invoke("save_preferences", { preferences }),
@@ -28,6 +28,9 @@ export const tauriPlatform: Platform = {
   deleteClip: (id) => invoke("delete_clip", { id }),
   setDefaultTtl: (ttlSecs) => invoke("set_default_ttl", { ttlSecs }),
   invite: () => invoke("invite"),
+  revokeInvite: (slot) => invoke("revoke_invite", { slot }),
+  startCode: () => invoke("start_code"),
+  stopCode: () => invoke("stop_code"),
   installCli: () => invoke("install_cli"),
   uninstallCli: () => invoke("uninstall_cli"),
   checkUpdate: () => invoke("check_update"),
@@ -42,5 +45,6 @@ export const tauriPlatform: Platform = {
   onSettingsShown: (handler) => listen("settings-shown", handler),
   onClipsChanged: (handler) => listen("clips-changed", handler),
   onInviteUsed: (handler) => listen<string>("invite-used", (e) => handler(e.payload)),
+  onInviteCode: (handler) => listen<CodeEvent>("invite-code", (e) => handler(e.payload)),
   onTransferChanged: (handler) => listen<TransferChanged>("transfer-changed", (e) => handler(e.payload)),
 };

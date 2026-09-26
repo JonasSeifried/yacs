@@ -8,8 +8,8 @@
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use yacs_core::{
-    Clip, ClipItem, Envelope, Image, Invite, InviteSecret, MIN_CHUNK_SIZE, Pairing, Payload,
-    Stream, StreamFile,
+    Clip, ClipItem, Code, CodeInviter, CodeJoiner, Envelope, Image, Invite, InviteSecret,
+    MIN_CHUNK_SIZE, Pairing, Payload, Stream, StreamFile,
 };
 
 /// What Argon2id made of three phrases up to 0.3 ("correct horse battery
@@ -132,7 +132,29 @@ fn main() {
     })
     .collect();
 
+    // SPAKE2 with fixed RNGs: the messages must come out exactly like this;
+    // the sealed parts only have to open.
+    let code: Code = "7-tulip-apple".parse().unwrap();
+    let invite = Invite::new("Anna & me", "MacBook", Some("s3cret"), pairing);
+    let (inviter, message) = CodeInviter::start_with_rng(&code, Counter(1));
+    let joiner = CodeJoiner::start_with_rng(&code, Counter(101));
+    let (answer, _) = joiner.answer(&message, "Anna's iPhone").unwrap();
+    let (_, key) = inviter.finish(code.nameplate(), &answer).unwrap();
+    let codes = [json!({
+        "code": code.to_string(),
+        "inviter_rng": 1,
+        "joiner_rng": 101,
+        "message": hex::encode(&message),
+        "answer": hex::encode(&answer),
+        "device_name": "Anna's iPhone",
+        "sealed_invite": hex::encode(key.seal_invite(&invite).unwrap()),
+        "space_name": invite.space_name,
+        "channel_id": pairing.channel_id.to_string(),
+        "key": hex::encode(pairing.key.as_bytes()),
+    })];
+
     let vectors = json!({
+        "codes": codes,
         "invites": invites,
         "version": yacs_core::PROTOCOL_VERSION,
         "roots": roots,
@@ -145,3 +167,32 @@ fn main() {
 fn stream_plaintext(len: u64) -> Vec<u8> {
     (0..len).map(|i| (i * 31 % 251) as u8).collect()
 }
+
+/// A fixed "random" byte stream, so SPAKE2 messages come out the same everywhere.
+struct Counter(u8);
+
+impl rand_core::TryRng for Counter {
+    type Error = core::convert::Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Self::Error> {
+        let mut bytes = [0; 4];
+        self.try_fill_bytes(&mut bytes)?;
+        Ok(u32::from_le_bytes(bytes))
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Self::Error> {
+        let mut bytes = [0; 8];
+        self.try_fill_bytes(&mut bytes)?;
+        Ok(u64::from_le_bytes(bytes))
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Self::Error> {
+        for byte in dst {
+            *byte = self.0;
+            self.0 = self.0.wrapping_add(1);
+        }
+        Ok(())
+    }
+}
+
+impl rand_core::TryCryptoRng for Counter {}

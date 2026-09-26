@@ -1,4 +1,18 @@
 {
+  "codes": [
+    {
+      "answer": "215369580d691b83f9682a1cdec290f8a3d867c16a6703ceda694528a7af0129650701c367617a1dae2cab3b909f44e6a262184e1ad3ec44d2ba1ee1dbfecf88f4858418b9d032ba9da5544b73b41cfd820b6d9b60bb6c90",
+      "channel_id": "sD92fYor09GumXgF4Jf80RRCMM5QTU78Ko0ipESaWYo",
+      "code": "7-tulip-apple",
+      "device_name": "Anna's iPhone",
+      "inviter_rng": 1,
+      "joiner_rng": 101,
+      "key": "42b889c18c87629dd1b8c73347800946d95000101c807155a05c5fd4f5be99fc",
+      "message": "5333bc8c8cf52cb405a93da0bff3bc36636ddcbf23b2a2ff2ecaa44d89be457832",
+      "sealed_invite": "0164b8b8c94a8642d2ec5991185b9146535074d631f4b6ed518952f63695da08780db319c3f950385e6aae6b5af41da6f14b975a6c2fb15255b6291641a503c202470e28a8116304dcddf07763f0f6cc8166207d6b060160a921af38a27852b39bb3151bd728580a167734567438866b6306e4a1f3dc6d391b4405fc6d46eb090c3ab1",
+      "space_name": "Anna & me"
+    }
+  ],
   "envelopes": [
     {
       "channel_id": "sD92fYor09GumXgF4Jf80RRCMM5QTU78Ko0ipESaWYo",
