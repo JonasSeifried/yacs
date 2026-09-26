@@ -39,9 +39,37 @@ pub struct Config {
     #[arg(long, env = "YACS_MAX_DISK", default_value = "25GB")]
     pub max_disk: ByteSize,
 
-    /// If set, clients must send `Authorization: Bearer <token>`.
+    /// The relay owner's account key. Creating a space needs it (unless the
+    /// relay is public); joining one doesn't. Spaces created with it get only
+    /// the limits above.
     #[arg(long, env = "YACS_ACCESS_TOKEN", hide_env_values = true)]
     pub access_token: Option<String>,
+
+    /// Let anyone create spaces, on the free plan below. Run it behind a
+    /// reverse proxy that sets `X-Forwarded-For` to the client's address.
+    #[arg(long, env = "YACS_PUBLIC", value_parser = clap::builder::BoolishValueParser::new())]
+    pub public: bool,
+
+    /// Free plan: largest clip, chunks included.
+    #[arg(long, env = "YACS_FREE_MAX_SIZE", default_value = "10MB")]
+    pub free_max_size: ByteSize,
+
+    /// Free plan: longest TTL.
+    #[arg(long, env = "YACS_FREE_MAX_TTL", default_value = "1h", value_parser = humantime::parse_duration)]
+    pub free_max_ttl: Duration,
+
+    /// Free plan: bytes a space may upload and download per day.
+    #[arg(long, env = "YACS_FREE_DAILY_TRANSFER", default_value = "500MB")]
+    pub free_daily_transfer: ByteSize,
+
+    /// Public relay: new spaces one IP address may create per day.
+    #[arg(long, env = "YACS_NEW_SPACES_PER_IP", default_value_t = 10)]
+    pub new_spaces_per_ip: u32,
+
+    /// Public relay: API requests per minute from one IP address, in bursts
+    /// of up to a fifth of it.
+    #[arg(long, env = "YACS_REQUESTS_PER_MINUTE", default_value_t = 600)]
+    pub requests_per_minute: u32,
 }
 
 impl Config {
@@ -70,6 +98,14 @@ impl Config {
         {
             self.access_token = None;
         }
+        if self.public {
+            if self.free_max_ttl.is_zero() {
+                return Err("the free plan's TTL must be greater than zero".into());
+            }
+            if self.requests_per_minute == 0 {
+                return Err("requests per minute must be at least 1".into());
+            }
+        }
         Ok(self)
     }
 }
@@ -92,6 +128,10 @@ mod tests {
         assert_eq!(c.max_clips_per_channel, 50);
         assert_eq!(c.max_disk, ByteSize::gb(25));
         assert_eq!(c.access_token, None);
+        assert!(!c.public);
+        assert_eq!(c.free_max_size, ByteSize::mb(10));
+        assert_eq!(c.free_max_ttl, Duration::from_secs(3600));
+        assert_eq!(c.free_daily_transfer, ByteSize::mb(500));
     }
 
     #[test]

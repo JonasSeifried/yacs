@@ -52,6 +52,51 @@ pub struct ServerConfig {
     /// Set when the relay takes big files as chunks (0.3.0 and later).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chunked: Option<ChunkedConfig>,
+    /// Set when the relay registers spaces (0.5.0 and later): joining a
+    /// space then needs no account key, and each space has its limits at
+    /// `GET …/channels/{channel}/limits` ([`SpaceLimits`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accounts: Option<AccountsConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountsConfig {
+    /// Anyone may create a space, on the free plan. Otherwise creating one
+    /// takes the relay's account key.
+    pub public: bool,
+}
+
+/// Which limits a space gets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Plan {
+    /// The public relay's plan for everyone.
+    Free,
+    /// Only the relay's own limits: spaces of its owner, and every space on
+    /// a relay without accounts.
+    Unlimited,
+    /// A plan from a newer relay.
+    #[serde(other)]
+    Other,
+}
+
+/// `GET /api/v1/channels/{channel}/limits`: what this space may do, so apps
+/// offer only TTLs and files that fit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpaceLimits {
+    pub plan: Plan,
+    pub default_ttl_secs: u64,
+    pub max_ttl_secs: u64,
+    /// Largest clip, chunks included. `None`: only the relay's disk limits it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_clip_bytes: Option<u64>,
+    /// Bytes the space may send and receive per day (UTC), uploads and
+    /// downloads together. `None`: no daily limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub daily_transfer_bytes: Option<u64>,
+    /// Of `daily_transfer_bytes`, used today.
+    pub transfer_used_bytes: u64,
+    pub max_clips: usize,
 }
 
 impl ServerConfig {

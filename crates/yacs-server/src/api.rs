@@ -2,7 +2,9 @@ use std::io;
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{DefaultBodyLimit, MatchedPath, Path, Query, Request, State};
+use axum::extract::{
+    DefaultBodyLimit, Extension, MatchedPath, Path, Query, RawPathParams, Request, State,
+};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -16,15 +18,17 @@ use tower_http::trace::{DefaultOnResponse, TraceLayer};
 use tracing::Level;
 use ulid::Ulid;
 use yacs_core::api::{
-    ChannelEvent, ChunkedConfig, ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody, HEADER_CHUNKED,
-    HEADER_CLIP_ID, HEADER_CREATED_AT, HEADER_EXPIRES_AT, HEADER_SIZE, RendezvousOpened,
-    ServerConfig, UploadCreated, UploadStatus,
+    AccountsConfig, ChannelEvent, ChunkedConfig, ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody,
+    HEADER_CHUNKED, HEADER_CLIP_ID, HEADER_CREATED_AT, HEADER_EXPIRES_AT, HEADER_SIZE,
+    RendezvousOpened, ServerConfig, SpaceLimits, UploadCreated, UploadStatus,
 };
 use yacs_core::{
     CODE_TTL_SECS, ChannelId, Envelope, InviteSlot, MAX_CHUNK_SIZE, MAX_INVITE_TTL_SECS,
     MAX_SEALED_INVITE,
 };
 
+use crate::accounts::{Accounts, Limits, Refusal};
+use crate::clients::{RateLimiter, client_ip};
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::events::Events;
@@ -40,12 +44,14 @@ pub struct AppState {
     pub events: Arc<Events>,
     pub invites: Arc<Invites>,
     pub rendezvous: Arc<Rendezvous>,
+    pub accounts: Arc<Accounts>,
+    pub limiter: Arc<RateLimiter>,
 }
 
 pub fn router(state: AppState) -> Router {
     let max_size = state.config.max_size.as_u64() as usize;
     let api = Router::new()
-        .route("/config", get(server_config))
+        .route("/channels/{channel}/limits", get(limits))
         .route(
             "/channels/{channel}/clips",
             get(list).post(create).delete(clear),
@@ -92,11 +98,13 @@ pub fn router(state: AppState) -> Router {
             "/channels/{channel}/uploads/{id}/chunks/{index}",
             put(put_chunk).layer(DefaultBodyLimit::disable()),
         )
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_token))
-        // The invited device has no token yet.
+        .route_layer(middleware::from_fn_with_state(state.clone(), authorize))
+        .route("/config", get(server_config))
+        // The invited device isn't in the space yet.
         .route("/invites/{slot}", get(take_invite))
         .route("/rendezvous/{nameplate}/a/{index}", get(joiner_reads))
-        .route("/rendezvous/{nameplate}/b/{index}", put(joiner_writes));
+        .route("/rendezvous/{nameplate}/b/{index}", put(joiner_writes))
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit));
 
     Router::new()
         .nest("/api/v1", api)
@@ -123,6 +131,11 @@ enum ApiError {
     Unauthorized,
     NotFound,
     TooLarge,
+    /// Over the space's plan.
+    OverPlan(String),
+    TransferUsed,
+    TooManySpaces,
+    RateLimited,
     Conflict(&'static str),
     TooManyUploads,
     TooManyInvites,
@@ -135,11 +148,33 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
             Self::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
-            Self::Unauthorized => (StatusCode::UNAUTHORIZED, "missing or wrong access token"),
+            Self::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "this relay needs its account key to create a space",
+            ),
             Self::NotFound => (StatusCode::NOT_FOUND, "not found"),
             Self::TooLarge => (
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "chunk is larger than announced",
+            ),
+            Self::OverPlan(msg) => {
+                return (
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    Json(ErrorBody { error: msg }),
+                )
+                    .into_response();
+            }
+            Self::TransferUsed => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "this space used up today's transfer; it starts over at midnight UTC",
+            ),
+            Self::TooManySpaces => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many new spaces from your address today; try again tomorrow",
+            ),
+            Self::RateLimited => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many requests; slow down",
             ),
             Self::Conflict(msg) => (StatusCode::CONFLICT, msg),
             Self::TooManyUploads => (
@@ -221,28 +256,99 @@ fn parse_id(s: &str) -> Result<Ulid, ApiError> {
         .map_err(|_| ApiError::BadRequest("invalid clip id"))
 }
 
-async fn require_token(
+/// Resolves the space's account, registering the space if it's new, and
+/// hands its [`Limits`] to the handler.
+async fn authorize(
+    State(state): State<AppState>,
+    params: RawPathParams,
+    mut req: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let channel = params
+        .iter()
+        .find(|(name, _)| *name == "channel")
+        .map(|(_, value)| parse_channel(value))
+        .expect("authorize only guards routes under a channel")?;
+    let key = bearer(req.headers());
+    let config = &state.config;
+    let account = state
+        .accounts
+        .authorize(config, &channel, key, client_ip(&req), state.clock.now_ms())
+        .await
+        .map_err(|refusal| match refusal {
+            Refusal::Unauthorized => ApiError::Unauthorized,
+            Refusal::TooManySpaces => ApiError::TooManySpaces,
+        })?;
+    let limits = match account {
+        Some(account) => Limits::of(account, config),
+        None => Limits::unlimited(config),
+    };
+    req.extensions_mut().insert(limits);
+    Ok(next.run(req).await)
+}
+
+/// Per-address request rates, on a public relay only.
+async fn rate_limit(
     State(state): State<AppState>,
     req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if let Some(expected) = &state.config.access_token {
-        let given = req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .unwrap_or("");
-        if !bool::from(given.as_bytes().ct_eq(expected.as_bytes())) {
-            return Err(ApiError::Unauthorized);
-        }
+    if state.config.public && !state.limiter.allow(client_ip(&req), state.clock.now_ms()) {
+        return Err(ApiError::RateLimited);
     }
     Ok(next.run(req).await)
 }
 
-async fn server_config(State(state): State<AppState>) -> Json<ServerConfig> {
+/// Counts `bytes` against the space's daily transfer.
+fn charge(
+    state: &AppState,
+    channel: &ChannelId,
+    limits: &Limits,
+    bytes: u64,
+) -> Result<(), ApiError> {
+    match state
+        .accounts
+        .charge(channel, bytes, limits.daily_transfer, state.clock.now_ms())
+    {
+        true => Ok(()),
+        false => Err(ApiError::TransferUsed),
+    }
+}
+
+/// Refuses clips bigger than the space's plan allows.
+fn check_clip_size(limits: &Limits, bytes: u64) -> Result<(), ApiError> {
+    match limits.max_clip_bytes {
+        Some(max) if bytes > max => Err(ApiError::OverPlan(format!(
+            "too large for this space: at most {}",
+            bytesize::ByteSize::b(max).display().si()
+        ))),
+        _ => Ok(()),
+    }
+}
+
+async fn limits(
+    State(state): State<AppState>,
+    Path(channel): Path<String>,
+    Extension(limits): Extension<Limits>,
+) -> Result<Json<SpaceLimits>, ApiError> {
+    let channel = parse_channel(&channel)?;
+    let used = state.accounts.transferred(&channel, state.clock.now_ms());
+    Ok(Json(limits.report(used)))
+}
+
+/// Open to all: devices joining a space have no key. A wrong key is still
+/// refused, so apps can check one here.
+async fn server_config(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<ServerConfig>, ApiError> {
     let c = &state.config;
-    Json(ServerConfig {
+    if let (Some(given), Some(expected)) = (bearer(&headers), &c.access_token) {
+        if !bool::from(given.as_bytes().ct_eq(expected.as_bytes())) {
+            return Err(ApiError::Unauthorized);
+        }
+    }
+    Ok(Json(ServerConfig {
         default_ttl_secs: c.default_ttl.as_secs(),
         max_ttl_secs: c.max_ttl.as_secs(),
         max_size_bytes: c.max_size.as_u64(),
@@ -251,7 +357,16 @@ async fn server_config(State(state): State<AppState>) -> Json<ServerConfig> {
         chunked: Some(ChunkedConfig {
             max_chunk_bytes: u64::from(MAX_CHUNK_SIZE),
         }),
-    })
+        accounts: Some(AccountsConfig { public: c.public }),
+    }))
+}
+
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .filter(|v| !v.is_empty())
 }
 
 #[derive(Deserialize)]
@@ -264,11 +379,14 @@ async fn create(
     State(state): State<AppState>,
     Path(channel): Path<String>,
     Query(query): Query<CreateQuery>,
+    Extension(limits): Extension<Limits>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<ClipMeta>), ApiError> {
     let channel = parse_channel(&channel)?;
     check_envelope(&body)?;
-    let ttl_ms = ttl_ms(&state.config, query.ttl)?;
+    let ttl_ms = ttl_ms(&limits, query.ttl)?;
+    check_clip_size(&limits, body.len() as u64)?;
+    charge(&state, &channel, &limits, body.len() as u64)?;
     let now = state.clock.now_ms();
     let meta = state.store.put(&channel, &body, now, now + ttl_ms).await?;
     state
@@ -283,13 +401,11 @@ fn check_envelope(body: &[u8]) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn ttl_ms(config: &Config, ttl_secs: Option<u64>) -> Result<u64, ApiError> {
+fn ttl_ms(limits: &Limits, ttl_secs: Option<u64>) -> Result<u64, ApiError> {
     Ok(match ttl_secs {
-        None => config.default_ttl.as_millis() as u64,
+        None => limits.default_ttl_ms,
         Some(0) => return Err(ApiError::BadRequest("ttl must be greater than zero")),
-        Some(secs) => secs
-            .saturating_mul(1000)
-            .min(config.max_ttl.as_millis() as u64),
+        Some(secs) => secs.saturating_mul(1000).min(limits.max_ttl_ms),
     })
 }
 
@@ -499,12 +615,16 @@ async fn create_upload(
     State(state): State<AppState>,
     Path(channel): Path<String>,
     Query(query): Query<UploadQuery>,
+    Extension(limits): Extension<Limits>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<UploadCreated>), ApiError> {
     let channel = parse_channel(&channel)?;
     check_envelope(&body)?;
-    let ttl_ms = ttl_ms(&state.config, query.ttl)?;
+    let ttl_ms = ttl_ms(&limits, query.ttl)?;
     let layout = ChunkLayout::new(query.length, query.chunk_size).map_err(ApiError::BadRequest)?;
+    let size = (body.len() as u64).saturating_add(query.length);
+    check_clip_size(&limits, size)?;
+    charge(&state, &channel, &limits, size)?;
     let id = state
         .store
         .create_upload(&channel, &body, layout, ttl_ms, state.clock.now_ms())
@@ -570,6 +690,7 @@ async fn abort_upload(
 async fn get_chunk(
     State(state): State<AppState>,
     Path((channel, id, index)): Path<(String, String, u64)>,
+    Extension(limits): Extension<Limits>,
 ) -> Result<Response, ApiError> {
     let (channel, id) = (parse_channel(&channel)?, parse_id(&id)?);
     let now = state.clock.now_ms();
@@ -578,6 +699,7 @@ async fn get_chunk(
         .chunk(&channel, id, index, now)
         .await?
         .ok_or(ApiError::NotFound)?;
+    charge(&state, &channel, &limits, len)?;
     let max_age = meta.expires_at_ms.saturating_sub(now) / 1000;
     Ok((
         [
@@ -610,6 +732,7 @@ async fn list(
 async fn latest(
     State(state): State<AppState>,
     Path(channel): Path<String>,
+    Extension(limits): Extension<Limits>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let channel = parse_channel(&channel)?;
@@ -626,12 +749,14 @@ async fn latest(
     {
         return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
     }
+    charge(&state, &channel, &limits, body.len() as u64)?;
     Ok(envelope_response(&meta, body, "private, no-cache"))
 }
 
 async fn get_clip(
     State(state): State<AppState>,
     Path((channel, id)): Path<(String, String)>,
+    Extension(limits): Extension<Limits>,
 ) -> Result<Response, ApiError> {
     let (channel, id) = (parse_channel(&channel)?, parse_id(&id)?);
     let now = state.clock.now_ms();
@@ -640,6 +765,7 @@ async fn get_clip(
         .get(&channel, id, now)
         .await?
         .ok_or(ApiError::NotFound)?;
+    charge(&state, &channel, &limits, body.len() as u64)?;
     // A clip never changes, so it may be cached until it expires.
     let max_age = meta.expires_at_ms.saturating_sub(now) / 1000;
     let cache = format!("private, max-age={max_age}, immutable");

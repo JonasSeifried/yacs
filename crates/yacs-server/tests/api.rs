@@ -10,14 +10,17 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 use yacs_core::api::RendezvousOpened;
 use yacs_core::api::{
-    ChannelEvent, ChunkedConfig, ClipMeta, HEADER_CHUNKED, HEADER_CLIP_ID, HEADER_SIZE,
-    ServerConfig, UploadCreated, UploadStatus,
+    AccountsConfig, ChannelEvent, ChunkedConfig, ClipMeta, HEADER_CHUNKED, HEADER_CLIP_ID,
+    HEADER_SIZE, Plan, ServerConfig, SpaceLimits, UploadCreated, UploadStatus,
 };
 use yacs_core::{
     CHUNK_TAG_LEN, ChannelId, ChannelKey, Clip, ClipItem, Code, CodeInviter, CodeJoiner, Envelope,
     Invite, InviteSecret, MAX_CHUNK_SIZE, MAX_SEALED_INVITE, MIN_CHUNK_SIZE, Pairing, Payload,
 };
-use yacs_server::{AppState, Config, Events, Invites, ManualClock, Rendezvous, Store, router};
+use yacs_server::{
+    Accounts, AppState, Config, Events, Invites, ManualClock, RateLimiter, Rendezvous, Store,
+    router,
+};
 
 const START_MS: u64 = 1_758_600_000_000;
 const MINUTE: Duration = Duration::from_secs(60);
@@ -27,6 +30,7 @@ struct TestApp {
     clock: Arc<ManualClock>,
     store: Arc<Store>,
     events: Arc<Events>,
+    accounts: Arc<Accounts>,
     dir: TempDir,
 }
 
@@ -43,7 +47,11 @@ impl Res {
 }
 
 async fn app(args: &[&str]) -> TestApp {
-    let dir = TempDir::new().unwrap();
+    app_in(TempDir::new().unwrap(), args).await
+}
+
+/// A relay on `dir`, as if restarted there.
+async fn app_in(dir: TempDir, args: &[&str]) -> TestApp {
     let data_dir = dir.path().to_str().unwrap().to_owned();
     let argv = ["yacs-server", "--data-dir", &data_dir];
     let config = Config::try_parse_from(argv.iter().chain(args))
@@ -61,6 +69,8 @@ async fn app(args: &[&str]) -> TestApp {
     );
     let clock = Arc::new(ManualClock::new(START_MS));
     let events = Arc::new(Events::default());
+    let accounts = Arc::new(Accounts::open(&config.data_dir).await.unwrap());
+    let limiter = Arc::new(RateLimiter::new(config.requests_per_minute));
     let router = router(AppState {
         store: store.clone(),
         config: Arc::new(config),
@@ -68,12 +78,15 @@ async fn app(args: &[&str]) -> TestApp {
         events: events.clone(),
         invites: Arc::new(Invites::default()),
         rendezvous: Arc::new(Rendezvous::default()),
+        accounts: accounts.clone(),
+        limiter,
     });
     TestApp {
         router,
         clock,
         store,
         events,
+        accounts,
         dir,
     }
 }
@@ -108,6 +121,13 @@ impl TestApp {
 
     async fn get(&self, uri: &str) -> Res {
         self.call(Method::GET, uri, &[], vec![]).await
+    }
+
+    /// With `key` as the bearer token.
+    async fn get_as(&self, uri: &str, key: &str) -> Res {
+        let auth = format!("Bearer {key}");
+        self.call(Method::GET, uri, &[("authorization", &auth)], vec![])
+            .await
     }
 
     async fn post(&self, uri: &str, body: Vec<u8>) -> Res {
@@ -189,6 +209,10 @@ impl TestApp {
             body: res.into_body(),
             buf: String::new(),
         }
+    }
+
+    fn clock_now(&self) -> u64 {
+        yacs_server::Clock::now_ms(&*self.clock)
     }
 
     fn files(&self) -> usize {
@@ -293,6 +317,7 @@ async fn reports_config() {
             chunked: Some(ChunkedConfig {
                 max_chunk_bytes: u64::from(MAX_CHUNK_SIZE),
             }),
+            accounts: Some(AccountsConfig { public: false }),
         }
     );
 }
@@ -513,25 +538,17 @@ async fn refuses_uploads_when_disk_quota_is_full() {
 async fn access_token_guards_the_api_only() {
     let app = app(&["--access-token", "s3cret"]).await;
     let uri = "/api/v1/config";
-    assert_eq!(app.get(uri).await.status, StatusCode::UNAUTHORIZED);
-    let wrong = app
-        .call(
-            Method::GET,
-            uri,
-            &[("authorization", "Bearer nope")],
-            vec![],
-        )
-        .await;
-    assert_eq!(wrong.status, StatusCode::UNAUTHORIZED);
-    let right = app
-        .call(
-            Method::GET,
-            uri,
-            &[("authorization", "Bearer s3cret")],
-            vec![],
-        )
-        .await;
-    assert_eq!(right.status, StatusCode::OK);
+    // Joining devices have no key, but a wrong one is refused.
+    assert_eq!(app.get(uri).await.status, StatusCode::OK);
+    assert_eq!(
+        app.get_as(uri, "nope").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(app.get_as(uri, "s3cret").await.status, StatusCode::OK);
+    assert_eq!(
+        app.get(&clips(&channel(1))).await.status,
+        StatusCode::UNAUTHORIZED
+    );
     assert_eq!(app.get("/healthz").await.status, StatusCode::OK);
 }
 
@@ -593,9 +610,9 @@ async fn serves_the_web_app_without_a_token() {
     assert_eq!(share.status, StatusCode::SEE_OTHER);
     assert_eq!(share.headers[header::LOCATION], "/");
 
-    // The API still wants the token.
+    // Spaces still want the key.
     assert_eq!(
-        app.get("/api/v1/config").await.status,
+        app.get(&clips(&channel(1))).await.status,
         StatusCode::UNAUTHORIZED
     );
 }
@@ -1008,8 +1025,12 @@ async fn inviting_needs_the_token_taking_an_invite_doesnt() {
         .call(Method::PUT, &uri, &auth, sealed_invite(&secret))
         .await;
     assert_eq!(put.status, StatusCode::CREATED);
-    assert_eq!(app.delete(&uri).await.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(app.get(&taken_uri(&secret)).await.status, StatusCode::OK);
+    // The key registered the space, so its members need none from now on.
+    assert_eq!(app.delete(&uri).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        app.get(&taken_uri(&secret)).await.status,
+        StatusCode::NOT_FOUND
+    );
 }
 
 fn rendezvous(channel: &str) -> String {
@@ -1058,9 +1079,11 @@ async fn a_code_exchange_through_the_relay() {
     );
     assert_eq!(app.put(&b0, answer).await.status, StatusCode::CONFLICT);
 
-    // Only members read the answer and write the invite.
+    // Only the inviting space reads the answer and writes the invite.
+    let other_b0 = format!("{}/{nameplate}/b/0?wait=0", rendezvous(&channel(9)));
+    let other = app.call(Method::GET, &other_b0, &auth, vec![]).await;
+    assert_eq!(other.status, StatusCode::NOT_FOUND);
     let member_b0 = format!("{}/{nameplate}/b/0?wait=0", rendezvous(&ch));
-    assert_eq!(app.get(&member_b0).await.status, StatusCode::UNAUTHORIZED);
     let got = app.call(Method::GET, &member_b0, &auth, vec![]).await;
     assert_eq!(got.status, StatusCode::OK);
     let (device, inviter_key) = inviter.finish(nameplate, &got.body).unwrap();
@@ -1132,4 +1155,224 @@ async fn codes_wait_expire_and_close() {
     app.post(&rendezvous(&ch), vec![1]).await;
     let third = app.post(&rendezvous(&ch), vec![1]).await;
     assert_eq!(third.status, StatusCode::TOO_MANY_REQUESTS);
+}
+
+fn limits_uri(channel: &str) -> String {
+    format!("/api/v1/channels/{channel}/limits")
+}
+
+/// From `ip`, as a reverse proxy would say.
+fn from(ip: &str) -> [(&'static str, &str); 1] {
+    [("x-forwarded-for", ip)]
+}
+
+#[tokio::test]
+async fn the_key_registers_a_space_and_members_need_none() {
+    let app = app(&["--access-token", "s3cret"]).await;
+    let (ch, other) = (channel(1), channel(2));
+    assert_eq!(app.get(&clips(&ch)).await.status, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        app.get_as(&clips(&ch), "nope").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app.get_as(&clips(&ch), "s3cret").await.status,
+        StatusCode::OK
+    );
+
+    // Joined devices have no key.
+    app.create(&ch, None).await;
+    assert_eq!(app.list(&ch).await.len(), 1);
+    assert_eq!(
+        app.get_as(&clips(&ch), "nope").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        app.get(&clips(&other)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    let limits: SpaceLimits = app.get(&limits_uri(&ch)).await.json();
+    assert_eq!(limits.plan, Plan::Unlimited);
+    assert_eq!(limits.max_clip_bytes, None);
+
+    // Registrations outlive a restart.
+    let app = app_in(app.dir, &["--access-token", "s3cret"]).await;
+    assert_eq!(app.get(&clips(&ch)).await.status, StatusCode::OK);
+    assert_eq!(
+        app.get(&clips(&other)).await.status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn a_relay_without_a_key_takes_every_space_unlimited() {
+    let app = app(&[]).await;
+    let limits: SpaceLimits = app.get(&limits_uri(&channel(1))).await.json();
+    assert_eq!(
+        limits,
+        SpaceLimits {
+            plan: Plan::Unlimited,
+            default_ttl_secs: 15 * 60,
+            max_ttl_secs: 24 * 3600,
+            max_clip_bytes: None,
+            daily_transfer_bytes: None,
+            transfer_used_bytes: 0,
+            max_clips: 50,
+        }
+    );
+    // A key is ignored, as before.
+    assert_eq!(
+        app.get_as(&clips(&channel(1)), "anything").await.status,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn a_public_relay_puts_new_spaces_on_the_free_plan() {
+    let app = app(&["--public", "--free-max-size", "2KiB"]).await;
+    let config: ServerConfig = app.get("/api/v1/config").await.json();
+    assert_eq!(config.accounts, Some(AccountsConfig { public: true }));
+
+    let ch = channel(1);
+    let limits: SpaceLimits = app.get(&limits_uri(&ch)).await.json();
+    assert_eq!(
+        limits,
+        SpaceLimits {
+            plan: Plan::Free,
+            default_ttl_secs: 15 * 60,
+            max_ttl_secs: 3600,
+            max_clip_bytes: Some(2048),
+            daily_transfer_bytes: Some(500_000_000),
+            transfer_used_bytes: 0,
+            max_clips: 50,
+        }
+    );
+
+    // TTLs are clamped to the plan's.
+    let meta = app.create(&ch, Some("86400")).await;
+    assert_eq!(meta.expires_at_ms - meta.created_at_ms, 3600 * 1000);
+
+    // So are sizes, of single clips and of chunked ones.
+    let big = app.post(&clips(&ch), envelope(&"x".repeat(3000))).await;
+    assert_eq!(big.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(
+        String::from_utf8_lossy(&big.body).contains("at most 2.0 kB"),
+        "{}",
+        String::from_utf8_lossy(&big.body)
+    );
+    let upload = app
+        .post(&upload_uri(&ch, 2 * CHUNK, CHUNK), envelope("header"))
+        .await;
+    assert_eq!(upload.status, StatusCode::PAYLOAD_TOO_LARGE);
+}
+
+#[tokio::test]
+async fn free_spaces_have_a_daily_transfer() {
+    let app = app(&["--public", "--free-daily-transfer", "1KB"]).await;
+    let ch = channel(1);
+    let meta = app.create(&ch, None).await;
+    let clip = format!("{}/{}", clips(&ch), meta.id);
+    // Uploads and downloads count, until the next one doesn't fit.
+    let mut used = meta.size;
+    while used + meta.size <= 1000 {
+        assert_eq!(app.get(&clip).await.status, StatusCode::OK);
+        used += meta.size;
+    }
+    let limits: SpaceLimits = app.get(&limits_uri(&ch)).await.json();
+    assert_eq!(limits.transfer_used_bytes, used);
+    assert_eq!(app.get(&clip).await.status, StatusCode::TOO_MANY_REQUESTS);
+    let upload = app.post(&clips(&ch), envelope("hi")).await;
+    assert_eq!(upload.status, StatusCode::TOO_MANY_REQUESTS);
+    // Other spaces have their own.
+    app.create(&channel(2), None).await;
+
+    app.clock.advance(Duration::from_secs(24 * 3600));
+    let fresh = app.create(&ch, None).await;
+    let limits: SpaceLimits = app.get(&limits_uri(&ch)).await.json();
+    assert_eq!(limits.transfer_used_bytes, fresh.size);
+}
+
+#[tokio::test]
+async fn one_address_creates_few_spaces_a_day() {
+    let app = app(&["--public", "--new-spaces-per-ip", "2"]).await;
+    let get = |ch: String, ip: &'static str| {
+        let app = &app;
+        async move {
+            app.call(Method::GET, &clips(&ch), &from(ip), vec![])
+                .await
+                .status
+        }
+    };
+    assert_eq!(get(channel(1), "203.0.113.1").await, StatusCode::OK);
+    assert_eq!(get(channel(2), "203.0.113.1").await, StatusCode::OK);
+    assert_eq!(
+        get(channel(3), "203.0.113.1").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // Spaces it has keep working, and others may still join them.
+    assert_eq!(get(channel(1), "203.0.113.1").await, StatusCode::OK);
+    assert_eq!(get(channel(2), "198.51.100.1").await, StatusCode::OK);
+    assert_eq!(get(channel(3), "198.51.100.1").await, StatusCode::OK);
+
+    app.clock.advance(Duration::from_secs(24 * 3600));
+    assert_eq!(get(channel(4), "203.0.113.1").await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_public_relay_limits_request_rates() {
+    // Bursts of one.
+    let app = app(&["--public", "--requests-per-minute", "5"]).await;
+    let status = |ip: &'static str| {
+        let app = &app;
+        async move {
+            app.call(Method::GET, "/api/v1/config", &from(ip), vec![])
+                .await
+                .status
+        }
+    };
+    assert_eq!(status("203.0.113.1").await, StatusCode::OK);
+    assert_eq!(status("203.0.113.1").await, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(status("203.0.113.2").await, StatusCode::OK);
+    app.clock.advance(Duration::from_secs(12));
+    assert_eq!(status("203.0.113.1").await, StatusCode::OK);
+    // Only the API.
+    assert_eq!(app.get("/healthz").await.status, StatusCode::OK);
+    assert_eq!(app.get("/healthz").await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn the_owners_key_lifts_the_free_plan_on_a_public_relay() {
+    let app = app(&["--public", "--access-token", "s3cret"]).await;
+    let ch = channel(1);
+    let limits: SpaceLimits = app.get(&limits_uri(&ch)).await.json();
+    assert_eq!(limits.plan, Plan::Free);
+    let limits: SpaceLimits = app.get_as(&limits_uri(&ch), "s3cret").await.json();
+    assert_eq!(limits.plan, Plan::Unlimited);
+    // For every member, from now on.
+    let limits: SpaceLimits = app.get(&limits_uri(&ch)).await.json();
+    assert_eq!(limits.plan, Plan::Unlimited);
+    let meta = app.create(&ch, Some("86400")).await;
+    assert_eq!(meta.expires_at_ms - meta.created_at_ms, 86400 * 1000);
+}
+
+#[tokio::test]
+async fn unused_free_spaces_are_forgotten() {
+    let app = app(&["--public", "--access-token", "s3cret"]).await;
+    let (free, owned) = (channel(1), channel(2));
+    app.get(&clips(&free)).await;
+    app.get_as(&clips(&owned), "s3cret").await;
+    let (free_id, owned_id): (ChannelId, ChannelId) =
+        (free.parse().unwrap(), owned.parse().unwrap());
+
+    app.clock.advance(Duration::from_secs(29 * 24 * 3600));
+    app.accounts.prune(app.clock_now()).await.unwrap();
+    assert!(app.accounts.account(&free_id).is_some());
+
+    app.clock.advance(Duration::from_secs(24 * 3600));
+    app.accounts.prune(app.clock_now()).await.unwrap();
+    assert!(app.accounts.account(&free_id).is_none());
+    assert!(app.accounts.account(&owned_id).is_some());
+    let app = app_in(app.dir, &["--public", "--access-token", "s3cret"]).await;
+    assert!(app.accounts.account(&free_id).is_none());
+    assert!(app.accounts.account(&owned_id).is_some());
 }
