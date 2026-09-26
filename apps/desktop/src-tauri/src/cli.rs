@@ -68,6 +68,7 @@ pub fn uninstall() -> Result<(), String> {
 fn join(cli: &Path, link: &str) -> Result<(), String> {
     let mut cmd = Command::new(cli);
     cmd.arg("join")
+        .env_remove("YACS_RELAY")
         .env_remove("YACS_SERVER")
         .env_remove("YACS_TOKEN")
         .env_remove("YACS_SPACE")

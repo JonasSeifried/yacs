@@ -483,16 +483,19 @@ fn starts_a_space_and_invites_another_machine() {
     let err = stderr_of_failure(&mut on_other(&["space", "rename", " "]));
     assert!(err.contains("can't be empty"), "{err}");
 
-    // An exported space works from the environment alone.
+    // An exported space works from the environment alone, under the relay's
+    // new name and the old one.
     let exported = stdout(&mut saved(&relay, &["space", "export"]));
-    let mut script = cargo_bin_cmd!("yacs");
-    script
-        .env_clear()
-        .env("YACS_CONFIG", other.path().join("none.json"))
-        .env("YACS_SERVER", &relay.url)
-        .env("YACS_SPACE", exported.trim())
-        .arg("recv");
-    assert_eq!(stdout(&mut script), "hi");
+    for var in ["YACS_RELAY", "YACS_SERVER"] {
+        let mut script = cargo_bin_cmd!("yacs");
+        script
+            .env_clear()
+            .env("YACS_CONFIG", other.path().join("none.json"))
+            .env(var, &relay.url)
+            .env("YACS_SPACE", exported.trim())
+            .arg("recv");
+        assert_eq!(stdout(&mut script), "hi", "{var}");
+    }
 }
 
 #[test]

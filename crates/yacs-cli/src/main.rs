@@ -22,7 +22,7 @@ mod update;
 const EXAMPLES: &str = "\
 Examples:
   yacs join                          once: paste an invite link from the desktop app
-  yacs space new --server URL        or start a new space, then `yacs invite` other devices
+  yacs space new --relay URL         or start a new space, then `yacs invite` other devices
   yacs send ~/.ssh/id_ed25519.pub    a text file arrives as text, an image as an image
   yacs send report.pdf               other files arrive as files
   yacs send disk.iso                 big files too, in chunks, with a progress line
@@ -38,7 +38,14 @@ Examples:
 #[command(name = "yacs", version, after_help = EXAMPLES)]
 struct Cli {
     /// Relay URL, e.g. https://clip.example.com. Not needed after `yacs join`.
-    #[arg(long, env = "YACS_SERVER", global = true)]
+    /// The older names, `--server` and YACS_SERVER, work too.
+    #[arg(
+        long = "relay",
+        value_name = "URL",
+        visible_alias = "server",
+        env = "YACS_RELAY",
+        global = true
+    )]
     server: Option<String>,
 
     /// Access token, if the relay requires one.
@@ -136,7 +143,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum SpaceCommand {
-    /// Start a new space on the relay given with --server, and save it.
+    /// Start a new space on the relay given with --relay, and save it.
     /// Replaces the space saved before.
     New {
         /// What to call the space here.
@@ -146,7 +153,7 @@ enum SpaceCommand {
     /// Rename the space on this machine. Other devices keep their own name for it.
     Rename { name: String },
     /// Print the space's secret, for YACS_SPACE in scripts and containers
-    /// (with YACS_SERVER). Anyone with it can read and send the space's clips.
+    /// (with YACS_RELAY). Anyone with it can read and send the space's clips.
     Export,
 }
 
@@ -159,7 +166,11 @@ enum RelayCommand {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    match run(Cli::parse()).await {
+    let mut cli = Cli::parse();
+    if cli.server.is_none() {
+        cli.server = std::env::var("YACS_SERVER").ok().filter(|s| !s.is_empty());
+    }
+    match run(cli).await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e:#}");
@@ -345,7 +356,7 @@ fn print_sent(what: &str, meta: &ClipMeta) {
 }
 
 const NOT_IN_A_SPACE: &str =
-    "not in a space: run `yacs join` with an invite link, or set YACS_SERVER and YACS_SPACE";
+    "not in a space: run `yacs join` with an invite link or code, or set YACS_RELAY and YACS_SPACE";
 
 /// Flags and env vars win over the saved space, which is only used for its
 /// own relay: a token never goes to a relay it wasn't saved for.
@@ -538,7 +549,7 @@ fn manage(command: &Command) -> Result<()> {
             let space = current(&saved)?;
             println!("{}", space.secret());
             eprintln!(
-                "Use it as YACS_SPACE, with YACS_SERVER={}. Anyone with it can read and send the space's clips.",
+                "Use it as YACS_SPACE, with YACS_RELAY={}. Anyone with it can read and send the space's clips.",
                 space.relay
             );
         }

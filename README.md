@@ -95,7 +95,7 @@ yacs update                       # the newest version, checked against the rele
 yacs relay update                 # on the relay's machine: pull the new relay image and restart it
 ```
 
-The space is saved in `~/.config/yacs/cli.json`, readable only by you; `yacs spaces` shows it, `yacs space rename` renames it and `yacs leave` forgets it. On a machine without other devices, `yacs space new --server URL` starts a space and `yacs invite` prints a link for the others, then shows a code and waits until it's typed. Scripts can skip the saved space and set `YACS_SERVER`, `YACS_TOKEN` and `YACS_SPACE` (from `yacs space export`) instead.
+The space is saved in `~/.config/yacs/cli.json`, readable only by you; `yacs spaces` shows it, `yacs space rename` renames it and `yacs leave` forgets it. On a machine without other devices, `yacs space new --relay URL` starts a space and `yacs invite` prints a link for the others, then shows a code and waits until it's typed. Scripts can skip the saved space and set `YACS_RELAY`, `YACS_TOKEN` and `YACS_SPACE` (from `yacs space export`) instead (`YACS_SERVER` works too).
 
 ## Updating
 
