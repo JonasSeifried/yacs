@@ -58,7 +58,25 @@ export function guessDeviceName(ua = navigator.userAgent): string {
   if (/iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1)) return "iPad";
   if (/iPhone/.test(ua)) return "iPhone";
   if (/Android/.test(ua)) return "Android";
+  const os = desktopOs(ua);
+  if (os) return `${DESKTOP_NAMES[os]} (browser)`;
   return "Phone";
+}
+
+export type DesktopOs = "macos" | "windows" | "linux";
+
+const DESKTOP_NAMES: Record<DesktopOs, string> = { macos: "Mac", windows: "Windows", linux: "Linux" };
+
+/**
+ * The system of a computer's browser, which the desktop app is for; null on
+ * phones and tablets, and on ChromeOS, which has no desktop app.
+ */
+export function desktopOs(ua = navigator.userAgent): DesktopOs | null {
+  if (isIos(ua) || /Android|Mobile|CrOS/.test(ua)) return null;
+  if (/Macintosh/.test(ua)) return "macos";
+  if (/Windows/.test(ua)) return "windows";
+  if (/Linux|X11/.test(ua)) return "linux";
+  return null;
 }
 
 /**

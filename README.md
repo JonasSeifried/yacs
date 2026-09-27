@@ -2,7 +2,7 @@
 
 **Yet Another Clipboard Service**: copy on one device, paste on another. End-to-end encrypted, no accounts, free and open source.
 
-**[Download for macOS, Windows or Linux](https://github.com/JonasSeifried/yacs/releases/latest)** · **[Open on your phone](https://yacs-relay.jonasseifried.com)**
+**[Download for macOS, Windows or Linux](https://github.com/JonasSeifried/yacs/releases/latest)** · **[Try it in your browser](https://yacs-relay.jonasseifried.com)**
 
 - **On your computer**, press `⌘⇧Space` (Mac) or `Ctrl+Shift+Space` (Windows, Linux) for a Spotlight-style panel. `⌘V` / `Ctrl+V` sends what's on your clipboard; `↵` copies a clip back with every format it had: text, formatted text (HTML, RTF), images.
 - **Files too**: copy a file and send it like anything else. It arrives in Downloads and on the clipboard.

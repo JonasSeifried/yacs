@@ -110,6 +110,20 @@ button.primary {
   color: var(--on-accent);
 }
 
+a.button {
+  display: inline-block;
+  border-radius: 10px;
+  padding: 11px 16px;
+  font-weight: 600;
+  text-decoration: none;
+  text-align: center;
+}
+
+a.button.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
 button.ghost {
   background: var(--surface-2);
 }
@@ -489,4 +503,26 @@ button.icon {
 
 .legal a {
   color: inherit;
+}
+
+.desktop-hint {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.desktop-hint p {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.desktop-hint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Above the join card, the hint takes the place of its top margin. */
+.desktop-hint + .pair {
+  margin-top: 0;
 }

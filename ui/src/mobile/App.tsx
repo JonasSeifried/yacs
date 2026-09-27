@@ -25,7 +25,9 @@ import { formatDuration, formatSize, ttlChoices } from "../shared/time";
 import type { ClipItem, ClipMeta, ServerConfig, SpaceLimits } from "../shared/types";
 import { canCopy, canSave, copyClip, fileItem, pick, readClipboard, savable, shareFiles } from "./clipboard";
 import {
+  type DesktopOs,
   type InviteLink,
+  desktopOs,
   forgetInviteLink,
   guessDeviceName,
   inviteLinkFromCode,
@@ -38,6 +40,16 @@ import {
 import { canScan, qrDecoder } from "./qr";
 
 const TTL_KEY = "yacs.ttl";
+/** Set once "Not now" hides the desktop app hint on the home screen. */
+const DESKTOP_HINT_KEY = "yacs.desktopHint";
+const RELEASES = "https://github.com/JonasSeifried/yacs/releases/latest";
+/** Fixed asset names (release.yml), so these always get the newest version. */
+const DESKTOP_DOWNLOADS: Record<DesktopOs, { label: string; href: string }> = {
+  macos: { label: "Download for macOS", href: `${RELEASES}/download/YACS-macos.dmg` },
+  windows: { label: "Download for Windows", href: `${RELEASES}/download/YACS-windows-setup.exe` },
+  // AppImage, .deb or .rpm: the release page lets people pick.
+  linux: { label: "Downloads for Linux", href: RELEASES },
+};
 /** Sends bigger than this show a progress bar; smaller ones are over in a blink. */
 const PROGRESS_BYTES = 256 * 1024;
 /** While the app is open without a live connection, look for new clips this often. */
@@ -212,11 +224,15 @@ function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; 
 
   return (
     <Screen>
+      <DesktopAppHint>
+        Or try YACS here first: start a new space below, then open it on your phone too.
+      </DesktopAppHint>
       <form className="card pair" onSubmit={join}>
         <h1>Join your devices</h1>
         <p className="muted">
-          Scan the QR code in YACS on your computer (Settings → Invite a device), or paste the invite link or type the
-          code shown there.
+          {desktopOs()
+            ? "Paste the invite link or type the code from YACS on another device (Settings → Invite a device)."
+            : "Scan the QR code in YACS on your computer (Settings → Invite a device), or paste the invite link or type the code shown there."}
         </p>
         <IosHomeScreenHint />
         {canScan() && (
@@ -339,6 +355,45 @@ function cameraError(e: unknown): string {
   if (name === "NotAllowedError") return "YACS isn't allowed to use the camera. Allow it in your browser's settings, or paste the invite link instead.";
   if (name === "NotFoundError" || name === "OverconstrainedError") return "No camera found. Paste the invite link instead.";
   return errorText(e);
+}
+
+/**
+ * In a computer's browser, points to the desktop app, which does what a
+ * browser can't: a shortcut that opens it over any app, and every clipboard
+ * format (files, RTF). `dismissible` adds "Not now", remembered.
+ */
+function DesktopAppHint(props: { dismissible?: boolean; children?: ReactNode }) {
+  const os = desktopOs();
+  const [dismissed, setDismissed] = useState(
+    () => props.dismissible === true && localStorage.getItem(DESKTOP_HINT_KEY) === "hidden",
+  );
+  if (!os || dismissed) return null;
+  const download = DESKTOP_DOWNLOADS[os];
+  return (
+    <div className="card desktop-hint">
+      <p>
+        <b>On a computer, YACS works best as an app.</b> A shortcut opens it over whatever you're doing, and it sends
+        and copies your clipboard with every format, files included.
+      </p>
+      {props.children && <p className="muted">{props.children}</p>}
+      <div className="desktop-hint-actions">
+        <a className="button primary" href={download.href}>
+          {download.label}
+        </a>
+        {props.dismissible && (
+          <button
+            className="ghost"
+            onClick={() => {
+              localStorage.setItem(DESKTOP_HINT_KEY, "hidden");
+              setDismissed(true);
+            }}
+          >
+            Not now
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 /** Joining in an iPhone browser tab doesn't carry over to the home screen app. */
@@ -629,6 +684,8 @@ function Home({ stored, current, onChange }: { stored: Stored; current: Session;
           </button>
         </div>
       )}
+
+      <DesktopAppHint dismissible />
 
       <Composer
         ttl={ttl}
@@ -1070,10 +1127,14 @@ function SettingsSheet(props: {
         </button>
         <InviteDevice client={props.client} spaceName={space.name} />
         {describeLimits(props.limits) && <p className="muted small">Free plan: {describeLimits(props.limits)}.</p>}
-        <p className="muted small">
-          Install YACS: in Safari tap Share → Add to Home Screen; in Chrome use “Install app”. On Android, installed
-          YACS shows up in the share sheet.
-        </p>
+        {desktopOs() ? (
+          <DesktopAppHint />
+        ) : (
+          <p className="muted small">
+            Install YACS: in Safari tap Share → Add to Home Screen; in Chrome use “Install app”. On Android, installed
+            YACS shows up in the share sheet.
+          </p>
+        )}
         <button
           className="ghost danger"
           onClick={() => {
