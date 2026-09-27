@@ -327,6 +327,27 @@ jobs:
             npx --yes @tauri-apps/cli@2.11.5 signer sign "$file"
           done
           ls cli
+      # The installers under fixed names as well, so the website can link
+      # releases/latest/download/YACS-macos.dmg and always get the newest.
+      # Not for prereleases, which releases/latest skips anyway.
+      - name: Installers under fixed names
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          v="${TAG#v}"
+          mkdir fixed && cd fixed
+          gh release download "$TAG" \
+            -p "YACS_${v}_universal.dmg" -p "YACS_${v}_x64-setup.exe" \
+            -p "YACS_${v}_amd64.AppImage" -p "YACS_${v}_amd64.deb" -p "YACS-${v}-1.x86_64.rpm"
+          mv "YACS_${v}_universal.dmg" YACS-macos.dmg
+          mv "YACS_${v}_x64-setup.exe" YACS-windows-setup.exe
+          mv "YACS_${v}_amd64.AppImage" YACS-linux-x86_64.AppImage
+          mv "YACS_${v}_amd64.deb" YACS-linux-amd64.deb
+          mv "YACS-${v}-1.x86_64.rpm" YACS-linux-x86_64.rpm
+          gh release upload "$TAG" * --clobber
       - env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
