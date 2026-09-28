@@ -19,7 +19,7 @@ use tracing::Level;
 use ulid::Ulid;
 use yacs_core::api::{
     AccountsConfig, ChannelEvent, ChunkedConfig, ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody,
-    HEADER_CHUNKED, HEADER_CLIP_ID, HEADER_CREATED_AT, HEADER_EXPIRES_AT, HEADER_SIZE,
+    HEADER_CHUNKED, HEADER_CLIP_ID, HEADER_CREATED_AT, HEADER_EXPIRES_AT, HEADER_SIZE, Plan,
     RendezvousOpened, ServerConfig, SpaceLimits, UploadCreated, UploadStatus,
 };
 use yacs_core::{
@@ -28,7 +28,7 @@ use yacs_core::{
 };
 
 use crate::accounts::{Accounts, Limits, Refusal};
-use crate::clients::{RateLimiter, client_ip};
+use crate::clients::{Client, Clients, Crowded};
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::events::Events;
@@ -45,11 +45,17 @@ pub struct AppState {
     pub invites: Arc<Invites>,
     pub rendezvous: Arc<Rendezvous>,
     pub accounts: Arc<Accounts>,
-    pub limiter: Arc<RateLimiter>,
+    pub clients: Arc<Clients>,
 }
 
+/// Longest a free upload may take to complete, at least: its plan's longest TTL.
+const MIN_UPLOAD_DEADLINE_MS: u64 = 3600 * 1000;
+
 pub fn router(state: AppState) -> Router {
-    let max_size = state.config.max_size.as_u64() as usize;
+    // Clips and upload headers read their bodies themselves, up to their
+    // space's plan (see `read_body`); the rest are small.
+    let invite_limit = DefaultBodyLimit::max(MAX_SEALED_INVITE);
+    let message_limit = DefaultBodyLimit::max(MAX_MESSAGE);
     let api = Router::new()
         .route("/channels/{channel}/limits", get(limits))
         .route(
@@ -68,16 +74,19 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/channels/{channel}/invites/{slot}",
-            put(create_invite).delete(revoke_invite),
+            put(create_invite).delete(revoke_invite).layer(invite_limit),
         )
-        .route("/channels/{channel}/rendezvous", post(open_rendezvous))
+        .route(
+            "/channels/{channel}/rendezvous",
+            post(open_rendezvous).layer(message_limit),
+        )
         .route(
             "/channels/{channel}/rendezvous/{nameplate}",
             axum::routing::delete(close_rendezvous),
         )
         .route(
             "/channels/{channel}/rendezvous/{nameplate}/a/{index}",
-            put(inviter_writes),
+            put(inviter_writes).layer(message_limit),
         )
         .route(
             "/channels/{channel}/rendezvous/{nameplate}/b/{index}",
@@ -92,7 +101,6 @@ pub fn router(state: AppState) -> Router {
             "/channels/{channel}/uploads/{id}/complete",
             post(complete_upload),
         )
-        .layer(DefaultBodyLimit::max(max_size))
         // Streamed to disk and limited by the upload's layout instead.
         .route(
             "/channels/{channel}/uploads/{id}/chunks/{index}",
@@ -100,11 +108,15 @@ pub fn router(state: AppState) -> Router {
         )
         .route_layer(middleware::from_fn_with_state(state.clone(), authorize))
         .route("/config", get(server_config))
+        .route("/address", get(address))
         // The invited device isn't in the space yet.
         .route("/invites/{slot}", get(take_invite))
         .route("/rendezvous/{nameplate}/a/{index}", get(joiner_reads))
-        .route("/rendezvous/{nameplate}/b/{index}", put(joiner_writes))
-        .layer(middleware::from_fn_with_state(state.clone(), rate_limit));
+        .route(
+            "/rendezvous/{nameplate}/b/{index}",
+            put(joiner_writes).layer(message_limit),
+        )
+        .layer(middleware::from_fn_with_state(state.clone(), identify));
 
     Router::new()
         .nest("/api/v1", api)
@@ -157,6 +169,11 @@ enum ApiError {
     TooManyUploads,
     TooManyInvites,
     TooManyCodes,
+    TooManyLookups,
+    TooManyConnections,
+    TooManyListeners,
+    UploadsUsed,
+    BodyTooLarge,
     StorageFull,
     Internal(io::Error),
 }
@@ -206,6 +223,23 @@ impl IntoResponse for ApiError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many codes open for this channel",
             ),
+            Self::TooManyLookups => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many codes tried from your address; try again in a few minutes",
+            ),
+            Self::TooManyConnections => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many open connections from your address",
+            ),
+            Self::TooManyListeners => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many devices are listening to this space",
+            ),
+            Self::UploadsUsed => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "your address uploaded its share for today; it starts over at midnight UTC",
+            ),
+            Self::BodyTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, "the request is too large"),
             Self::StorageFull => (StatusCode::INSUFFICIENT_STORAGE, "server storage is full"),
             Self::Internal(e) => {
                 tracing::error!(error = %e, "storage error");
@@ -253,6 +287,8 @@ impl From<UploadError> for ApiError {
             UploadError::Invalid(msg) => Self::BadRequest(msg),
             UploadError::TooLarge => Self::TooLarge,
             UploadError::Incomplete => Self::Conflict("the upload is missing chunks"),
+            UploadError::Busy => Self::Conflict("that chunk is being written already"),
+            UploadError::TransferUsed => Self::TransferUsed,
             UploadError::Io(e) => Self::Internal(e),
         }
     }
@@ -288,9 +324,10 @@ async fn authorize(
         .expect("authorize only guards routes under a channel")?;
     let key = bearer(req.headers());
     let config = &state.config;
+    let client = client_of(&req);
     let account = state
         .accounts
-        .authorize(config, &channel, key, client_ip(&req), state.clock.now_ms())
+        .authorize(config, &channel, key, client, state.clock.now_ms())
         .await
         .map_err(|refusal| match refusal {
             Refusal::Unauthorized => ApiError::Unauthorized,
@@ -304,13 +341,18 @@ async fn authorize(
     Ok(next.run(req).await)
 }
 
-/// Per-address request rates, on a public relay only.
-async fn rate_limit(
+/// Who's asking, as a [`Client`] extension for the handlers; and per-address
+/// request rates, on a public relay only.
+async fn identify(
     State(state): State<AppState>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if state.config.public && !state.limiter.allow(client_ip(&req), state.clock.now_ms()) {
+    let client = Client::of(&req);
+    state.clients.check_forwarding(&req, &client);
+    req.extensions_mut().insert(client);
+    let clients = &state.clients;
+    if !clients.allow(&clients.requests, &client, state.clock.now_ms()) {
         // Only here: other 429s (quotas) don't pass by waiting a moment.
         let secs = (60 / state.config.requests_per_minute).max(1);
         return Ok((
@@ -320,6 +362,55 @@ async fn rate_limit(
             .into_response());
     }
     Ok(next.run(req).await)
+}
+
+fn client_of(req: &Request) -> Client {
+    req.extensions()
+        .get::<Client>()
+        .copied()
+        .unwrap_or_else(|| Client::of(req))
+}
+
+/// The address this relay counts the caller's limits under: for checking that
+/// a reverse proxy passes on the client's address. Only ever the caller's own.
+async fn address(Extension(client): Extension<Client>) -> Response {
+    (
+        [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+        format!("{}\n", client.display()),
+    )
+        .into_response()
+}
+
+/// Counts an upload of `bytes` to a free space against the uploader's
+/// address, on a public relay.
+fn charge_upload(
+    state: &AppState,
+    client: &Client,
+    limits: &Limits,
+    bytes: u64,
+) -> Result<(), ApiError> {
+    if limits.plan != Plan::Free || !state.clients.enabled() {
+        return Ok(());
+    }
+    let limit = state.config.free_daily_upload_per_ip.as_u64();
+    match state
+        .accounts
+        .charge_upload(client, bytes, limit, state.clock.now_ms())
+    {
+        true => Ok(()),
+        false => Err(ApiError::UploadsUsed),
+    }
+}
+
+/// The body, up to what the space's plan allows for a clip.
+async fn read_body(state: &AppState, limits: &Limits, body: Body) -> Result<Bytes, ApiError> {
+    let max = state.config.max_size.as_u64();
+    let limit = limits.max_clip_bytes.map_or(max, |plan| plan.min(max));
+    match axum::body::to_bytes(body, limit as usize).await {
+        Ok(body) => Ok(body),
+        // Over the plan's size, if it has one: say how big a clip may be.
+        Err(_) => check_clip_size(limits, u64::MAX).and(Err(ApiError::BodyTooLarge)),
+    }
 }
 
 /// Counts `bytes` against the space's daily transfer.
@@ -404,12 +495,15 @@ async fn create(
     Path(channel): Path<String>,
     Query(query): Query<CreateQuery>,
     Extension(limits): Extension<Limits>,
-    body: Bytes,
+    Extension(client): Extension<Client>,
+    body: Body,
 ) -> Result<(StatusCode, Json<ClipMeta>), ApiError> {
     let channel = parse_channel(&channel)?;
+    let body = read_body(&state, &limits, body).await?;
     check_envelope(&body)?;
     let ttl_ms = ttl_ms(&limits, query.ttl)?;
     check_clip_size(&limits, body.len() as u64)?;
+    charge_upload(&state, &client, &limits, body.len() as u64)?;
     charge(&state, &channel, &limits, body.len() as u64)?;
     let now = state.clock.now_ms();
     let meta = state.store.put(&channel, &body, now, now + ttl_ms).await?;
@@ -437,6 +531,7 @@ async fn create_invite(
     State(state): State<AppState>,
     Path((channel, slot)): Path<(String, String)>,
     Query(query): Query<CreateQuery>,
+    Extension(client): Extension<Client>,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
     let (channel, slot) = (parse_channel(&channel)?, parse_slot(&slot)?);
@@ -450,7 +545,7 @@ async fn create_invite(
     let now = state.clock.now_ms();
     state
         .invites
-        .put(channel, slot, body, now, now + ttl_ms)
+        .put(channel, client, slot, body, now, now + ttl_ms)
         .map_err(|e| match e {
             InviteError::Exists => ApiError::Conflict("there's already an invite in that slot"),
             InviteError::TooMany => ApiError::TooManyInvites,
@@ -520,11 +615,17 @@ fn check_index(index: u8) -> Result<u8, ApiError> {
 async fn open_rendezvous(
     State(state): State<AppState>,
     Path(channel): Path<String>,
+    Extension(client): Extension<Client>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<RendezvousOpened>), ApiError> {
     let channel = parse_channel(&channel)?;
     check_message(&body)?;
     let now = state.clock.now_ms();
+    let clients = &state.clients;
+    // Else one space could open and close codes until none are left.
+    if !clients.allow(&clients.codes, &client, now) {
+        return Err(ApiError::TooManyCodes);
+    }
     let nameplate = state
         .rendezvous
         .open(channel, body, now, now + CODE_TTL_SECS * 1000)?;
@@ -548,6 +649,7 @@ async fn close_rendezvous(
 async fn inviter_writes(
     State(state): State<AppState>,
     Path((channel, nameplate, index)): Path<(String, u16, u8)>,
+    Extension(client): Extension<Client>,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
     let channel = parse_channel(&channel)?;
@@ -559,21 +661,30 @@ async fn inviter_writes(
         check_index(index)?,
         body,
         Some(&channel),
+        client,
         now,
     )?;
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Every answer counts against the address's lookups: a stranger could
+/// otherwise spoil (and guess) every open code.
 async fn joiner_writes(
     State(state): State<AppState>,
     Path((nameplate, index)): Path<(u16, u8)>,
+    Extension(client): Extension<Client>,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
     check_message(&body)?;
+    let index = check_index(index)?;
     let now = state.clock.now_ms();
+    let clients = &state.clients;
+    if !clients.allow(&clients.lookups, &client, now) {
+        return Err(ApiError::TooManyLookups);
+    }
     state
         .rendezvous
-        .put(nameplate, Side::B, check_index(index)?, body, None, now)?;
+        .put(nameplate, Side::B, index, body, None, client, now)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -581,19 +692,40 @@ async fn inviter_reads(
     State(state): State<AppState>,
     Path((channel, nameplate, index)): Path<(String, u16, u8)>,
     Query(query): Query<WaitQuery>,
+    Extension(client): Extension<Client>,
 ) -> Result<Response, ApiError> {
     let channel = parse_channel(&channel)?;
     let index = check_index(index)?;
-    read_message(&state, nameplate, Side::B, index, Some(&channel), query).await
+    read_message(
+        &state,
+        nameplate,
+        Side::B,
+        index,
+        Some(&channel),
+        client,
+        query,
+    )
+    .await
 }
 
+/// Codes that aren't there count against the address's lookups, so nobody
+/// can look for the open ones.
 async fn joiner_reads(
     State(state): State<AppState>,
     Path((nameplate, index)): Path<(u16, u8)>,
     Query(query): Query<WaitQuery>,
+    Extension(client): Extension<Client>,
 ) -> Result<Response, ApiError> {
     let index = check_index(index)?;
-    read_message(&state, nameplate, Side::A, index, None, query).await
+    let clients = &state.clients;
+    if !clients.ready(&clients.lookups, &client, state.clock.now_ms()) {
+        return Err(ApiError::TooManyLookups);
+    }
+    let read = read_message(&state, nameplate, Side::A, index, None, client, query).await;
+    if matches!(read, Err(ApiError::NotFound)) {
+        clients.spend(&clients.lookups, &client, state.clock.now_ms());
+    }
+    read
 }
 
 async fn read_message(
@@ -602,13 +734,30 @@ async fn read_message(
     side: Side,
     index: u8,
     channel: Option<&ChannelId>,
+    client: Client,
     query: WaitQuery,
 ) -> Result<Response, ApiError> {
     let wait = std::time::Duration::from_secs(query.wait.unwrap_or(25));
+    // Only a read that waits holds a connection open.
+    let _connection = match wait.is_zero() {
+        true => None,
+        false => state
+            .clients
+            .connect(client)
+            .map_err(|Crowded| ApiError::TooManyConnections)?,
+    };
     let clock = state.clock.clone();
     let message = state
         .rendezvous
-        .read(nameplate, side, index, channel, || clock.now_ms(), wait)
+        .read(
+            nameplate,
+            side,
+            index,
+            channel,
+            client,
+            || clock.now_ms(),
+            wait,
+        )
         .await?;
     Ok(match message {
         Some(message) => (
@@ -640,18 +789,25 @@ async fn create_upload(
     Path(channel): Path<String>,
     Query(query): Query<UploadQuery>,
     Extension(limits): Extension<Limits>,
-    body: Bytes,
+    Extension(client): Extension<Client>,
+    body: Body,
 ) -> Result<(StatusCode, Json<UploadCreated>), ApiError> {
     let channel = parse_channel(&channel)?;
+    let body = read_body(&state, &limits, body).await?;
     check_envelope(&body)?;
     let ttl_ms = ttl_ms(&limits, query.ttl)?;
     let layout = ChunkLayout::new(query.length, query.chunk_size).map_err(ApiError::BadRequest)?;
     let size = (body.len() as u64).saturating_add(query.length);
     check_clip_size(&limits, size)?;
+    charge_upload(&state, &client, &limits, size)?;
     charge(&state, &channel, &limits, size)?;
+    let now = state.clock.now_ms();
+    // A free upload can't hold its share of the disk for longer than its clip could.
+    let deadline =
+        (limits.plan == Plan::Free).then(|| now + limits.max_ttl_ms.max(MIN_UPLOAD_DEADLINE_MS));
     let id = state
         .store
-        .create_upload(&channel, &body, layout, ttl_ms, state.clock.now_ms())
+        .create_upload(&channel, &body, layout, ttl_ms, now, deadline)
         .await?;
     Ok((
         StatusCode::CREATED,
@@ -662,13 +818,16 @@ async fn create_upload(
 async fn put_chunk(
     State(state): State<AppState>,
     Path((channel, id, index)): Path<(String, String, u64)>,
+    Extension(limits): Extension<Limits>,
     body: Body,
 ) -> Result<StatusCode, ApiError> {
     let (channel, id) = (parse_channel(&channel)?, parse_id(&id)?);
     let body = body.into_data_stream().map_err(io::Error::other);
+    // A chunk sent again (say, after a lost connection) counts once more.
+    let again = |len| charge(&state, &channel, &limits, len).is_ok();
     state
         .store
-        .put_chunk(&channel, id, index, body, state.clock.now_ms())
+        .put_chunk(&channel, id, index, body, state.clock.now_ms(), again)
         .await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -824,11 +983,20 @@ async fn clear(
 async fn events(
     State(state): State<AppState>,
     Path(channel): Path<String>,
+    Extension(client): Extension<Client>,
 ) -> Result<Response, ApiError> {
     let channel = parse_channel(&channel)?;
+    let connection = state
+        .clients
+        .connect(client)
+        .map_err(|Crowded| ApiError::TooManyConnections)?;
+    let stream = state
+        .events
+        .stream(&channel, connection)
+        .ok_or(ApiError::TooManyListeners)?;
     // Tells nginx to pass each event on at once instead of buffering them.
     let no_buffering = (HeaderName::from_static("x-accel-buffering"), "no");
-    Ok(([no_buffering], state.events.stream(&channel)).into_response())
+    Ok(([no_buffering], stream).into_response())
 }
 
 fn etag(meta: &ClipMeta) -> String {

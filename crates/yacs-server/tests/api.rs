@@ -18,8 +18,7 @@ use yacs_core::{
     Invite, InviteSecret, MAX_CHUNK_SIZE, MAX_SEALED_INVITE, MIN_CHUNK_SIZE, Pairing, Payload,
 };
 use yacs_server::{
-    Accounts, AppState, Config, Events, Invites, ManualClock, RateLimiter, Rendezvous, Store,
-    router,
+    Accounts, AppState, Clients, Config, Events, Invites, ManualClock, Rendezvous, Store, router,
 };
 
 const START_MS: u64 = 1_758_600_000_000;
@@ -70,16 +69,17 @@ async fn app_in(dir: TempDir, args: &[&str]) -> TestApp {
     let clock = Arc::new(ManualClock::new(START_MS));
     let events = Arc::new(Events::default());
     let accounts = Arc::new(Accounts::open(&config.data_dir).await.unwrap());
-    let limiter = Arc::new(RateLimiter::new(config.requests_per_minute));
+    let clients = Arc::new(Clients::new(config.public, config.requests_per_minute));
+    let invites = Arc::new(Invites::new(config.public));
     let router = router(AppState {
         store: store.clone(),
         config: Arc::new(config),
         clock: clock.clone(),
         events: events.clone(),
-        invites: Arc::new(Invites::default()),
+        invites,
         rendezvous: Arc::new(Rendezvous::default()),
         accounts: accounts.clone(),
-        limiter,
+        clients,
     });
     TestApp {
         router,
@@ -1010,9 +1010,10 @@ async fn rejects_bad_invites() {
     let ch = channel(1);
     let secret = InviteSecret::generate().unwrap();
     let uri = invite_uri(&ch, &secret);
+    let too_big = app.put(&uri, vec![1; MAX_SEALED_INVITE + 1]).await;
+    assert_eq!(too_big.status, StatusCode::PAYLOAD_TOO_LARGE);
     for (uri, body) in [
         (uri.clone(), vec![]),
-        (uri.clone(), vec![1; MAX_SEALED_INVITE + 1]),
         (format!("{uri}?ttl=0"), vec![1]),
         (format!("/api/v1/channels/{ch}/invites/nope"), vec![1]),
     ] {
@@ -1084,7 +1085,8 @@ async fn a_code_exchange_through_the_relay() {
         .await;
     assert_eq!(opened.status, StatusCode::CREATED);
     let nameplate = opened.json::<RendezvousOpened>().nameplate;
-    assert_eq!(nameplate, 1);
+    // Random, and short while there's room.
+    assert!((1..1000).contains(&nameplate), "{nameplate}");
     // What the inviter shows, typed on the other device.
     let code: Code = inviter.code(nameplate).to_string().parse().unwrap();
 
@@ -1156,9 +1158,10 @@ async fn codes_wait_expire_and_close() {
     let a0 = format!("/api/v1/rendezvous/{nameplate}/a/0");
     assert_eq!(app.get(&a0).await.status, StatusCode::NOT_FOUND);
 
+    let too_big = app.post(&rendezvous(&ch), vec![1; 4097]).await;
+    assert_eq!(too_big.status, StatusCode::PAYLOAD_TOO_LARGE);
     for (uri, body) in [
         (rendezvous(&ch), vec![]),
-        (rendezvous(&ch), vec![1; 4097]),
         (format!("/api/v1/rendezvous/{nameplate}/b/9"), vec![1]),
     ] {
         let res = app
@@ -1403,4 +1406,270 @@ async fn unused_free_spaces_are_forgotten() {
     let app = app_in(app.dir, &["--public", "--access-token", "s3cret"]).await;
     assert!(app.accounts.account(&free_id).is_none());
     assert!(app.accounts.account(&owned_id).is_some());
+}
+
+#[tokio::test]
+async fn tells_callers_the_address_their_limits_count() {
+    let app = app(&["--public"]).await;
+    for (ip, shown) in [
+        ("203.0.113.9", "203.0.113.9\n"),
+        ("2001:db8:1:2::5", "2001:db8:1:2::/64\n"),
+    ] {
+        let res = app
+            .call(Method::GET, "/api/v1/address", &from(ip), vec![])
+            .await;
+        assert_eq!(res.status, StatusCode::OK);
+        assert_eq!(String::from_utf8(res.body).unwrap(), shown);
+        assert_eq!(res.headers[header::CACHE_CONTROL], "no-store");
+    }
+}
+
+/// A public relay that doesn't limit request rates, to test the other limits.
+async fn public_app(args: &[&str]) -> TestApp {
+    let mut all = vec!["--public", "--requests-per-minute", "1000000"];
+    all.extend_from_slice(args);
+    app(&all).await
+}
+
+#[tokio::test]
+async fn strangers_can_neither_find_nor_spoil_codes() {
+    let app = public_app(&[]).await;
+    let (inviter, joiner) = ("198.51.100.1", "192.0.2.7");
+    let ch = channel(1);
+    let opened = app
+        .call(Method::POST, &rendezvous(&ch), &from(inviter), vec![1])
+        .await;
+    assert_eq!(opened.status, StatusCode::CREATED);
+    let nameplate = opened.json::<RendezvousOpened>().nameplate;
+
+    // Looking for open codes runs out after a few misses.
+    let prober = "203.0.113.66";
+    let mut statuses = Vec::new();
+    for n in (1..=999u16).filter(|n| *n != nameplate).take(40) {
+        let uri = format!("/api/v1/rendezvous/{n}/a/0?wait=0");
+        statuses.push(
+            app.call(Method::GET, &uri, &from(prober), vec![])
+                .await
+                .status,
+        );
+    }
+    let misses = statuses
+        .iter()
+        .filter(|s| **s == StatusCode::NOT_FOUND)
+        .count();
+    assert_eq!(misses, yacs_server::clients::LOOKUPS_PER_WINDOW as usize);
+    assert!(
+        statuses[misses..]
+            .iter()
+            .all(|s| *s == StatusCode::TOO_MANY_REQUESTS)
+    );
+    let a0 = format!("/api/v1/rendezvous/{nameplate}/a/0?wait=0");
+    let found = app.call(Method::GET, &a0, &from(prober), vec![]).await;
+    assert_eq!(found.status, StatusCode::TOO_MANY_REQUESTS);
+
+    // So does sending answers.
+    let spoiler = "203.0.113.77";
+    for n in 0..yacs_server::clients::LOOKUPS_PER_WINDOW {
+        let uri = format!("/api/v1/rendezvous/{}/b/0", 1000 + n);
+        let res = app.call(Method::PUT, &uri, &from(spoiler), vec![1]).await;
+        assert_eq!(res.status, StatusCode::NOT_FOUND);
+    }
+    let b0 = format!("/api/v1/rendezvous/{nameplate}/b/0");
+    let spoiled = app.call(Method::PUT, &b0, &from(spoiler), vec![1]).await;
+    assert_eq!(spoiled.status, StatusCode::TOO_MANY_REQUESTS);
+
+    // The real joiner still gets through.
+    let got = app.call(Method::GET, &a0, &from(joiner), vec![]).await;
+    assert_eq!(got.status, StatusCode::OK);
+    let answered = app.call(Method::PUT, &b0, &from(joiner), vec![2]).await;
+    assert_eq!(answered.status, StatusCode::NO_CONTENT);
+    let a1 = format!("{}/{nameplate}/a/1", rendezvous(&ch));
+    let put = app.call(Method::PUT, &a1, &from(inviter), vec![3]).await;
+    assert_eq!(put.status, StatusCode::NO_CONTENT);
+
+    // Someone else reading the (sealed) invite doesn't end the exchange...
+    let joiner_a1 = format!("/api/v1/rendezvous/{nameplate}/a/1?wait=0");
+    let peek = app
+        .call(Method::GET, &joiner_a1, &from("203.0.113.88"), vec![])
+        .await;
+    assert_eq!(peek.status, StatusCode::OK);
+    // ...the joiner's read does.
+    let taken = app
+        .call(Method::GET, &joiner_a1, &from(joiner), vec![])
+        .await;
+    assert_eq!(taken.body, vec![3]);
+    let gone = app.call(Method::GET, &a0, &from(joiner), vec![]).await;
+    assert_eq!(gone.status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn one_address_opens_a_limited_number_of_codes() {
+    let app = public_app(&[]).await;
+    let ch = channel(1);
+    let ip = from("203.0.113.1");
+    for _ in 0..yacs_server::clients::CODES_PER_WINDOW {
+        let opened = app.call(Method::POST, &rendezvous(&ch), &ip, vec![1]).await;
+        assert_eq!(opened.status, StatusCode::CREATED);
+        let nameplate = opened.json::<RendezvousOpened>().nameplate;
+        let close = format!("{}/{nameplate}", rendezvous(&ch));
+        let closed = app.call(Method::DELETE, &close, &ip, vec![]).await;
+        assert_eq!(closed.status, StatusCode::NO_CONTENT);
+    }
+    let more = app.call(Method::POST, &rendezvous(&ch), &ip, vec![1]).await;
+    assert_eq!(more.status, StatusCode::TOO_MANY_REQUESTS);
+    let elsewhere = app
+        .call(
+            Method::POST,
+            &rendezvous(&ch),
+            &from("203.0.113.2"),
+            vec![1],
+        )
+        .await;
+    assert_eq!(elsewhere.status, StatusCode::CREATED);
+    app.clock.advance(Duration::from_secs(60));
+    let later = app.call(Method::POST, &rendezvous(&ch), &ip, vec![1]).await;
+    assert_eq!(later.status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn one_address_holds_a_limited_number_of_streams() {
+    let app = public_app(&["--new-spaces-per-ip", "100"]).await;
+    let ip = from("203.0.113.1");
+    let mut listeners = Vec::new();
+    for n in 0..yacs_server::clients::MAX_CONNECTIONS {
+        let listener = app.listen(&channel(n as u8), &ip).await;
+        assert_eq!(listener.status, StatusCode::OK);
+        listeners.push(listener);
+    }
+    assert_eq!(
+        app.listen(&channel(1), &ip).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // Waiting reads count too; reads that don't wait don't.
+    let wait = format!("{}/1/b/0?wait=5", rendezvous(&channel(1)));
+    let res = app.call(Method::GET, &wait, &ip, vec![]).await;
+    assert_eq!(res.status, StatusCode::TOO_MANY_REQUESTS);
+    let no_wait = format!("{}/1/b/0?wait=0", rendezvous(&channel(1)));
+    let res = app.call(Method::GET, &no_wait, &ip, vec![]).await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
+
+    assert_eq!(
+        app.listen(&channel(1), &from("203.0.113.2")).await.status,
+        StatusCode::OK
+    );
+    listeners.pop();
+    assert_eq!(app.listen(&channel(1), &ip).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn one_address_uploads_a_limited_amount_to_free_spaces() {
+    let size = envelope("hi").len();
+    let limit = format!("{}B", 2 * size);
+    let app = public_app(&["--free-daily-upload-per-ip", &limit]).await;
+    let post = |ch: String, ip: &'static str| {
+        let app = &app;
+        async move {
+            app.call(Method::POST, &clips(&ch), &from(ip), envelope("hi"))
+                .await
+                .status
+        }
+    };
+    assert_eq!(post(channel(1), "203.0.113.1").await, StatusCode::CREATED);
+    // All its spaces count together.
+    assert_eq!(post(channel(2), "203.0.113.1").await, StatusCode::CREATED);
+    assert_eq!(
+        post(channel(3), "203.0.113.1").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let upload = app
+        .call(
+            Method::POST,
+            &upload_uri(&channel(1), CHUNK, CHUNK),
+            &from("203.0.113.1"),
+            envelope("header"),
+        )
+        .await;
+    assert_eq!(upload.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(post(channel(1), "203.0.113.2").await, StatusCode::CREATED);
+    app.clock.advance(Duration::from_secs(24 * 3600));
+    assert_eq!(post(channel(3), "203.0.113.1").await, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn free_uploads_have_a_deadline_and_repeated_chunks_count() {
+    let header = envelope("header").len() as u64;
+    let transfer = format!("{}B", header + 3 * CHUNK);
+    let app = public_app(&[
+        "--free-daily-transfer",
+        &transfer,
+        "--free-max-size",
+        "10MB",
+    ])
+    .await;
+    let ch = channel(1);
+    let id = app.start_upload(&ch, 2 * CHUNK).await;
+    let chunk = sealed(CHUNK);
+    let put = |index: usize| {
+        let (app, ch, id, chunk) = (&app, &ch, &id, chunk.clone());
+        async move { app.put(&chunk_uri(ch, id, index), chunk).await.status }
+    };
+    assert_eq!(put(0).await, StatusCode::NO_CONTENT);
+    // Paid for when the upload started; a repeat is paid again, once more
+    // than the plan's transfer allows.
+    assert_eq!(put(0).await, StatusCode::NO_CONTENT);
+    assert_eq!(put(0).await, StatusCode::TOO_MANY_REQUESTS);
+
+    // Busy all along, it's still gone after the free plan's longest TTL.
+    app.clock.advance(Duration::from_secs(59 * 60));
+    assert_eq!(put(1).await, StatusCode::NO_CONTENT);
+    app.clock.advance(Duration::from_secs(2 * 60));
+    let complete = app
+        .post(&format!("{}/complete", uploads(&ch, &id)), vec![])
+        .await;
+    assert_eq!(complete.status, StatusCode::NOT_FOUND);
+    app.store.reap(app.clock_now()).await.unwrap();
+    assert_eq!(app.store.used_bytes(), 0);
+}
+
+#[tokio::test]
+async fn a_chunk_is_written_once_at_a_time() {
+    let app = app(&[]).await;
+    let ch = channel(1);
+    let id = app.start_upload(&ch, CHUNK).await;
+    let uri = chunk_uri(&ch, &id, 0);
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+    let body = futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|b| (Ok::<_, std::io::Error>(b), rx))
+    });
+    let slow = Request::put(&uri).body(Body::from_stream(body)).unwrap();
+    let first = tokio::spawn(app.router.clone().oneshot(slow));
+    tx.send(sealed(CHUNK)[..100].to_vec()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert_eq!(
+        app.put(&uri, sealed(CHUNK)).await.status,
+        StatusCode::CONFLICT
+    );
+    tx.send(sealed(CHUNK)[100..].to_vec()).await.unwrap();
+    drop(tx);
+    assert_eq!(
+        first.await.unwrap().unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    // Done, so it may be sent again.
+    assert_eq!(
+        app.put(&uri, sealed(CHUNK)).await.status,
+        StatusCode::NO_CONTENT
+    );
+}
+
+#[tokio::test]
+async fn small_requests_stay_small() {
+    let app = app(&[]).await;
+    let b0 = "/api/v1/rendezvous/1/b/0";
+    let res = app.put(b0, vec![1; 4097]).await;
+    assert_eq!(res.status, StatusCode::PAYLOAD_TOO_LARGE);
+    let big = app.post(&clips(&channel(1)), vec![0; 21_000_000]).await;
+    assert_eq!(big.status, StatusCode::PAYLOAD_TOO_LARGE);
 }

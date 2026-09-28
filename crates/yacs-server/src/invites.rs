@@ -8,8 +8,14 @@ use std::sync::Mutex;
 use axum::body::Bytes;
 use yacs_core::{ChannelId, InviteSlot};
 
+use crate::clients::{self, Client};
+
 /// Open invites per space. Each one is a device about to join, so a few do.
 pub const MAX_PER_CHANNEL: usize = 20;
+/// Open invites per address, on a public relay (see [`clients::SITE_SHARE`]
+/// for IPv6): a few spaces' worth, so that filling [`MAX_TOTAL`] takes
+/// hundreds of addresses.
+pub const MAX_PER_CLIENT: usize = 40;
 /// All open invites; each holds at most 4 KB.
 const MAX_TOTAL: usize = 10_000;
 
@@ -22,6 +28,7 @@ pub enum InviteError {
 
 struct Parked {
     channel: ChannelId,
+    client: Client,
     expires_at_ms: u64,
     sealed: Bytes,
 }
@@ -29,12 +36,22 @@ struct Parked {
 #[derive(Default)]
 pub struct Invites {
     parked: Mutex<HashMap<InviteSlot, Parked>>,
+    /// Whether [`MAX_PER_CLIENT`] applies.
+    per_client: bool,
 }
 
 impl Invites {
+    pub fn new(per_client: bool) -> Self {
+        Self {
+            parked: Mutex::default(),
+            per_client,
+        }
+    }
+
     pub fn put(
         &self,
         channel: ChannelId,
+        client: Client,
         slot: InviteSlot,
         sealed: Bytes,
         now_ms: u64,
@@ -49,10 +66,16 @@ impl Invites {
         if open >= MAX_PER_CHANNEL || parked.len() >= MAX_TOTAL {
             return Err(InviteError::TooMany);
         }
+        if self.per_client
+            && !clients::below(&client, parked.values().map(|p| p.client), MAX_PER_CLIENT)
+        {
+            return Err(InviteError::TooMany);
+        }
         parked.insert(
             slot,
             Parked {
                 channel,
+                client,
                 expires_at_ms,
                 sealed,
             },
@@ -96,23 +119,27 @@ mod tests {
         InviteSecret::from_bytes([n; 32]).slot()
     }
 
+    fn client() -> Client {
+        Client::from_ip([203, 0, 113, 1].into())
+    }
+
     #[test]
     fn taken_once_until_it_expires() {
         let invites = Invites::default();
         let channel = ChannelId::from_bytes([1; 32]);
         let sealed = Bytes::from_static(b"sealed");
         invites
-            .put(channel, slot(1), sealed.clone(), 0, 100)
+            .put(channel, client(), slot(1), sealed.clone(), 0, 100)
             .unwrap();
         assert_eq!(
-            invites.put(channel, slot(1), sealed.clone(), 0, 100),
+            invites.put(channel, client(), slot(1), sealed.clone(), 0, 100),
             Err(InviteError::Exists)
         );
         assert_eq!(invites.take(&slot(1), 50), Some((channel, sealed.clone())));
         assert_eq!(invites.take(&slot(1), 50), None);
 
         invites
-            .put(channel, slot(2), sealed.clone(), 0, 100)
+            .put(channel, client(), slot(2), sealed.clone(), 0, 100)
             .unwrap();
         assert_eq!(invites.take(&slot(2), 100), None);
     }
@@ -125,26 +152,58 @@ mod tests {
             ChannelId::from_bytes([2; 32]),
         );
         for n in 0..MAX_PER_CHANNEL as u8 {
-            invites.put(a, slot(n), Bytes::new(), 0, 100).unwrap();
+            invites
+                .put(a, client(), slot(n), Bytes::new(), 0, 100)
+                .unwrap();
         }
         assert_eq!(
-            invites.put(a, slot(200), Bytes::new(), 0, 100),
+            invites.put(a, client(), slot(200), Bytes::new(), 0, 100),
             Err(InviteError::TooMany)
         );
-        invites.put(b, slot(200), Bytes::new(), 0, 100).unwrap();
+        invites
+            .put(b, client(), slot(200), Bytes::new(), 0, 100)
+            .unwrap();
 
         assert!(!invites.revoke(&b, &slot(0)));
         assert!(invites.revoke(&a, &slot(0)));
         assert!(!invites.revoke(&a, &slot(0)));
-        invites.put(a, slot(201), Bytes::new(), 0, 100).unwrap();
+        invites
+            .put(a, client(), slot(201), Bytes::new(), 0, 100)
+            .unwrap();
 
         // Expired ones make room.
         assert_eq!(
-            invites.put(a, slot(202), Bytes::new(), 0, 100),
+            invites.put(a, client(), slot(202), Bytes::new(), 0, 100),
             Err(InviteError::TooMany)
         );
-        invites.put(a, slot(202), Bytes::new(), 100, 200).unwrap();
+        invites
+            .put(a, client(), slot(202), Bytes::new(), 100, 200)
+            .unwrap();
         invites.prune(200);
         assert!(invites.lock().is_empty());
+    }
+
+    #[test]
+    fn a_public_relay_limits_open_invites_per_address() {
+        let invites = Invites::new(true);
+        let mut n = 0u8;
+        for space in 0..MAX_PER_CLIENT / MAX_PER_CHANNEL {
+            let channel = ChannelId::from_bytes([space as u8; 32]);
+            for _ in 0..MAX_PER_CHANNEL {
+                invites
+                    .put(channel, client(), slot(n), Bytes::new(), 0, 100)
+                    .unwrap();
+                n += 1;
+            }
+        }
+        let fresh = ChannelId::from_bytes([99; 32]);
+        assert_eq!(
+            invites.put(fresh, client(), slot(n), Bytes::new(), 0, 100),
+            Err(InviteError::TooMany)
+        );
+        let other = Client::from_ip([203, 0, 113, 2].into());
+        invites
+            .put(fresh, other, slot(n), Bytes::new(), 0, 100)
+            .unwrap();
     }
 }

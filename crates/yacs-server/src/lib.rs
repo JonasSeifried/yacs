@@ -3,7 +3,7 @@
 
 mod accounts;
 mod api;
-mod clients;
+pub mod clients;
 pub mod clock;
 mod config;
 mod events;
@@ -22,7 +22,7 @@ use tokio::net::TcpListener;
 
 pub use accounts::Accounts;
 pub use api::{AppState, router};
-pub use clients::RateLimiter;
+pub use clients::{Client, Clients, RateLimiter};
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use config::Config;
 pub use events::Events;
@@ -48,10 +48,10 @@ pub async fn run(
         .await?,
     );
     let accounts = Arc::new(Accounts::open(&config.data_dir).await?);
-    let limiter = Arc::new(RateLimiter::new(config.requests_per_minute));
+    let clients = Arc::new(Clients::new(config.public, config.requests_per_minute));
+    let invites = Arc::new(Invites::new(config.public));
     let config = Arc::new(config);
     let events = Arc::new(Events::default());
-    let invites = Arc::new(Invites::default());
     let rendezvous = Arc::new(Rendezvous::default());
     let app = router(AppState {
         store: store.clone(),
@@ -61,7 +61,7 @@ pub async fn run(
         invites: invites.clone(),
         rendezvous: rendezvous.clone(),
         accounts: accounts.clone(),
-        limiter: limiter.clone(),
+        clients: clients.clone(),
     });
 
     let reaper_events = events.clone();
@@ -73,7 +73,7 @@ pub async fn run(
             reaper_events.prune();
             invites.prune(clock.now_ms());
             rendezvous.prune(clock.now_ms());
-            limiter.prune(clock.now_ms());
+            clients.prune(clock.now_ms());
             if let Err(e) = reaper_accounts.prune(clock.now_ms()).await {
                 tracing::error!(error = %e, "can't save the registered spaces");
             }

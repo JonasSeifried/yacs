@@ -5,7 +5,10 @@
 //! inviter shows a new code.
 //!
 //! Each message can be written once, so the side typing the code gets one
-//! answer, and with it one guess, per nameplate.
+//! answer, and with it one guess, per nameplate. Nameplates are random, so
+//! a stranger can't tell which ones are open without trying them (which the
+//! API limits per address), and only the device that answered can end the
+//! exchange by reading the invite.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
@@ -14,6 +17,8 @@ use std::time::Duration;
 use axum::body::Bytes;
 use tokio::sync::watch;
 use yacs_core::{CODE_TTL_SECS, ChannelId, MAX_NAMEPLATE};
+
+use crate::clients::Client;
 
 /// Open codes per space: an Invite window shows one, two leaves room for a second window.
 pub const MAX_PER_CHANNEL: usize = 2;
@@ -24,6 +29,8 @@ pub const MAX_MESSAGE: usize = 4096;
 /// Longest a read waits for its message, below the 60 s after which proxies
 /// (nginx) drop a quiet request.
 pub const MAX_WAIT: Duration = Duration::from_secs(25);
+/// Nameplates are picked below this while there's room, so codes stay short.
+const SHORT_NAMEPLATES: u16 = 999;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Side {
@@ -47,14 +54,37 @@ struct Mailbox {
     channel: ChannelId,
     expires_at_ms: u64,
     messages: HashMap<(Side, u8), Bytes>,
+    /// Who wrote the answer (`b/0`).
+    joiner: Option<Client>,
     /// Wakes readers when a message arrives. Dropped with the mailbox, which
     /// wakes them too.
     changed: watch::Sender<()>,
 }
 
-#[derive(Default)]
 pub struct Rendezvous {
     board: Mutex<Board>,
+    /// Picks one of `n` free nameplates.
+    pick: fn(usize) -> usize,
+}
+
+impl Default for Rendezvous {
+    fn default() -> Self {
+        Self {
+            board: Mutex::default(),
+            pick: random_below,
+        }
+    }
+}
+
+fn random_below(n: usize) -> usize {
+    let n = n as u32;
+    let limit = u32::MAX - u32::MAX % n;
+    loop {
+        let x = getrandom::u32().expect("the OS has randomness");
+        if x < limit {
+            return (x % n) as usize;
+        }
+    }
 }
 
 /// How long a nameplate rests once its rendezvous ends, so a code typed late
@@ -116,7 +146,8 @@ impl Board {
 
 impl Rendezvous {
     /// A new mailbox for `channel`, holding the inviter's first message as
-    /// `a/0`. Returns its nameplate, the lowest one free.
+    /// `a/0`. Returns its nameplate, a random free one: below
+    /// [`SHORT_NAMEPLATES`] if one is, else up to [`MAX_NAMEPLATE`].
     pub fn open(
         &self,
         channel: ChannelId,
@@ -129,23 +160,35 @@ impl Rendezvous {
         if board.open.values().filter(|m| m.channel == channel).count() >= MAX_PER_CHANNEL {
             return Err(RendezvousError::TooMany);
         }
-        let nameplate = (1..=MAX_NAMEPLATE)
-            .find(|n| !board.open.contains_key(n) && !board.resting.contains_key(n))
-            .ok_or(RendezvousError::Full)?;
+        let free = |range: std::ops::RangeInclusive<u16>| -> Vec<u16> {
+            range
+                .filter(|n| !board.open.contains_key(n) && !board.resting.contains_key(n))
+                .collect()
+        };
+        let mut candidates = free(1..=SHORT_NAMEPLATES);
+        if candidates.is_empty() {
+            candidates = free(SHORT_NAMEPLATES + 1..=MAX_NAMEPLATE);
+        }
+        if candidates.is_empty() {
+            return Err(RendezvousError::Full);
+        }
+        let nameplate = candidates[(self.pick)(candidates.len())];
         board.open.insert(
             nameplate,
             Mailbox {
                 channel,
                 expires_at_ms,
                 messages: HashMap::from([((Side::A, 0), first)]),
+                joiner: None,
                 changed: watch::Sender::new(()),
             },
         );
         Ok(nameplate)
     }
 
-    /// Writes message `side/index`. Side `a` only for its own space's members
-    /// (`channel`), side `b` for anyone.
+    /// Writes message `side/index` from `client`. Side `a` only for its own
+    /// space's members (`channel`), side `b` for anyone.
+    #[allow(clippy::too_many_arguments)]
     pub fn put(
         &self,
         nameplate: u16,
@@ -153,6 +196,7 @@ impl Rendezvous {
         index: u8,
         body: Bytes,
         channel: Option<&ChannelId>,
+        client: Client,
         now_ms: u64,
     ) -> Result<(), RendezvousError> {
         if side == Side::A && channel.is_none() {
@@ -164,20 +208,26 @@ impl Rendezvous {
             return Err(RendezvousError::Taken);
         }
         mailbox.messages.insert((side, index), body);
+        if (side, index) == (Side::B, 0) {
+            mailbox.joiner = Some(client);
+        }
         mailbox.changed.send_replace(());
         Ok(())
     }
 
-    /// Message `side/index`, waiting up to `wait` for it: `None` if it didn't
-    /// come in time. Side `b`'s messages only for the space's members. The
-    /// joiner's read of the invite (`a/1`) closes the mailbox, since that's
-    /// the end of the exchange.
+    /// Message `side/index` for `client`, waiting up to `wait` for it: `None`
+    /// if it didn't come in time. Side `b`'s messages only for the space's
+    /// members. The joiner's read of the invite (`a/1`) closes the mailbox,
+    /// since that's the end of the exchange; anyone else's read doesn't, so
+    /// they can't take it away from the joiner (they can't open it either).
+    #[allow(clippy::too_many_arguments)]
     pub async fn read(
         &self,
         nameplate: u16,
         side: Side,
         index: u8,
         channel: Option<&ChannelId>,
+        client: Client,
         now_ms: impl Fn() -> u64,
         wait: Duration,
     ) -> Result<Option<Bytes>, RendezvousError> {
@@ -191,7 +241,10 @@ impl Rendezvous {
                 let mut board = self.lock();
                 let mailbox = board.live(nameplate, channel, now)?;
                 if let Some(message) = mailbox.messages.get(&(side, index)).cloned() {
-                    if channel.is_none() && (side, index) == (Side::A, 1) {
+                    if channel.is_none()
+                        && (side, index) == (Side::A, 1)
+                        && mailbox.joiner == Some(client)
+                    {
                         board.end(nameplate, now);
                     }
                     return Ok(Some(message));
@@ -238,6 +291,18 @@ mod tests {
     use super::*;
 
     const NO_WAIT: Duration = Duration::ZERO;
+    const JOINER: Client = Client::from_v4([203, 0, 113, 1]);
+    const STRANGER: Client = Client::from_v4([203, 0, 113, 2]);
+
+    impl Rendezvous {
+        /// Hands out the lowest free nameplate, so tests know which.
+        fn lowest() -> Self {
+            Self {
+                board: Mutex::default(),
+                pick: |_| 0,
+            }
+        }
+    }
 
     fn channel(n: u8) -> ChannelId {
         ChannelId::from_bytes([n; 32])
@@ -245,44 +310,55 @@ mod tests {
 
     #[tokio::test]
     async fn a_whole_exchange() {
-        let r = Rendezvous::default();
+        let r = Rendezvous::lowest();
         let a = channel(1);
         let n = r.open(a, Bytes::from_static(b"a0"), 0, 100).unwrap();
         assert_eq!(n, 1);
         let now = || 0;
 
-        let first = r.read(n, Side::A, 0, None, now, NO_WAIT).await;
+        let first = r.read(n, Side::A, 0, None, JOINER, now, NO_WAIT).await;
         assert_eq!(first, Ok(Some(Bytes::from_static(b"a0"))));
-        r.put(n, Side::B, 0, Bytes::from_static(b"b0"), None, 0)
+        r.put(n, Side::B, 0, Bytes::from_static(b"b0"), None, JOINER, 0)
             .unwrap();
         assert_eq!(
-            r.put(n, Side::B, 0, Bytes::from_static(b"guess"), None, 0),
+            r.put(n, Side::B, 0, Bytes::from_static(b"guess"), None, JOINER, 0),
             Err(RendezvousError::Taken)
         );
-        let answer = r.read(n, Side::B, 0, Some(&a), now, NO_WAIT).await;
+        let answer = r.read(n, Side::B, 0, Some(&a), JOINER, now, NO_WAIT).await;
         assert_eq!(answer, Ok(Some(Bytes::from_static(b"b0"))));
-        r.put(n, Side::A, 1, Bytes::from_static(b"a1"), Some(&a), 0)
-            .unwrap();
-        let invite = r.read(n, Side::A, 1, None, now, NO_WAIT).await;
+        r.put(
+            n,
+            Side::A,
+            1,
+            Bytes::from_static(b"a1"),
+            Some(&a),
+            JOINER,
+            0,
+        )
+        .unwrap();
+        // A stranger may read the sealed invite, but that doesn't end it.
+        let peek = r.read(n, Side::A, 1, None, STRANGER, now, NO_WAIT).await;
+        assert_eq!(peek, Ok(Some(Bytes::from_static(b"a1"))));
+        let invite = r.read(n, Side::A, 1, None, JOINER, now, NO_WAIT).await;
         assert_eq!(invite, Ok(Some(Bytes::from_static(b"a1"))));
         // Done: the mailbox is gone.
-        let again = r.read(n, Side::A, 1, None, now, NO_WAIT).await;
+        let again = r.read(n, Side::A, 1, None, JOINER, now, NO_WAIT).await;
         assert_eq!(again, Err(RendezvousError::NotFound));
     }
 
     #[tokio::test]
     async fn only_members_write_side_a_and_read_side_b() {
-        let r = Rendezvous::default();
+        let r = Rendezvous::lowest();
         let n = r.open(channel(1), Bytes::new(), 0, 100).unwrap();
         for other in [None, Some(&channel(2))] {
             assert_eq!(
-                r.put(n, Side::A, 1, Bytes::new(), other, 0),
+                r.put(n, Side::A, 1, Bytes::new(), other, JOINER, 0),
                 Err(RendezvousError::NotFound)
             );
-            let read = r.read(n, Side::B, 0, other, || 0, NO_WAIT).await;
+            let read = r.read(n, Side::B, 0, other, JOINER, || 0, NO_WAIT).await;
             assert_eq!(read, Err(RendezvousError::NotFound));
         }
-        r.put(n, Side::A, 1, Bytes::new(), Some(&channel(1)), 0)
+        r.put(n, Side::A, 1, Bytes::new(), Some(&channel(1)), JOINER, 0)
             .unwrap();
         assert!(!r.close(&channel(2), n, 0));
         assert!(r.close(&channel(1), n, 0));
@@ -290,36 +366,44 @@ mod tests {
 
     #[tokio::test]
     async fn readers_wait_for_the_message_or_the_end() {
-        let r = Arc::new(Rendezvous::default());
+        let r = Arc::new(Rendezvous::lowest());
         let a = channel(1);
         let n = r.open(a, Bytes::new(), 0, 100).unwrap();
         let wait = Duration::from_secs(5);
 
         let reader = {
             let r = r.clone();
-            tokio::spawn(async move { r.read(n, Side::B, 0, Some(&a), || 0, wait).await })
+            tokio::spawn(async move { r.read(n, Side::B, 0, Some(&a), JOINER, || 0, wait).await })
         };
         tokio::task::yield_now().await;
-        r.put(n, Side::B, 0, Bytes::from_static(b"b0"), None, 0)
+        r.put(n, Side::B, 0, Bytes::from_static(b"b0"), None, JOINER, 0)
             .unwrap();
         assert_eq!(reader.await.unwrap(), Ok(Some(Bytes::from_static(b"b0"))));
 
         let reader = {
             let r = r.clone();
-            tokio::spawn(async move { r.read(n, Side::A, 1, None, || 0, wait).await })
+            tokio::spawn(async move { r.read(n, Side::A, 1, None, JOINER, || 0, wait).await })
         };
         tokio::task::yield_now().await;
         r.close(&a, n, 0);
         assert_eq!(reader.await.unwrap(), Err(RendezvousError::NotFound));
 
         let n = r.open(a, Bytes::new(), 0, 100).unwrap();
-        let quiet = r.read(n, Side::B, 0, Some(&a), || 0, Duration::from_millis(10));
+        let quiet = r.read(
+            n,
+            Side::B,
+            0,
+            Some(&a),
+            JOINER,
+            || 0,
+            Duration::from_millis(10),
+        );
         assert_eq!(quiet.await, Ok(None));
     }
 
     #[tokio::test]
     async fn limited_per_space_and_expiring() {
-        let r = Rendezvous::default();
+        let r = Rendezvous::lowest();
         let (a, b) = (channel(1), channel(2));
         assert_eq!(r.open(a, Bytes::new(), 0, 100), Ok(1));
         assert_eq!(r.open(a, Bytes::new(), 0, 100), Ok(2));
@@ -329,7 +413,7 @@ mod tests {
         );
         assert_eq!(r.open(b, Bytes::new(), 0, 100), Ok(3));
 
-        let expired = r.read(2, Side::A, 0, None, || 100, NO_WAIT).await;
+        let expired = r.read(2, Side::A, 0, None, JOINER, || 100, NO_WAIT).await;
         assert_eq!(expired, Err(RendezvousError::NotFound));
         r.prune(100);
         assert!(r.lock().open.is_empty());
@@ -337,13 +421,13 @@ mod tests {
 
     #[tokio::test]
     async fn nameplates_rest_before_they_come_back() {
-        let r = Rendezvous::default();
+        let r = Rendezvous::lowest();
         let a = channel(1);
         assert_eq!(r.open(a, Bytes::new(), 0, 100), Ok(1));
         r.close(&a, 1, 10);
         // A late code for 1 finds nothing, not the next code.
         assert_eq!(r.open(a, Bytes::new(), 10, 110), Ok(2));
-        let late = r.read(1, Side::A, 0, None, || 20, NO_WAIT).await;
+        let late = r.read(1, Side::A, 0, None, JOINER, || 20, NO_WAIT).await;
         assert_eq!(late, Err(RendezvousError::NotFound));
 
         r.close(&a, 2, 20);
@@ -355,5 +439,28 @@ mod tests {
         assert!(r.lock().resting.contains_key(&3));
         r.prune(50 + REST_MS);
         assert!(!r.lock().resting.contains_key(&3));
+    }
+
+    #[test]
+    fn nameplates_are_random_and_short_while_there_is_room() {
+        let r = Rendezvous::default();
+        let nameplates: std::collections::BTreeSet<u16> = (0..50u8)
+            .map(|n| r.open(channel(n), Bytes::new(), 0, 100).unwrap())
+            .collect();
+        assert_eq!(nameplates.len(), 50);
+        assert!(
+            nameplates
+                .iter()
+                .all(|n| (1..=SHORT_NAMEPLATES).contains(n))
+        );
+        // Not just 1 to 50.
+        assert!(nameplates.last() > Some(&50));
+
+        let r = Rendezvous::lowest();
+        r.lock().resting = (1..=SHORT_NAMEPLATES).map(|n| (n, u64::MAX)).collect();
+        assert_eq!(
+            r.open(channel(1), Bytes::new(), 0, 100),
+            Ok(SHORT_NAMEPLATES + 1)
+        );
     }
 }

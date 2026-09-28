@@ -4,14 +4,15 @@
 //! account key it gets the owner's account, and on a public relay anyone
 //! may register one on the free plan. After that its members need no key.
 //! Registrations live in `{data dir}/accounts.json`, since joiners depend on
-//! them; the per-IP and per-day counters are in memory only.
+//! them; the per-IP and per-day counters are in memory only. The owner's
+//! spaces are saved at once; free ones with the next reap, at most a minute
+//! later, since a free space lost in a crash just registers again.
 //!
 //! Free spaces unused for [`FORGET_FREE_AFTER_DAYS`] are forgotten: their
 //! clips are long gone, and their next request just registers them again.
 
 use std::collections::HashMap;
 use std::io;
-use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +23,7 @@ use tokio::fs;
 use yacs_core::ChannelId;
 use yacs_core::api::{Plan, SpaceLimits};
 
+use crate::clients::{Client, DailyQuota};
 use crate::config::Config;
 
 const FILE: &str = "accounts.json";
@@ -141,7 +143,9 @@ pub struct Accounts {
     dirty: AtomicBool,
     /// Serializes saves, so an older snapshot never replaces a newer one.
     saving: tokio::sync::Mutex<()>,
-    new_spaces: Mutex<HashMap<IpAddr, Daily>>,
+    new_spaces: DailyQuota,
+    /// Bytes each address uploaded to free spaces today.
+    free_uploads: DailyQuota,
     transfer: Mutex<HashMap<ChannelId, Daily>>,
 }
 
@@ -175,12 +179,13 @@ impl Accounts {
             spaces: Mutex::new(spaces),
             dirty: AtomicBool::new(false),
             saving: tokio::sync::Mutex::new(()),
-            new_spaces: Mutex::new(HashMap::new()),
+            new_spaces: DailyQuota::default(),
+            free_uploads: DailyQuota::default(),
             transfer: Mutex::new(HashMap::new()),
         })
     }
 
-    /// The account of `channel` for a request carrying `key`, from `ip`.
+    /// The account of `channel` for a request carrying `key`, from `client`.
     /// Registers the space if it's new and may be. `Ok(None)`: a relay
     /// without accounts, where every space is unlimited.
     pub async fn authorize(
@@ -188,7 +193,7 @@ impl Accounts {
         config: &Config,
         channel: &ChannelId,
         key: Option<&str>,
-        ip: IpAddr,
+        client: Client,
         now_ms: u64,
     ) -> Result<Option<Account>, Refusal> {
         let today = day(now_ms);
@@ -228,13 +233,10 @@ impl Accounts {
         let account = match (owner, config.public) {
             (true, _) => Account::Owner,
             (false, true) => {
-                let mut counts = self.new_spaces.lock().expect("new spaces lock poisoned");
-                let count = counts.entry(ip).or_default();
-                let n = count.get(today);
-                if n >= u64::from(config.new_spaces_per_ip) {
+                let limit = u64::from(config.new_spaces_per_ip);
+                if !self.new_spaces.take(&client, 1, limit, today) {
                     return Err(Refusal::TooManySpaces);
                 }
-                count.set(today, n + 1);
                 Account::Free
             }
             (false, false) => return Err(Refusal::Unauthorized),
@@ -246,7 +248,11 @@ impl Accounts {
                 used_day: today,
             },
         );
-        if let Err(e) = self.save().await {
+        if account == Account::Free {
+            // Saved with the next reap: anyone can register free spaces, and
+            // saving each one would rewrite the whole file every time.
+            self.dirty.store(true, Ordering::SeqCst);
+        } else if let Err(e) = self.save().await {
             // Still registered in memory; the next save writes it.
             self.dirty.store(true, Ordering::SeqCst);
             tracing::error!(error = %e, "can't save the registered spaces");
@@ -269,6 +275,12 @@ impl Accounts {
         true
     }
 
+    /// Counts `bytes` uploaded to a free space against `client`'s daily
+    /// `limit`, unless they'd go over.
+    pub fn charge_upload(&self, client: &Client, bytes: u64, limit: u64, now_ms: u64) -> bool {
+        self.free_uploads.take(client, bytes, limit, day(now_ms))
+    }
+
     /// Bytes the space moved today.
     pub fn transferred(&self, channel: &ChannelId, now_ms: u64) -> u64 {
         let transfer = self.transfer.lock().expect("transfer lock poisoned");
@@ -279,10 +291,8 @@ impl Accounts {
     /// what changed.
     pub async fn prune(&self, now_ms: u64) -> io::Result<()> {
         let today = day(now_ms);
-        self.new_spaces
-            .lock()
-            .expect("new spaces lock poisoned")
-            .retain(|_, d| d.day == today);
+        self.new_spaces.prune(today);
+        self.free_uploads.prune(today);
         self.transfer
             .lock()
             .expect("transfer lock poisoned")

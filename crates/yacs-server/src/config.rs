@@ -62,6 +62,12 @@ pub struct Config {
     #[arg(long, env = "YACS_FREE_DAILY_TRANSFER", default_value = "500MB")]
     pub free_daily_transfer: ByteSize,
 
+    /// Public relay: bytes one IP address may upload to free spaces per day,
+    /// all its spaces together. Clips are stored until they expire, so this
+    /// bounds the disk one address can fill.
+    #[arg(long, env = "YACS_FREE_DAILY_UPLOAD_PER_IP", default_value = "1GB")]
+    pub free_daily_upload_per_ip: ByteSize,
+
     /// Public relay: new spaces one IP address may create per day.
     #[arg(long, env = "YACS_NEW_SPACES_PER_IP", default_value_t = 10)]
     pub new_spaces_per_ip: u32,
@@ -150,6 +156,7 @@ mod tests {
         assert_eq!(c.free_max_size, ByteSize::mb(10));
         assert_eq!(c.free_max_ttl, Duration::from_secs(3600));
         assert_eq!(c.free_daily_transfer, ByteSize::mb(500));
+        assert_eq!(c.free_daily_upload_per_ip, ByteSize::gb(1));
     }
 
     #[test]

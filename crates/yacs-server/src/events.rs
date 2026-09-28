@@ -17,6 +17,10 @@ use yacs_core::api::ChannelEvent;
 /// the client reconnects and re-lists, which it must do after any gap anyway.
 const BUFFER: usize = 16;
 
+/// Listeners per channel: one per device and window, so a space has room for
+/// many, but not for a connection flood.
+pub const MAX_LISTENERS: usize = 64;
+
 /// Comment lines on idle streams, so proxies (nginx drops a quiet upstream
 /// after 60 s) and clients can tell a live connection from a dead one.
 pub const KEEP_ALIVE: Duration = Duration::from_secs(20);
@@ -43,29 +47,37 @@ impl Events {
         }
     }
 
-    /// The SSE response for one listener. Ends when the relay shuts down,
-    /// or when the listener fell too far behind.
-    pub fn stream(
+    /// The SSE response for one listener, holding on to `held` (say, its
+    /// place among a client's connections) while it lasts. Ends when the relay
+    /// shuts down, or when the listener fell too far behind. `None` when the
+    /// channel has [`MAX_LISTENERS`] already.
+    pub fn stream<H: Send + 'static>(
         &self,
         channel: &ChannelId,
-    ) -> Sse<impl Stream<Item = Result<Event, Infallible>> + use<>> {
-        let rx = self
-            .lock()
-            .entry(*channel)
-            .or_insert_with(|| broadcast::channel(BUFFER).0)
-            .subscribe();
-        let events = stream::unfold(rx, |mut rx| async move {
+        held: H,
+    ) -> Option<Sse<impl Stream<Item = Result<Event, Infallible>> + use<H>>> {
+        let rx = {
+            let mut channels = self.lock();
+            let tx = channels
+                .entry(*channel)
+                .or_insert_with(|| broadcast::channel(BUFFER).0);
+            if tx.receiver_count() >= MAX_LISTENERS {
+                return None;
+            }
+            tx.subscribe()
+        };
+        let events = stream::unfold((rx, held), |(mut rx, held)| async move {
             let event = rx.recv().await.ok()?;
             let sse = Event::default()
                 .json_data(&event)
                 .expect("channel events serialize");
-            Some((Ok(sse), rx))
+            Some((Ok(sse), (rx, held)))
         });
         let mut closed = self.closed.subscribe();
         let closing = async move {
             let _ = closed.wait_for(|closed| *closed).await;
         };
-        Sse::new(events.take_until(closing)).keep_alive(KeepAlive::new().interval(KEEP_ALIVE))
+        Some(Sse::new(events.take_until(closing)).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)))
     }
 
     /// Forget channels nobody listens to anymore.
@@ -93,7 +105,7 @@ mod tests {
     async fn prune_forgets_channels_without_listeners() {
         let events = Events::default();
         let channel = ChannelId::from_bytes([1; 32]);
-        let listener = events.stream(&channel);
+        let listener = events.stream(&channel, ()).unwrap();
         events.prune();
         assert_eq!(events.lock().len(), 1);
 
@@ -103,5 +115,18 @@ mod tests {
         // Publishing to a channel nobody listens to is a no-op.
         events.publish(&channel, ChannelEvent::Cleared);
         assert!(events.lock().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_channel_takes_a_limited_number_of_listeners() {
+        let events = Events::default();
+        let channel = ChannelId::from_bytes([1; 32]);
+        let listeners: Vec<_> = (0..MAX_LISTENERS)
+            .map(|_| events.stream(&channel, ()).unwrap())
+            .collect();
+        assert!(events.stream(&channel, ()).is_none());
+        assert!(events.stream(&ChannelId::from_bytes([2; 32]), ()).is_some());
+        drop(listeners);
+        assert!(events.stream(&channel, ()).is_some());
     }
 }

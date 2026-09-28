@@ -64,6 +64,10 @@ pub enum UploadError {
     TooLarge,
     #[error("the upload is missing chunks")]
     Incomplete,
+    #[error("that chunk is being written already")]
+    Busy,
+    #[error("the space used up today's transfer")]
+    TransferUsed,
     #[error(transparent)]
     Io(io::Error),
 }
@@ -127,7 +131,33 @@ struct Upload {
     reserved: u64,
     ttl_ms: u64,
     received: BTreeSet<u64>,
+    /// Chunks being written now; each one only once at a time, so repeated
+    /// PUTs can't pile up parts the quota doesn't count.
+    writing: BTreeSet<u64>,
     touched_ms: u64,
+    /// Dropped then, however busy, if set.
+    deadline_ms: Option<u64>,
+}
+
+impl Upload {
+    fn live(&self, now_ms: u64) -> bool {
+        self.touched_ms + UPLOAD_IDLE_MS > now_ms && self.deadline_ms.is_none_or(|d| d > now_ms)
+    }
+}
+
+/// Marks a chunk as being written, until dropped (also when the request is).
+struct Writing<'a> {
+    store: &'a Store,
+    id: Ulid,
+    index: u64,
+}
+
+impl Drop for Writing<'_> {
+    fn drop(&mut self) {
+        if let Some(upload) = self.store.uploads().get_mut(&self.id) {
+            upload.writing.remove(&self.index);
+        }
+    }
 }
 
 pub struct Store {
@@ -301,7 +331,9 @@ impl Store {
 
     /// Start a chunked upload. `header` is the clip's envelope; the whole
     /// upload counts against the quota from now on. The TTL starts once it's
-    /// complete.
+    /// complete. With a `deadline_ms`, the upload is dropped then if it isn't
+    /// complete; otherwise only once it's idle for [`UPLOAD_IDLE_MS`].
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_upload(
         &self,
         channel: &ChannelId,
@@ -309,6 +341,7 @@ impl Store {
         layout: ChunkLayout,
         ttl_ms: u64,
         now_ms: u64,
+        deadline_ms: Option<u64>,
     ) -> Result<Ulid, UploadError> {
         let _guard = self.lock.lock().await;
         let open = self
@@ -343,13 +376,17 @@ impl Store {
                 reserved,
                 ttl_ms,
                 received: BTreeSet::new(),
+                writing: BTreeSet::new(),
                 touched_ms: now_ms,
+                deadline_ms,
             },
         );
         Ok(id)
     }
 
-    /// Store chunk `index`, streamed from `body`. Repeating a chunk replaces it.
+    /// Store chunk `index`, streamed from `body`. Repeating a chunk replaces
+    /// it, if `charge` takes its length: the upload's creation paid for
+    /// each chunk once.
     pub async fn put_chunk(
         &self,
         channel: &ChannelId,
@@ -357,18 +394,32 @@ impl Store {
         index: u64,
         mut body: impl Stream<Item = io::Result<Bytes>> + Unpin,
         now_ms: u64,
+        charge: impl FnOnce(u64) -> bool,
     ) -> Result<(), UploadError> {
-        let expected = {
+        let (expected, _writing) = {
             let mut uploads = self.uploads();
             let upload = uploads
                 .get_mut(&id)
-                .filter(|u| u.channel == *channel)
+                .filter(|u| u.channel == *channel && u.live(now_ms))
                 .ok_or(UploadError::NotFound)?;
             if index >= upload.layout.count() {
                 return Err(UploadError::Invalid("no such chunk"));
             }
+            if upload.writing.contains(&index) {
+                return Err(UploadError::Busy);
+            }
+            let len = upload.layout.len(index);
+            if upload.received.contains(&index) && !charge(len) {
+                return Err(UploadError::TransferUsed);
+            }
+            upload.writing.insert(index);
             upload.touched_ms = now_ms;
-            upload.layout.len(index)
+            let writing = Writing {
+                store: self,
+                id,
+                index,
+            };
+            (len, writing)
         };
 
         let dir = self.upload_dir(id);
@@ -427,9 +478,9 @@ impl Store {
             let mut uploads = self.uploads();
             let upload = uploads
                 .get(&id)
-                .filter(|u| u.channel == *channel)
+                .filter(|u| u.channel == *channel && u.live(now_ms))
                 .ok_or(UploadError::NotFound)?;
-            if upload.received.len() as u64 != upload.layout.count() {
+            if upload.received.len() as u64 != upload.layout.count() || !upload.writing.is_empty() {
                 return Err(UploadError::Incomplete);
             }
             uploads.remove(&id).expect("just found")
@@ -542,7 +593,8 @@ impl Store {
     }
 
     /// Delete every expired clip, every emptied channel dir, and uploads idle
-    /// for [`UPLOAD_IDLE_MS`]. Returns the number of clips removed.
+    /// for [`UPLOAD_IDLE_MS`] or past their deadline. Returns the number of
+    /// clips removed.
     ///
     /// Also re-counts the disk usage from what's left, so the quota heals if
     /// files changed behind the store's back (deleted by hand, or a second
@@ -567,7 +619,7 @@ impl Store {
             let mut uploads = self.uploads();
             let idle: Vec<Ulid> = uploads
                 .iter()
-                .filter(|(_, u)| u.touched_ms + UPLOAD_IDLE_MS <= now_ms)
+                .filter(|(_, u)| !u.live(now_ms))
                 .map(|(id, _)| *id)
                 .collect();
             for id in &idle {

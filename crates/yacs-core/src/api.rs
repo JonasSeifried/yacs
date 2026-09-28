@@ -205,9 +205,13 @@ pub enum ChannelEvent {
 // GET    …/channels/{channel}/rendezvous/{n}/b/{i}   read b/i
 // DELETE …/channels/{channel}/rendezvous/{n}         close it
 // GET    /api/v1/rendezvous/{n}/a/{i}                read a/i (no token: the joiner has none);
-//                                                    reading a/1 closes the rendezvous
+//                                                    the joiner reading a/1 closes the rendezvous
 // PUT    /api/v1/rendezvous/{n}/b/{i}                write b/i (no token)
 // ```
+//
+// Nameplates are random. On a public relay, joiner reads that find nothing
+// and joiner writes count against the address (429 when used up), as do
+// opening codes and holding reads or event streams open.
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RendezvousOpened {
