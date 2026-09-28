@@ -385,5 +385,7 @@ async fn sync_dir(file: &Path) -> io::Result<()> {
         };
         fs::File::open(dir).await?.sync_all().await?;
     }
+    #[cfg(not(unix))]
+    let _ = file;
     Ok(())
 }
