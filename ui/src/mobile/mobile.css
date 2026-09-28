@@ -106,7 +106,7 @@ button:disabled {
 }
 
 button.primary {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: var(--on-accent);
 }
 
@@ -120,7 +120,7 @@ a.button {
 }
 
 a.button.primary {
-  background: var(--accent);
+  background: var(--accent-fill);
   color: var(--on-accent);
 }
 
@@ -544,8 +544,8 @@ button.choice {
 }
 
 button.choice:first-of-type {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
   color: var(--on-accent);
 }
 

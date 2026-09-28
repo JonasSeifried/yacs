@@ -5,14 +5,15 @@
   --text: #1c1b22;
   --muted: #6b6878;
   --border: #e3e1ea;
-  --accent: #5b4de0;
-  --accent-hover: #4d3fd4;
-  --accent-soft: #ecebfd;
+  --accent: #d83656;
+  --accent-soft: #fae5e9;
+  --accent-fill: #d83656;
+  --accent-fill-hover: #c2314d;
   --on-accent: #ffffff;
-  --danger: #c93a3a;
-  --danger-soft: #fdeeee;
+  --danger: #b42318;
+  --danger-soft: #f9eded;
   --ok: #177544;
-  --focus: 0 0 0 3px rgb(91 77 224 / 30%);
+  --focus: 0 0 0 3px rgb(216 54 86 / 30%);
   --scrollbar: #c9c6d4;
   --radius: 10px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
@@ -28,14 +29,15 @@
     --text: #eceaf2;
     --muted: #9a97a8;
     --border: #35323f;
-    --accent: #8b7ff5;
-    --accent-hover: #9d93f7;
-    --accent-soft: #2e2a4a;
-    --on-accent: #15131c;
-    --danger: #f07171;
-    --danger-soft: #3a2224;
+    --accent: #ff8699;
+    --accent-soft: #47313b;
+    /* Filled buttons stay a deeper coral with white text; the lighter accent is for text on dark. */
+    --accent-fill: #cf4460;
+    --accent-fill-hover: #bd3a55;
+    --danger: #ff7b63;
+    --danger-soft: #402c30;
     --ok: #5fd197;
-    --focus: 0 0 0 3px rgb(139 127 245 / 35%);
+    --focus: 0 0 0 3px rgb(255 134 153 / 35%);
     --scrollbar: #4a4656;
   }
 }

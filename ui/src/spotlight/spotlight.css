@@ -379,13 +379,13 @@ button.primary {
   border: 0;
   border-radius: 8px;
   padding: 8px 14px;
-  background: var(--accent);
+  background: var(--accent-fill);
   color: var(--on-accent);
   font-weight: 550;
 }
 
 button.primary:hover {
-  background: var(--accent-hover);
+  background: var(--accent-fill-hover);
 }
 
 button.primary kbd {
