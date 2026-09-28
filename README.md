@@ -2,18 +2,19 @@
 
 **Yet Another Clipboard Service**: copy on one device, paste on another. End-to-end encrypted, no accounts, free and open source.
 
-**[Download for macOS, Windows or Linux](https://github.com/JonasSeifried/yacs/releases/latest)** · **[Try it in your browser](https://yacs-relay.jonasseifried.com)**
+- **On a computer:** [download YACS for macOS, Windows or Linux](https://github.com/JonasSeifried/yacs/releases/latest)
+- **On a phone or tablet:** nothing to download, [open YACS in the browser](https://yacs-relay.jonasseifried.com)
 
 - **On your computer**, press `⌘⇧Space` (Mac) or `Ctrl+Shift+Space` (Windows, Linux) for a Spotlight-style panel. `⌘V` / `Ctrl+V` sends what's on your clipboard; `↵` copies a clip back with every format it had: text, formatted text (HTML, RTF), images.
 - **Files too**: copy a file and send it like anything else. It arrives in Downloads and on the clipboard.
-- **On your phone**, YACS is a web app. Scan a QR code from your computer and it's in; add it to your home screen to use it like any other app.
+- **On your phone or tablet**, YACS is a web app. Scan a QR code from another device and it's in; add it to your home screen to use it like any other app.
 - **From a terminal**, `yacs send` and `yacs recv` do the same, for servers and scripts.
 
 Clips go through a small server, the relay, that can't read them and forgets them when they expire (15 minutes by default). Use the free one, which the apps are set up for, or run your own in a few minutes.
 
 ## Get started
 
-1. **Install YACS on your computer** from the [latest release](https://github.com/JonasSeifried/yacs/releases/latest):
+1. **Start on one device.** Install YACS on your computer from the [latest release](https://github.com/JonasSeifried/yacs/releases/latest), or open [the web app](https://yacs-relay.jonasseifried.com) on a phone or tablet. Choose **I'm new to YACS**.
 
    | | |
    | --- | --- |
@@ -21,20 +22,17 @@ Clips go through a small server, the relay, that can't read them and forgets the
    | Windows | `YACS_…_x64-setup.exe`, or the `.msi`. Windows may warn that the app is unrecognized: click **More info → Run anyway**. |
    | Linux | `YACS_…_amd64.AppImage`, or the `.deb` / `.rpm`. See the [Linux tips](#linux-tips). |
 
-   The app updates itself from then on.
-2. **Start a space.** Open YACS → Settings and press **Start a new space**. Your devices share it: a key that only they have, which encrypts every clip. It's called "My devices"; rename it whenever you like.
-3. **Add your other devices.** In Settings, press **Invite a device…**. It shows a QR code and a link, each good for one device within 24 hours, and a short code like `7-tulip-apple` that works while the panel is open.
-   - **Phone:** scan the QR code with the camera. On iPhone, add YACS to your home screen first (see the [phone tips](#phone-tips)).
-   - **Another computer:** install YACS there and type the code into **Invite link or code** in its Settings, or paste the link.
+   The app updates itself from then on. This starts a space: a key that only your devices have, which encrypts every clip. It's called "My devices"; rename it whenever you like.
+2. **Add your other devices.** Right after that, YACS shows a QR code and a link, each good for one device within 24 hours, and a short code like `7-tulip-apple` that works while it's on screen. Later, find them under Settings → **Invite a device**.
+   - **Phone or tablet:** scan the QR code with the camera. On iPhone and iPad, add YACS to your home screen first and scan from inside it (see the [phone tips](#phone-tips)).
+   - **Another computer:** install YACS there, choose **I already use YACS on another device** and type the code, or paste the link.
    - **A server:** `yacs join` with the link or code (see [Command line](#command-line)).
 
    A wrongly typed code is used up and the other device shows a new one, so codes can't be guessed by trying.
 
-No computer to start from? The phone app can start a space too.
-
 ### Phone tips
 
-- **iPhone:** add YACS to the home screen *before* joining. Open [yacs-relay.jonasseifried.com](https://yacs-relay.jonasseifried.com) (or your own relay) in Safari, tap Share → **Add to Home Screen**, open YACS from there, then tap **Scan QR code**. The home screen app doesn't share storage with Safari, so joining in a browser tab doesn't carry over.
+- **iPhone and iPad:** add YACS to the home screen *before* joining. Open [yacs-relay.jonasseifried.com](https://yacs-relay.jonasseifried.com) (or your own relay) in Safari, tap Share → **Add to Home Screen**, open YACS from there, choose **I already use YACS on another device** and tap **Scan QR code**. The home screen app doesn't share storage with Safari, so joining in a browser tab doesn't carry over.
 - **Android:** Chrome is recommended (menu → **Install app**).
 - For big files, keep the screen on until the upload or download is done: phones pause apps in the background.
 
@@ -102,7 +100,7 @@ cp .env.example .env   # set YACS_DOMAIN and YACS_ACCESS_TOKEN
 docker compose up -d
 ```
 
-Then open `https://your-domain` to check it's up, and choose **your own relay** (its URL and account key) under **Start a new space** in the desktop app's Settings. The devices you invite don't need the account key.
+Then open `https://your-domain` to check it's up, and press **Use my own relay** (its URL and account key) in the desktop app's Settings, under **I'm new to YACS**. The devices you invite don't need the account key.
 
 **Already running nginx?** Use `compose.nginx.yaml` instead, which starts only the relay, on `127.0.0.1:8080`, and put [`nginx.conf`](deploy/nginx.conf) in front of it (the steps are at the top of that file; `certbot --nginx` adds HTTPS):
 

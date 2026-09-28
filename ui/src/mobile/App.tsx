@@ -5,12 +5,15 @@ import {
   LiveUnsupported,
   type Session,
   type Stored,
+  CodesUnsupported,
   WebClient,
   enterSpace,
   forgetDownloads,
   joinWithCode,
   leaveSpace,
   loadStored,
+  notAlone,
+  qrCode,
   relayConfig,
   renameSpace,
   saveDeviceName,
@@ -19,7 +22,7 @@ import {
 } from "../platform/web";
 import { EAGER_CONCURRENCY, loadsEagerly, runLimited } from "../shared/async";
 import { clipTitle, isImageMime, previewDocument, previewKind } from "../shared/clip";
-import { describeLimits, maxTtlSecs } from "../shared/plan";
+import { PUBLIC_RELAY, describeLimits, maxTtlSecs } from "../shared/plan";
 import { inlineFileLimit, streamTotal } from "../shared/stream";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
 import type { ClipItem, ClipMeta, ServerConfig, SpaceLimits } from "../shared/types";
@@ -66,6 +69,8 @@ if (initialLink) forgetInviteLink();
 export function App() {
   const [stored, setStored] = useState<Stored | null>(loadStored);
   const [link, setLink] = useState<InviteLink | null>(initialLink);
+  /** A space was just started here: add the other devices first. */
+  const [started, setStarted] = useState(false);
   const current = session(stored);
 
   // An invite link opened while the app is already open only changes the hash.
@@ -92,8 +97,19 @@ export function App() {
       />
     );
   }
-  if (!stored || !current) return <Welcome stored={stored} onJoined={setStored} onLink={setLink} />;
-  return <Home key={current.secret} stored={stored} current={current} onChange={setStored} />;
+  if (!stored || !current) {
+    return (
+      <Welcome
+        stored={stored}
+        onStarted={(next) => {
+          setStarted(true);
+          setStored(next);
+        }}
+        onLink={setLink}
+      />
+    );
+  }
+  return <Home key={current.secret} stored={stored} current={current} addFirst={started} onChange={setStored} />;
 }
 
 // ── Joining a space ────────────────────────────────────────────────────────
@@ -157,15 +173,20 @@ function useRelayConfig(): ServerConfig | null {
   return config;
 }
 
-function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; onLink: (l: InviteLink) => void }) {
+/**
+ * The first screen without a space. Invite links skip it, so whoever sees it
+ * most likely has no YACS anywhere yet: it asks that first.
+ */
+function Welcome(props: { stored: Stored | null; onStarted: (s: Stored) => void; onLink: (l: InviteLink) => void }) {
   const relay = useRelayConfig();
+  const [step, setStep] = useState<"choose" | "join" | "start">("choose");
   const [scanning, setScanning] = useState(false);
   const [pasted, setPasted] = useState("");
-  const [starting, setStarting] = useState(false);
   const [token, setToken] = useState("");
   const [deviceName, setDeviceName] = useState(() => props.stored?.deviceName ?? guessDeviceName());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isPublic = relay?.accounts?.public === true;
 
   const join = (e: FormEvent) => {
     e.preventDefault();
@@ -178,31 +199,38 @@ function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; 
     setError(null);
     props.onLink(link);
   };
-  const start = async (e: FormEvent) => {
-    e.preventDefault();
+  const start = async () => {
     setBusy(true);
     setError(null);
     try {
-      props.onJoined(await enterSpace(null, DEFAULT_SPACE_NAME, token, deviceName));
+      props.onStarted(await enterSpace(null, DEFAULT_SPACE_NAME, token, deviceName));
     } catch (e) {
       setError(errorText(e));
+      setStep("start"); // with the details, to try again
       setBusy(false);
     }
   };
+  // The free relay needs nothing more: one tap. Other relays may want their key.
+  const chooseNew = () => (isPublic ? start() : (setError(null), setStep("start")));
 
   if (scanning) return <Scanner onLink={props.onLink} onCancel={() => setScanning(false)} />;
 
-  if (starting) {
+  if (step === "start") {
     return (
       <Screen>
-        <form className="card pair" onSubmit={start}>
-          <h1>Start a new space</h1>
+        <form
+          className="card pair"
+          onSubmit={(e) => {
+            e.preventDefault();
+            start();
+          }}
+        >
+          <h1>Start with this device</h1>
           <p className="muted">
-            For this device and the ones you invite, through <b>{location.host}</b>. Invite them from Settings once
-            it's started.
-            {relay?.accounts?.public && " It's free, for clips up to 10 MB kept up to an hour."}
+            Your devices share clips through <b>{location.host}</b>, end-to-end encrypted. You'll add the others next.
+            {isPublic && " It's free, for clips up to 10 MB kept up to an hour."}
           </p>
-          {!relay?.accounts?.public && (
+          {!isPublic && (
             <label>
               <span>Account key <span className="muted">if the relay has one</span></span>
               <input type="password" value={token} onChange={(e) => setToken(e.target.value)} autoCapitalize="none" autoComplete="off" />
@@ -211,9 +239,48 @@ function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; 
           <DeviceNameField value={deviceName} onChange={setDeviceName} />
           {error && <p className="error">{error}</p>}
           <button className="primary" disabled={busy}>
-            {busy ? "Starting…" : "Start space"}
+            {busy ? "Starting…" : "Continue"}
           </button>
-          <button type="button" className="ghost" onClick={() => setStarting(false)} disabled={busy}>
+          <button type="button" className="ghost" onClick={() => (setError(null), setStep("choose"))} disabled={busy}>
+            Back
+          </button>
+        </form>
+        <LegalLinks config={relay} />
+      </Screen>
+    );
+  }
+
+  if (step === "join") {
+    return (
+      <Screen>
+        <form className="card pair" onSubmit={join}>
+          <h1>Connect this device</h1>
+          <p className="muted">
+            On the device that has YACS, open <b>Settings → Invite a device</b>. Then{" "}
+            {canScan() ? "scan the QR code it shows, or type its code here." : "type the code it shows here, or paste its invite link."}
+          </p>
+          <IosHomeScreenHint />
+          {canScan() && (
+            <button type="button" className="primary" onClick={() => setScanning(true)}>
+              Scan QR code
+            </button>
+          )}
+          <label>
+            Code or invite link
+            <input
+              value={pasted}
+              onChange={(e) => setPasted(e.target.value)}
+              required
+              autoCapitalize="none"
+              autoCorrect="off"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="7-tulip-apple"
+            />
+          </label>
+          {error && <p className="error">{error}</p>}
+          <button className={canScan() ? "" : "primary"}>Continue</button>
+          <button type="button" className="ghost" onClick={() => (setError(null), setStep("choose"))}>
             Back
           </button>
         </form>
@@ -224,41 +291,21 @@ function Welcome(props: { stored: Stored | null; onJoined: (s: Stored) => void; 
 
   return (
     <Screen>
-      <DesktopAppHint>
-        Or try YACS here first: start a new space below, then open it on your phone too.
-      </DesktopAppHint>
-      <form className="card pair" onSubmit={join}>
-        <h1>Join your devices</h1>
-        <p className="muted">
-          {desktopOs()
-            ? "Paste the invite link or type the code from YACS on another device (Settings → Invite a device)."
-            : "Scan the QR code in YACS on your computer (Settings → Invite a device), or paste the invite link or type the code shown there."}
-        </p>
+      <DesktopAppHint>Or try it here in the browser first.</DesktopAppHint>
+      <div className="card pair welcome">
+        <h1>Welcome to YACS</h1>
+        <p className="muted">Copy on one device, paste on another.</p>
         <IosHomeScreenHint />
-        {canScan() && (
-          <button type="button" className="primary" onClick={() => setScanning(true)}>
-            Scan QR code
-          </button>
-        )}
-        <label>
-          Invite link or code
-          <input
-            value={pasted}
-            onChange={(e) => setPasted(e.target.value)}
-            required
-            autoCapitalize="none"
-            autoCorrect="off"
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="7-tulip-apple"
-          />
-        </label>
-        {error && <p className="error">{error}</p>}
-        <button className={canScan() ? "" : "primary"}>Continue</button>
-        <button type="button" className="link" onClick={() => (setError(null), setStarting(true))}>
-          No other devices yet? Start a new space
+        <button className="choice" onClick={chooseNew} disabled={busy}>
+          <b>{busy ? "Starting…" : "I'm new to YACS"}</b>
+          <span>Set it up here first, then add your other devices.</span>
         </button>
-      </form>
+        <button className="choice" onClick={() => (setError(null), setStep("join"))} disabled={busy}>
+          <b>I already use YACS on another device</b>
+          <span>Connect this one with the QR code or code shown there.</span>
+        </button>
+        {error && <p className="error">{error}</p>}
+      </div>
       <LegalLinks config={relay} />
     </Screen>
   );
@@ -401,7 +448,7 @@ function IosHomeScreenHint() {
   if (!isIosBrowserTab()) return null;
   return (
     <p className="muted small">
-      Want YACS on your home screen? Add it there first (Share → Add to Home Screen), then join from inside it: the
+      Want YACS on your home screen? Add it there first (Share → Add to Home Screen) and continue from inside it: the
       home screen app doesn't share anything with the browser.
     </p>
   );
@@ -494,7 +541,8 @@ type Toast = { kind: "ok" | "error"; text: string; undo?: string };
 /** A delete waits this long for Undo before it goes to the relay (for every device). */
 const UNDO_MS = 5000;
 
-function Home({ stored, current, onChange }: { stored: Stored; current: Session; onChange: (s: Stored) => void }) {
+function Home(props: { stored: Stored; current: Session; addFirst: boolean; onChange: (s: Stored) => void }) {
+  const { stored, current, onChange } = props;
   const { secret, token, deviceName } = current;
   const client = useMemo(() => new WebClient({ secret, token, deviceName }), [secret, token, deviceName]);
   const [config, setConfig] = useState<ServerConfig | null>(null);
@@ -505,6 +553,8 @@ function Home({ stored, current, onChange }: { stored: Stored; current: Session;
   const [ttl, setTtl] = useState(() => Number(localStorage.getItem(TTL_KEY)) || 15 * 60);
   const [toast, setToast] = useState<Toast | null>(null);
   const [settings, setSettings] = useState(false);
+  /** The "Add your other devices" screen, over Home. */
+  const [adding, setAdding] = useState(props.addFirst);
   const [now, setNow] = useState(Date.now());
   const [upload, setUpload] = useState<Progress | null>(null);
   const [drafted, setDrafted] = useState(false);
@@ -664,6 +714,22 @@ function Home({ stored, current, onChange }: { stored: Stored; current: Session;
     return () => document.removeEventListener("visibilitychange", onHidden);
   }, [commitDelete]);
 
+  const space = stored.spaces[0];
+  if (adding) {
+    return (
+      <AddDevices
+        client={client}
+        spaceName={space.name}
+        first={space.alone === true}
+        onJoined={() => onChange(notAlone(stored))}
+        onDone={() => {
+          setAdding(false);
+          refresh();
+        }}
+      />
+    );
+  }
+
   return (
     <Screen>
       <header className="top">
@@ -685,7 +751,23 @@ function Home({ stored, current, onChange }: { stored: Stored; current: Session;
         </div>
       )}
 
-      <DesktopAppHint dismissible />
+      {space.alone ? (
+        <div className="card add-hint">
+          <p>
+            <b>Add your other devices</b> to copy on one and paste on another.
+          </p>
+          <div className="desktop-hint-actions">
+            <button className="primary" onClick={() => setAdding(true)}>
+              Add a device
+            </button>
+            <button className="ghost" onClick={() => onChange(notAlone(stored))}>
+              Not now
+            </button>
+          </div>
+        </div>
+      ) : (
+        <DesktopAppHint dismissible />
+      )}
 
       <Composer
         ttl={ttl}
@@ -742,11 +824,14 @@ function Home({ stored, current, onChange }: { stored: Stored; current: Session;
       {settings && (
         <SettingsSheet
           stored={stored}
-          client={client}
           config={config}
           limits={limits}
           onClose={() => setSettings(false)}
           onChange={onChange}
+          onInvite={() => {
+            setSettings(false);
+            setAdding(true);
+          }}
         />
       )}
     </Screen>
@@ -1084,11 +1169,11 @@ function ClipPreview({ clip }: { clip: Decrypted }) {
 
 function SettingsSheet(props: {
   stored: Stored;
-  client: WebClient;
   config: ServerConfig | null;
   limits: SpaceLimits | null;
   onClose: () => void;
   onChange: (s: Stored) => void;
+  onInvite: () => void;
 }) {
   const space = props.stored.spaces[0];
   const [name, setName] = useState(space.name);
@@ -1125,7 +1210,13 @@ function SettingsSheet(props: {
         >
           Save
         </button>
-        <InviteDevice client={props.client} spaceName={space.name} />
+        <div className="invite">
+          <span>Invite a device</span>
+          <p className="muted small">Shows a QR code and a code that add one device to this space.</p>
+          <button type="button" onClick={props.onInvite}>
+            Invite a device…
+          </button>
+        </div>
         {describeLimits(props.limits) && <p className="muted small">Free plan: {describeLimits(props.limits)}.</p>}
         {desktopOs() ? (
           <DesktopAppHint />
@@ -1150,70 +1241,187 @@ function SettingsSheet(props: {
   );
 }
 
-/** Hands out the invite link: share it to a messenger, or copy it for a computer's Settings. */
+type Joined = { device: string | null };
+
 /**
- * Makes a one-time invite, then hands its link out: share it to a messenger,
- * or copy it for a computer's Settings. Two taps, since browsers only share
- * and copy straight from a tap, not after waiting for the relay.
+ * Adds devices to the space: a QR code (a one-time invite link) for a phone
+ * or tablet, and a code to type on a computer, until one of them is used.
+ * `first`: right after starting the space, as the next step of setting up.
  */
-function InviteDevice({ client, spaceName }: { client: WebClient; spaceName: string }) {
-  const [url, setUrl] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+function AddDevices(props: { client: WebClient; spaceName: string; first: boolean; onJoined: () => void; onDone: () => void }) {
+  const { client, spaceName } = props;
+  /** Each round shows a new invite, e.g. for the next device. */
+  const [round, setRound] = useState(0);
+  const [invite, setInvite] = useState<{ url: string; qr: string } | null>(null);
+  const [code, setCode] = useState<{ code: string; replaced: boolean } | null>(null);
+  const [codeError, setCodeError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [joined, setJoined] = useState<Joined | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const create = async () => {
-    setBusy(true);
+  /** The link went somewhere (shared, copied), so it has to stay valid. */
+  const shared = useRef(false);
+  const onJoinedRef = useRef(props.onJoined);
+  onJoinedRef.current = props.onJoined;
+  const ownRelay = location.origin !== PUBLIC_RELAY;
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const { signal } = controller;
+    let slot: string | null = null;
+    let done = false;
+    let linkUsed = false;
+    const finish = (who: Joined) => {
+      if (done) return;
+      done = true;
+      linkUsed = who.device === null;
+      setJoined(who);
+      onJoinedRef.current();
+      controller.abort(); // stops the code and the live connection
+    };
+    shared.current = false;
+    setInvite(null);
+    setCode(null);
+    setCodeError(null);
+    setError(null);
+    setJoined(null);
     setStatus(null);
-    try {
-      setUrl(inviteUrl(await client.invite(spaceName)));
-    } catch (e) {
-      setStatus(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+
+    (async () => {
+      try {
+        const made = await client.invite(spaceName);
+        if (signal.aborted) return client.revokeInvite(made.slot);
+        slot = made.slot;
+        const url = inviteUrl(made.secret);
+        setInvite({ url, qr: await qrCode(url) });
+      } catch (e) {
+        if (!signal.aborted) setError(errorText(e));
+        return;
+      }
+      // The relay says when someone took the link.
+      client
+        .listen(signal, () => {}, (event) => event.type === "invite_used" && event.slot === slot && finish({ device: null }))
+        .catch(() => {});
+    })();
+
+    client
+      .showCodes(spaceName, (next, replaced) => setCode({ code: next, replaced }), signal)
+      .then((device) => finish({ device }))
+      .catch((e) => {
+        if (signal.aborted) return;
+        setCode(null);
+        setCodeError(e instanceof CodesUnsupported ? null : errorText(e));
+      });
+
+    return () => {
+      controller.abort();
+      // A link only this screen showed needn't stay on the relay.
+      if (slot && !linkUsed && !shared.current) client.revokeInvite(slot);
+    };
+  }, [client, spaceName, round]);
+
+  // A phone may drop the connection while YACS is in the background.
+  useEffect(() => {
+    if (!codeError) return;
+    const onVisible = () => document.visibilityState === "visible" && setRound((r) => r + 1);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [codeError]);
+
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(url!);
-      setStatus("Copied. Paste it into Settings → Invite link on the other device.");
+      await navigator.clipboard.writeText(invite!.url);
+      shared.current = true;
+      setStatus("Copied. Paste it on the other device, into YACS or its browser.");
     } catch {
       setStatus("Couldn't copy here (the clipboard needs HTTPS).");
     }
   };
   const share = async () => {
     try {
-      await navigator.share({ title: `Join “${spaceName}” in YACS`, url: url! });
+      shared.current = true;
+      await navigator.share({ title: `Join “${spaceName}” in YACS`, url: invite!.url });
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) setStatus(errorText(e));
     }
   };
-  return (
-    <div className="invite">
-      <span>Invite a device</span>
-      <p className="muted small">
-        {url
-          ? "The link works once, within 24 hours. Whoever opens it first joins, so send it only to the device you mean."
-          : "Makes a link that adds one device to this space."}
-      </p>
-      <div className="row">
-        {!url ? (
-          <button type="button" onClick={create} disabled={busy}>
-            {busy ? "Making a link…" : "Make an invite link"}
+
+  if (joined) {
+    return (
+      <Screen>
+        <div className="card pair">
+          <h1>
+            <span className="joined-dot" aria-hidden="true" /> {joined.device ? `${joined.device} joined` : "A device joined"}
+          </h1>
+          <p className="muted">
+            Try it: send something from {joined.device ?? "there"}, and it shows up here.
+          </p>
+          <button className="primary" onClick={props.onDone}>
+            Done
           </button>
+          <button className="ghost" onClick={() => setRound((r) => r + 1)}>
+            Add another device
+          </button>
+        </div>
+      </Screen>
+    );
+  }
+
+  return (
+    <Screen>
+      <div className="card pair add-devices">
+        <h1>{props.first ? "Now add your other devices" : "Add a device"}</h1>
+        {error ? (
+          <p className="error">{error}</p>
         ) : (
           <>
-            {"share" in navigator && (
-              <button type="button" onClick={share}>
-                Share link
-              </button>
+            <div className="qr-frame">{invite ? <img className="qr" src={invite.qr} alt="Invite QR code" /> : <span className="muted">Making an invite…</span>}</div>
+            {code && (
+              <p className="code-line">
+                <span className="muted">Code</span> <span className="code">{code.code}</span>
+              </p>
             )}
-            <button type="button" onClick={copy}>
-              Copy link
-            </button>
+            {code?.replaced && <p className="muted small center-text">Someone typed a wrong code, so here's a new one.</p>}
+            <ul className="add-steps">
+              <li>
+                <b>Phone or tablet:</b> scan the QR code with the camera.{" "}
+                <span className="muted">
+                  iPhone and iPad: first add YACS to the home screen (in Safari, Share → Add to Home Screen), open it, choose
+                  “I already use YACS…” and scan from there.
+                </span>
+              </li>
+              <li>
+                <b>Computer:</b> get YACS at <b>yacs.jonasseifried.com</b>, choose “I already use YACS on another device”
+                and type {code ? "the code" : "or paste the link"}.
+                {ownRelay && code && (
+                  <span className="muted"> The code is for your own relay, {location.origin}: choose that there.</span>
+                )}
+              </li>
+            </ul>
+            {codeError && <p className="muted small">No code this time: {codeError}</p>}
+            <p className="muted small">
+              The QR code works once, within 24 hours{code ? "; the code while this screen is open" : ""}.
+            </p>
+            {invite && (
+              <div className="row">
+                {"share" in navigator && (
+                  <button type="button" className="ghost" onClick={share}>
+                    Share link
+                  </button>
+                )}
+                <button type="button" className="ghost" onClick={copy}>
+                  Copy link
+                </button>
+              </div>
+            )}
+            {status && <p className="muted small">{status}</p>}
+            <p className="waiting muted small">Waiting for a device…</p>
           </>
         )}
+        <button className="ghost" onClick={props.onDone}>
+          {props.first ? "Skip for now" : "Cancel"}
+        </button>
       </div>
-      {status && <p className="muted small">{status}</p>}
-    </div>
+    </Screen>
   );
 }
 

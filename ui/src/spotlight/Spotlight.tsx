@@ -316,7 +316,7 @@ export function Spotlight() {
 
       <section className="panel-body">
         {status && !space ? (
-          <Empty title="This computer isn't in a space yet" detail="Start one, or join your other devices' space with an invite link.">
+          <Empty title="Set up YACS" detail="Start here, or connect this computer to YACS on your other devices.">
             <button className="primary" onClick={() => platform.openSettings()}>
               Open Settings <kbd>↵</kbd>
             </button>

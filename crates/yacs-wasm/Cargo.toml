@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 # Not used directly: selects the browser's crypto.getRandomValues for yacs-core.
 getrandom = { version = "0.4", features = ["wasm_js"] }
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde-wasm-bindgen = "0.6.5"
 serde_bytes = "0.11.19"

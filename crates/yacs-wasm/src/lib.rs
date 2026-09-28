@@ -10,8 +10,8 @@
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 use yacs_core::{
-    Clip, Code, CodeJoiner, CodeKey, Envelope, Invite, InviteSecret, Payload, Stream, StreamCipher,
-    StreamFile,
+    Clip, Code, CodeInviter, CodeJoiner, CodeKey, Envelope, Invite, InviteSecret, Payload, Stream,
+    StreamCipher, StreamFile,
 };
 
 #[wasm_bindgen(js_name = Pairing)]
@@ -146,6 +146,84 @@ impl WasmCodeJoiner {
             .ok_or_else(|| JsError::new("answer first"))?;
         opened(&key.open_invite(sealed)?)
     }
+}
+
+/// Showing a code for another device to type (see `yacs_core::code`): POST
+/// `message` to the space's rendezvous, show `code(nameplate)`, read `b/0`,
+/// `finish(…)` with it, then PUT `sealInvite(…)` to `a/1`.
+#[wasm_bindgen(js_name = CodeInviter)]
+pub struct WasmCodeInviter {
+    inviter: Option<CodeInviter>,
+    message: Vec<u8>,
+    key: Option<CodeKey>,
+}
+
+#[wasm_bindgen(js_class = CodeInviter)]
+impl WasmCodeInviter {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Result<WasmCodeInviter, JsError> {
+        let (inviter, message) = CodeInviter::start()?;
+        Ok(Self {
+            inviter: Some(inviter),
+            message,
+            key: None,
+        })
+    }
+
+    /// For `a/0`, which opens the rendezvous.
+    #[wasm_bindgen(getter)]
+    pub fn message(&self) -> Vec<u8> {
+        self.message.clone()
+    }
+
+    /// What to show, e.g. `7-tulip-apple`, once the relay said the nameplate.
+    pub fn code(&self, nameplate: u16) -> Result<String, JsError> {
+        let inviter = self
+            .inviter
+            .as_ref()
+            .ok_or_else(|| JsError::new("already finished"))?;
+        Ok(inviter.code(nameplate).to_string())
+    }
+
+    /// The answer from `b/0`; returns the joining device's name. Throws if
+    /// they typed a wrong code, which uses this one up.
+    pub fn finish(&mut self, nameplate: u16, answer: &[u8]) -> Result<String, JsError> {
+        let inviter = self
+            .inviter
+            .take()
+            .ok_or_else(|| JsError::new("already finished"))?;
+        let (device, key) = inviter.finish(nameplate, answer)?;
+        self.key = Some(key);
+        Ok(device)
+    }
+
+    /// The invite to `space` for `a/1`.
+    #[wasm_bindgen(js_name = sealInvite)]
+    pub fn seal_invite(
+        &self,
+        space: &WasmPairing,
+        space_name: &str,
+        inviter: &str,
+        token: Option<String>,
+    ) -> Result<Vec<u8>, JsError> {
+        let key = self
+            .key
+            .as_ref()
+            .ok_or_else(|| JsError::new("finish first"))?;
+        let invite = Invite::new(space_name, inviter, token.as_deref(), &space.0);
+        Ok(key.seal_invite(&invite)?)
+    }
+}
+
+/// `text` as a QR code, an SVG document (dark on white, for any camera).
+#[wasm_bindgen(js_name = qrSvg)]
+pub fn qr_svg(text: &str) -> Result<String, JsError> {
+    let code = qrcode::QrCode::new(text).map_err(|e| JsError::new(&e.to_string()))?;
+    Ok(code
+        .render::<qrcode::render::svg::Color>()
+        .min_dimensions(240, 240)
+        .quiet_zone(true)
+        .build())
 }
 
 fn opened(invite: &Invite) -> Result<JsValue, JsError> {

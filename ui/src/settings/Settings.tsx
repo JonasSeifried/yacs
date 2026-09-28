@@ -57,7 +57,7 @@ export function Settings() {
   return (
     <main className="settings">
       <section className="card">
-        <h2>Space</h2>
+        <h2>{status.space ? "Space" : "Welcome to YACS"}</h2>
         {status.space ? <SpaceSettings space={status.space} limits={limits} /> : <SetUpSpace />}
       </section>
       <section className="card">
@@ -289,7 +289,15 @@ function SpaceName({ name }: { name: string }) {
   );
 }
 
+/**
+ * Set when this computer starts a space, so the invite panel opens by itself
+ * as the next step of setting up.
+ */
+let startedHere = false;
+
 function InviteDevice({ relay }: { relay: string }) {
+  /** Right after starting the space: the other devices come next. */
+  const [first] = useState(() => startedHere);
   const [invite, setInvite] = useState<Invite | null>(null);
   /** Who joined, once someone did: with the link (null) or the code (their device name). */
   const [joined, setJoined] = useState<{ device: string | null } | null>(null);
@@ -348,7 +356,7 @@ function InviteDevice({ relay }: { relay: string }) {
     return () => void used.then((u) => u());
   }, [invite, joined]);
 
-  const show = async () => {
+  const show = useCallback(async () => {
     setBusy(true);
     setError(null);
     retire();
@@ -363,7 +371,12 @@ function InviteDevice({ relay }: { relay: string }) {
     } finally {
       setBusy(false);
     }
-  };
+  }, [retire]);
+
+  useEffect(() => {
+    startedHere = false;
+    if (first) show();
+  }, [first, show]);
 
   if (!invite) {
     return (
@@ -385,6 +398,9 @@ function InviteDevice({ relay }: { relay: string }) {
         <p className="paired">
           <span className="dot" /> {joined.device ? `${joined.device} joined.` : "The invite was used: a device joined."}
         </p>
+        <p className="hint">
+          Try it: send something from {joined.device ?? "there"}, and it shows up in YACS here.
+        </p>
         {error && <p className="error">{error}</p>}
         <div className="actions">
           <button onClick={show} disabled={busy}>
@@ -397,11 +413,22 @@ function InviteDevice({ relay }: { relay: string }) {
   }
   return (
     <div className="pair-device">
+      {first && <p className="next-step">Now add your other devices.</p>}
       <img className="qr" src={invite.qr} alt="Invite QR code" />
       {invite.warning && <p className="error">{invite.warning}</p>}
+      <ul className="add-steps">
+        <li>
+          <strong>Phone or tablet:</strong> scan the QR code with the camera. On iPhone or iPad, first add YACS to the
+          home screen (open {new URL(relay).host} in Safari, Share → Add to Home Screen), open it and scan from there.
+        </li>
+        <li>
+          <strong>Another computer:</strong> get YACS at yacs.jonasseifried.com, choose “I already use YACS on another
+          device” and type the code below, or paste the link.
+        </li>
+      </ul>
       <p className="hint">
-        Scan it with the other device's camera, or send it the link. Works once, within 24 hours: whoever opens it first
-        joins your space, so send the link only to the device you mean.
+        The QR code and link work once, within 24 hours: whoever opens them first joins your space, so send the link
+        only to the device you mean.
       </p>
       <div className="actions">
         <button
@@ -433,10 +460,12 @@ function InviteDevice({ relay }: { relay: string }) {
 }
 
 /**
- * Join your other devices' space with an invite link or code, or start a new
- * one, on the free relay or your own.
+ * Before this computer is in a space: new to YACS (start one, on the free
+ * relay or your own), or connecting to your other devices' space with an
+ * invite link or code.
  */
 function SetUpSpace() {
+  const [step, setStep] = useState<"choose" | "join" | "start">("choose");
   const [link, setLink] = useState("");
   /** Your own relay instead of the free one, for codes and new spaces. */
   const [own, setOwn] = useState(false);
@@ -462,9 +491,21 @@ function SetUpSpace() {
     e.preventDefault();
     run("join", () => platform.joinSpace(link, isCode && own ? serverUrl : null));
   };
-  const create = (e: FormEvent) => {
-    e.preventDefault();
-    run("create", () => (own ? platform.createSpace(serverUrl, token || null, null) : platform.createSpace(PUBLIC_RELAY, null, null)));
+  /** The invite panel opens once the space is there, as the next step. */
+  const create = (relay: string, key: string | null) =>
+    run("create", async () => {
+      startedHere = true;
+      try {
+        await platform.createSpace(relay, key, null);
+      } catch (e) {
+        startedHere = false;
+        throw e;
+      }
+    });
+  const back = () => {
+    setError(null);
+    setOwn(false);
+    setStep("choose");
   };
   const relayUrl = (hint: string) => (
     <label>
@@ -479,6 +520,7 @@ function SetUpSpace() {
           if (/#(join|pair)=/.test(e.target.value)) {
             setLink(e.target.value.trim());
             setServerUrl("");
+            setStep("join");
           } else {
             setServerUrl(e.target.value);
           }
@@ -487,20 +529,24 @@ function SetUpSpace() {
     </label>
   );
 
-  return (
-    <>
+  if (step === "join") {
+    return (
       <form onSubmit={join}>
+        <p className="hint lead">
+          On the device that has YACS, open <strong>Settings → Invite a device</strong>. Then type the code it shows here,
+          or paste its link.
+        </p>
         <label>
-          Invite link or code
+          Code or invite link
           <input
             required
+            autoFocus
             value={link}
             onChange={(e) => setLink(e.target.value)}
-            placeholder="https://…/#join=…  or  7-tulip-apple"
+            placeholder="7-tulip-apple  or  https://…/#join=…"
             autoComplete="off"
             spellCheck={false}
           />
-          <span className="hint">On a device in the space: Invite a device….</span>
         </label>
         {isCode &&
           (own ? (
@@ -515,49 +561,72 @@ function SetUpSpace() {
           ))}
         {error?.form === "join" && <p className="error">{error.text}</p>}
         <div className="actions">
+          <button type="button" onClick={back} disabled={busy !== null}>
+            Back
+          </button>
           <button className="primary" type="submit" disabled={busy !== null}>
-            {busy === "join" ? "Joining…" : "Join space"}
+            {busy === "join" ? "Joining…" : "Join"}
           </button>
         </div>
       </form>
-      <p className="divider">or start a new space</p>
-      <form onSubmit={create}>
-        <div className="choices" role="radiogroup" aria-label="Relay">
-          <label className="choice">
-            <input type="radio" name="relay" checked={!own} onChange={() => setOwn(false)} />
-            <span>
-              Free YACS relay
-              <span className="hint">
-                Nothing to set up. Clips up to 10 MB, kept up to an hour. Privacy: {PUBLIC_RELAY.replace("https://", "")}/privacy
-              </span>
-            </span>
-          </label>
-          <label className="choice">
-            <input type="radio" name="relay" checked={own} onChange={() => setOwn(true)} />
-            <span>
-              My own relay
-              <span className="hint">A relay you run, with your own limits.</span>
-            </span>
-          </label>
-        </div>
-        {own && (
-          <>
-            {relayUrl("")}
-            <label>
-              Account key <span className="optional">the relay's YACS_ACCESS_TOKEN, if it has one</span>
-              <input type="password" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" />
-            </label>
-          </>
-        )}
+    );
+  }
+
+  if (step === "start") {
+    return (
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          create(serverUrl, token || null);
+        }}
+      >
+        <p className="hint lead">A relay you run, with your own limits. You'll add your other devices next.</p>
+        {relayUrl("")}
+        <label>
+          Account key <span className="optional">the relay's YACS_ACCESS_TOKEN, if it has one</span>
+          <input type="password" value={token} onChange={(e) => setToken(e.target.value)} autoComplete="off" />
+        </label>
         {error?.form === "create" && <p className="error">{error.text}</p>}
         <div className="actions">
-          <button type="submit" disabled={busy !== null}>
-            {busy === "create" ? "Starting…" : "Start a new space"}
+          <button type="button" onClick={back} disabled={busy !== null}>
+            Back
+          </button>
+          <button className="primary" type="submit" disabled={busy !== null}>
+            {busy === "create" ? "Starting…" : "Start"}
           </button>
         </div>
-        <p className="hint">Then invite your other devices from here.</p>
       </form>
-    </>
+    );
+  }
+
+  return (
+    <div className="welcome">
+      <p className="hint lead">Copy on one device, paste on another.</p>
+      <button className="path primary" onClick={() => create(PUBLIC_RELAY, null)} disabled={busy !== null}>
+        <strong>{busy === "create" ? "Starting…" : "I'm new to YACS"}</strong>
+        <span>Set it up here first, then add your other devices.</span>
+      </button>
+      <button className="path" onClick={() => (setError(null), setStep("join"))} disabled={busy !== null}>
+        <strong>I already use YACS on another device</strong>
+        <span>Connect this computer with the code or link shown there.</span>
+      </button>
+      {error?.form === "create" && <p className="error">{error.text}</p>}
+      <p className="hint">
+        New spaces use the free YACS relay: clips up to 10 MB, kept up to an hour. Privacy:{" "}
+        {PUBLIC_RELAY.replace("https://", "")}/privacy.{" "}
+        <button
+          type="button"
+          className="link"
+          onClick={() => {
+            setError(null);
+            setOwn(true);
+            setStep("start");
+          }}
+        >
+          Use my own relay
+        </button>
+      </p>
+    </div>
   );
 }
 

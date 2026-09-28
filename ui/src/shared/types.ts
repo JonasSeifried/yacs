@@ -43,6 +43,7 @@ export type ChannelEvent =
   | { type: "added"; clip: ClipMeta }
   | { type: "deleted"; id: string }
   | { type: "cleared" }
+  | { type: "invite_used"; slot: string }
   | { type: "other" };
 
 /** `yacs_core::api::ServerConfig`. */

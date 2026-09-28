@@ -3,7 +3,7 @@
 // Spaces are kept in localStorage; the page's CSP allows no third-party
 // scripts that could read them.
 
-import init, { CodeJoiner, Pairing, inviteSlot, newStream, openInvite } from "../wasm/yacs";
+import init, { CodeInviter, CodeJoiner, Pairing, inviteSlot, newStream, openInvite, qrSvg } from "../wasm/yacs";
 import type { DownloadMessage, DownloadMode, DownloadRequest } from "../mobile/download.worker";
 import { OPFS_DIR } from "../mobile/download.worker";
 import { isIos } from "../mobile/link";
@@ -25,6 +25,9 @@ const LIVE_IDLE_MS = 60_000;
 /** The relay predates live updates (0.2.0). */
 export class LiveUnsupported extends Error {}
 
+/** The relay predates typed codes. */
+export class CodesUnsupported extends Error {}
+
 /**
  * What this browser keeps. The app only talks to the relay that served it, so
  * unlike the apps' lists (`yacs_client::spaces`) spaces carry no relay, and
@@ -41,6 +44,11 @@ export interface StoredSpace {
   name: string;
   /** `v1.<channel id>.<key>`, see `Pairing::to_secret` in yacs-core. */
   secret: string;
+  /**
+   * This device started the space and no device has joined through it yet,
+   * so Home offers to add one.
+   */
+  alone?: boolean;
 }
 
 /** The space a `WebClient` works with. */
@@ -99,6 +107,7 @@ export function cleanName(name: string): string {
  */
 export async function enterSpace(secret: string | null, name: string, token: string | null, deviceName: string): Promise<Stored> {
   await ready();
+  const alone = secret === null;
   if (secret === null) {
     const pairing = Pairing.generate();
     secret = pairing.secret();
@@ -106,13 +115,21 @@ export async function enterSpace(secret: string | null, name: string, token: str
   } else {
     Pairing.fromSecret(secret).free(); // throws if the link is damaged
   }
+  const space: StoredSpace = { name: cleanName(name) || DEFAULT_SPACE_NAME, secret };
+  if (alone) space.alone = true;
   const next: Stored = {
-    spaces: [{ name: cleanName(name) || DEFAULT_SPACE_NAME, secret }],
+    spaces: [space],
     token: token?.trim() || null,
     deviceName: deviceName.trim() || "Phone",
   };
   await new WebClient(session(next)!).check();
   return save(next);
+}
+
+/** `text` (an invite link) as a QR code, a `data:` URL for an `<img>`. */
+export async function qrCode(text: string): Promise<string> {
+  await ready();
+  return `data:image/svg+xml,${encodeURIComponent(qrSvg(text))}`;
 }
 
 /** This relay's settings, before this device is in a space. */
@@ -181,6 +198,14 @@ export function renameSpace(stored: Stored, name: string): Stored {
   return save({ ...stored, spaces: [{ ...space, name: cleaned }, ...rest] });
 }
 
+/** Another device joined the space in use, or the user is done adding them. */
+export function notAlone(stored: Stored): Stored {
+  const [space, ...rest] = stored.spaces;
+  if (!space?.alone) return stored;
+  const { alone: _, ...kept } = space;
+  return save({ ...stored, spaces: [kept, ...rest] });
+}
+
 /** Forgets the space in use. The device name stays. */
 export function leaveSpace(stored: Stored): Stored {
   const spaces = stored.spaces.slice(1);
@@ -224,21 +249,85 @@ export class WebClient {
   }
 
   /**
-   * Parks a one-time invite to this space on the relay, for a day; resolves
-   * to its secret for the link. It carries the account key only to relays
-   * before 0.5.0, whose spaces all needed it.
+   * Parks a one-time invite to this space on the relay, for a day: its
+   * secret for the link, and the slot `invite_used` events name.
    */
-  async invite(spaceName: string): Promise<string> {
+  async invite(spaceName: string): Promise<{ secret: string; slot: string }> {
     const pairing = await this.pairing;
-    const token = this.stored.token && !(await this.config()).accounts ? this.stored.token : null;
-    const made = pairing.invite(spaceName, this.stored.deviceName, token) as {
+    const made = pairing.invite(spaceName, this.stored.deviceName, await this.inviteToken()) as {
       secret: string;
       slot: string;
       sealed: Uint8Array<ArrayBuffer>;
     };
     const url = `${API}/channels/${pairing.channelId}/invites/${made.slot}`;
     await this.request(url, { method: "PUT", body: made.sealed });
-    return made.secret;
+    return { secret: made.secret, slot: made.slot };
+  }
+
+  /** Takes back an invite nobody used. Best effort: it expires anyway. */
+  async revokeInvite(slot: string): Promise<void> {
+    const url = `${API}/channels/${(await this.pairing).channelId}/invites/${slot}`;
+    await this.request(url, { method: "DELETE" }, [404]).catch(() => {});
+  }
+
+  /**
+   * Shows codes (`7-tulip-apple`) for another device to type, a new one
+   * after a wrong guess (`replaced`) or when one expires, until a device
+   * joins with one; resolves to its name. Stop with `signal`. Throws
+   * `CodesUnsupported` on relays without them.
+   */
+  async showCodes(spaceName: string, onCode: (code: string, replaced: boolean) => void, signal: AbortSignal): Promise<string> {
+    const pairing = await this.pairing;
+    const base = `${API}/channels/${pairing.channelId}/rendezvous`;
+    const token = await this.inviteToken();
+    let replaced = false;
+    for (;;) {
+      const inviter = new CodeInviter();
+      let nameplate: number | null = null;
+      try {
+        const opened = await this.request(base, { method: "POST", body: inviter.message as Uint8Array<ArrayBuffer>, signal }, [404, 405]);
+        if (!opened.ok) throw new CodesUnsupported("This relay can't show codes.");
+        nameplate = ((await opened.json()) as { nameplate: number }).nameplate;
+        onCode(inviter.code(nameplate), replaced);
+        const answer = await this.waitFor(`${base}/${nameplate}/b/0`, signal);
+        if (!answer) {
+          replaced = false; // expired: nobody typed it
+          continue;
+        }
+        let device: string;
+        try {
+          device = inviter.finish(nameplate, answer);
+        } catch {
+          replaced = true; // a wrong code uses this one up
+          continue;
+        }
+        const sealed = inviter.sealInvite(pairing, spaceName, this.stored.deviceName, token) as Uint8Array<ArrayBuffer>;
+        const put = await this.request(`${base}/${nameplate}/a/1`, { method: "PUT", body: sealed, signal }, [404]);
+        if (put.status === 404) {
+          replaced = false;
+          continue;
+        }
+        nameplate = null; // the joiner reading a/1 closes it
+        return device;
+      } finally {
+        inviter.free();
+        if (nameplate !== null) this.request(`${base}/${nameplate}`, { method: "DELETE" }, [404]).catch(() => {});
+      }
+    }
+  }
+
+  /** A message the other side of a rendezvous leaves, or null once it's gone. */
+  private async waitFor(url: string, signal: AbortSignal): Promise<Uint8Array | null> {
+    for (;;) {
+      const res = await this.request(`${url}?wait=25`, { signal }, [204, 404]);
+      if (res.status === 404) return null;
+      if (res.status === 200) return new Uint8Array(await res.arrayBuffer());
+    }
+  }
+
+  /** The account key goes into invites only for relays before 0.5.0, whose spaces all needed it. */
+  private async inviteToken(): Promise<string | null> {
+    return this.stored.token && !(await this.config()).accounts ? this.stored.token : null;
   }
 
   /** Fetched once and decrypted: clips never change. Null if it's gone. */

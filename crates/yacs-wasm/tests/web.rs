@@ -4,7 +4,9 @@
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::wasm_bindgen_test;
 use yacs_core::{CodeInviter, Invite, Pairing};
-use yacs_wasm::{WasmCodeJoiner, WasmPairing, invite_slot, new_stream, open_invite};
+use yacs_wasm::{
+    WasmCodeInviter, WasmCodeJoiner, WasmPairing, invite_slot, new_stream, open_invite, qr_svg,
+};
 
 fn clip() -> JsValue {
     js_sys::JSON::parse(
@@ -142,4 +144,49 @@ fn joins_with_a_code() {
     let space = js_sys::Reflect::get(&opened, &"space".into()).unwrap();
     assert_eq!(space.as_string().unwrap(), pairing.to_secret());
     assert!(WasmCodeJoiner::new("nope").is_err());
+}
+
+#[wasm_bindgen_test]
+fn shows_a_code_and_hands_out_the_invite() {
+    let mut inviter = WasmCodeInviter::new().unwrap();
+    let code = inviter.code(12).unwrap();
+    assert!(code.starts_with("12-"));
+    let mut joiner = WasmCodeJoiner::new(&code).unwrap();
+    let answer = joiner.answer(&inviter.message(), "iPad").unwrap();
+
+    assert!(
+        inviter
+            .seal_invite(&WasmPairing::generate().unwrap(), "Home", "MacBook", None)
+            .is_err()
+    );
+    assert_eq!(inviter.finish(12, &answer).unwrap(), "iPad");
+    assert!(inviter.code(12).is_err());
+    let space = WasmPairing::generate().unwrap();
+    let sealed = inviter
+        .seal_invite(&space, "Home", "MacBook", None)
+        .unwrap();
+    let opened = joiner.open_invite(&sealed).unwrap();
+    let secret = js_sys::Reflect::get(&opened, &"space".into()).unwrap();
+    assert_eq!(secret.as_string().unwrap(), space.secret());
+}
+
+#[wasm_bindgen_test]
+fn a_wrong_code_uses_the_inviter_up() {
+    let mut inviter = WasmCodeInviter::new().unwrap();
+    let wrong = match inviter.code(12).unwrap().as_str() {
+        "12-tulip-apple" => "12-apple-tulip",
+        _ => "12-tulip-apple",
+    };
+    let answer = WasmCodeJoiner::new(wrong)
+        .unwrap()
+        .answer(&inviter.message(), "iPad")
+        .unwrap();
+    assert!(inviter.finish(12, &answer).is_err());
+    assert!(inviter.finish(12, &answer).is_err());
+}
+
+#[wasm_bindgen_test]
+fn draws_qr_codes() {
+    let svg = qr_svg("https://yacs-relay.jonasseifried.com/#join=v2.abc").unwrap();
+    assert!(svg.contains("<svg"));
 }
