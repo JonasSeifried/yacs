@@ -22,6 +22,11 @@ html[data-os="macos"] .panel {
   overflow: hidden;
 }
 
+/* Windows 11 rounds the window and draws its border (see windows.rs). */
+html[data-os="windows"] .panel {
+  border: 0;
+}
+
 .panel-header {
   display: flex;
   align-items: center;
@@ -31,8 +36,15 @@ html[data-os="macos"] .panel {
 }
 
 .brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 650;
   letter-spacing: 0.02em;
+}
+
+.brand-icon {
+  flex: none;
 }
 
 .server {
@@ -416,7 +428,8 @@ button.primary kbd {
 .ttl select {
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 2px 4px;
-  background: var(--surface-2);
+  padding: 2px 22px 2px 8px;
+  background-color: var(--surface-2);
+  background-position: right 7px center;
   font-size: 12px;
 }

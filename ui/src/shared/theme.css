@@ -15,10 +15,14 @@
   --ok: #177544;
   --focus: 0 0 0 3px rgb(216 54 86 / 30%);
   --scrollbar: #c9c6d4;
+  /* The dropdown arrow, in --muted: a data URL can't read a variable. */
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%236b6878' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m1 1 4 4 4-4'/%3E%3C/svg%3E");
   --radius: 10px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
   color-scheme: light dark;
+  /* Checkboxes and radios in the theme, not the system's blue. */
+  accent-color: var(--accent-fill);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -39,6 +43,7 @@
     --ok: #5fd197;
     --focus: 0 0 0 3px rgb(255 134 153 / 35%);
     --scrollbar: #4a4656;
+    --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none' stroke='%239a97a8' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m1 1 4 4 4-4'/%3E%3C/svg%3E");
   }
 }
 
@@ -60,6 +65,71 @@ input,
 select {
   font: inherit;
   color: inherit;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+/* Keyboard focus in the theme; pages with fields add their own border. */
+button:focus-visible,
+a:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+/* Our own arrow instead of each system's. Pages set the padding and size. */
+select {
+  appearance: none;
+  background-image: var(--chevron);
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 30px;
+  cursor: pointer;
+}
+
+/* Chromium (WebView2 on Windows) can style the open list too; macOS and
+   Linux keep their native menus, which already look at home. */
+@supports (appearance: base-select) {
+  select,
+  ::picker(select) {
+    appearance: base-select;
+  }
+
+  select::picker-icon {
+    display: none;
+  }
+
+  ::picker(select) {
+    margin-top: 4px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 14%);
+  }
+
+  option {
+    padding: 6px 10px;
+    border-radius: 5px;
+    font-size: inherit;
+  }
+
+  option:hover,
+  option:focus-visible {
+    outline: none;
+    background: var(--surface-2);
+  }
+
+  option:checked {
+    color: var(--accent);
+    font-weight: 500;
+  }
+
+  option::checkmark {
+    display: none;
+  }
 }
 
 * {

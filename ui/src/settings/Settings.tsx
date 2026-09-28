@@ -207,18 +207,20 @@ function CommandLine({ status }: { status: Status }) {
 
 function SpaceSettings({ space, limits }: { space: SpaceStatus; limits: SpaceLimits | null }) {
   const [error, setError] = useState<string | null>(null);
+  /** Asked here rather than with confirm(), which webviews show as a bare browser dialog. */
+  const [confirming, setConfirming] = useState(false);
+  const [leaving, setLeaving] = useState(false);
   const leave = async () => {
-    if (!confirm(`Leave “${space.name}”? This computer stops sharing clips with the space. To come back, you'll need an invite from one of its devices.`))
-      return;
+    setLeaving(true);
     try {
       await platform.leaveSpace();
     } catch (e) {
       setError(String(e));
+      setLeaving(false);
     }
   };
   return (
     <>
-      <SpaceName name={space.name} />
       <p className="paired">
         <span className="dot" />
         {isPublicRelay(space.relay) ? (
@@ -232,12 +234,30 @@ function SpaceSettings({ space, limits }: { space: SpaceStatus; limits: SpaceLim
         )}
       </p>
       {describeLimits(limits) && <p className="hint plan">Free plan: {describeLimits(limits)}.</p>}
-      {error && <p className="error">{error}</p>}
+      <SpaceName name={space.name} />
       <InviteDevice relay={space.relay} />
-      <div className="actions">
-        <button className="danger" onClick={leave}>
-          Leave this space
-        </button>
+      <div className="leave">
+        {error && <p className="error">{error}</p>}
+        {confirming ? (
+          <div className="confirm" role="alertdialog" aria-labelledby="leave-question">
+            <p id="leave-question">
+              Leave “{space.name}”? This computer stops sharing clips with the space. To come back, you'll need an
+              invite from one of its devices.
+            </p>
+            <div className="actions">
+              <button onClick={() => setConfirming(false)} disabled={leaving} autoFocus>
+                Cancel
+              </button>
+              <button className="danger-fill" onClick={leave} disabled={leaving}>
+                {leaving ? "Leaving…" : "Leave space"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button className="link danger" onClick={() => setConfirming(true)}>
+            Leave this space…
+          </button>
+        )}
       </div>
     </>
   );
@@ -843,7 +863,14 @@ function HotkeyRecorder({ value, os, onChange }: { value: string; os: Os; onChan
         onKeyDown={onKeyDown}
         onBlur={() => setRecording(false)}
       >
-        {recording ? "Press a shortcut…" : formatAccelerator(value, os)}
+        {recording ? (
+          "Press a shortcut…"
+        ) : (
+          <>
+            <span>{formatAccelerator(value, os)}</span>
+            <span className="recorder-action">Change</span>
+          </>
+        )}
       </button>
       {recording && <span className="hint">{hint ?? "Esc to cancel"}</span>}
     </div>

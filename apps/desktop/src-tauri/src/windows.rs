@@ -36,12 +36,17 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     let spotlight = spotlight.transparent(true);
     let spotlight = spotlight.build()?;
+    #[cfg(windows)]
+    set_border(&spotlight, spotlight.theme().unwrap_or(tauri::Theme::Light));
 
     let handle = app.clone();
-    spotlight.on_window_event(move |event| {
-        if let WindowEvent::Focused(false) = event {
-            hide_spotlight(&handle);
-        }
+    #[cfg(windows)]
+    let window = spotlight.clone();
+    spotlight.on_window_event(move |event| match event {
+        WindowEvent::Focused(false) => hide_spotlight(&handle),
+        #[cfg(windows)]
+        WindowEvent::ThemeChanged(theme) => set_border(&window, *theme),
+        _ => {}
     });
 
     let settings =
@@ -62,6 +67,29 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         }
     });
     Ok(())
+}
+
+/// Windows 11 draws a 1px border around the undecorated Spotlight, in the
+/// accent colour when "Show accent colour on title bars and window borders" is
+/// on. It's drawn in the theme's `--border` instead, so the panel skips its own.
+#[cfg(windows)]
+fn set_border(window: &tauri::WebviewWindow, theme: tauri::Theme) {
+    use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DwmSetWindowAttribute};
+    // COLORREF is 0x00BBGGRR: #35323f and #e3e1ea.
+    let color: u32 = match theme {
+        tauri::Theme::Dark => 0x003f_3235,
+        _ => 0x00ea_e1e3,
+    };
+    let Ok(hwnd) = window.hwnd() else { return };
+    // Fails harmlessly before Windows 11, which has no such border.
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd.0,
+            DWMWA_BORDER_COLOR as _,
+            (&raw const color).cast(),
+            size_of::<u32>() as u32,
+        );
+    }
 }
 
 pub fn toggle_spotlight(app: &AppHandle) {

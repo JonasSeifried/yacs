@@ -75,8 +75,13 @@ select {
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
-  background: var(--surface);
+  background-color: var(--surface);
   font-weight: 400;
+}
+
+select {
+  padding-right: 34px;
+  background-position: right 12px center;
 }
 
 textarea {
@@ -218,7 +223,8 @@ button.icon {
 }
 
 .ttl select {
-  padding: 6px 8px;
+  padding: 6px 28px 6px 10px;
+  background-position: right 10px center;
   font-size: 14px;
 }
 

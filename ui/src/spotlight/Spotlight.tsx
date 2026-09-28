@@ -303,7 +303,10 @@ export function Spotlight() {
   return (
     <main className="panel">
       <header className="panel-header">
-        <span className="brand">YACS</span>
+        <span className="brand">
+          <BrandIcon />
+          YACS
+        </span>
         {space && (
           <span className="server" title={`Through ${new URL(space.relay).host}`}>
             {space.name}
@@ -427,7 +430,9 @@ function ClipRow(props: {
   } else if (loaded?.state === "gone") {
     title = <span className="muted">Expired</span>;
   } else {
-    title = <span className="muted">Encrypted clip</span>;
+    // Too big to decrypt for the list: it opens when selected.
+    title = `Large clip · ${formatSize(meta.size)}`;
+    detail = `${ago} · ${loaded?.state === "loading" ? "decrypting…" : "select to open"}`;
   }
   return (
     <li
@@ -631,6 +636,21 @@ function KindIcon({ kind }: { kind: ClipIcon | "locked" }) {
   return (
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       {KIND_PATHS[kind]}
+    </svg>
+  );
+}
+
+/** The app icon: a card stacked on another, on the coral tile (apps/desktop/icon/generate.py). */
+function BrandIcon() {
+  return (
+    <svg className="brand-icon" width="18" height="18" viewBox="0 0 100 100" aria-hidden="true">
+      <rect width="100" height="100" rx="24" fill="#e2566f" />
+      <mask id="brand-gap">
+        <rect width="100" height="100" fill="#fff" />
+        <rect x="42.8" y="42.8" width="34.3" height="34.3" rx="9" fill="#000" />
+      </mask>
+      <rect x="26.5" y="26.5" width="32.5" height="32.5" rx="7.2" fill="#fff" mask="url(#brand-gap)" />
+      <rect x="46.4" y="46.4" width="27.1" height="27.1" rx="6.3" fill="#fff" />
     </svg>
   );
 }
