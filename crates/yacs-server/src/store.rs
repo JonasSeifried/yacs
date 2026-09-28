@@ -251,8 +251,10 @@ impl Store {
         self.uploads.lock().expect("uploads lock poisoned")
     }
 
-    fn reserve(&self, size: u64) -> bool {
-        if self.used.fetch_add(size, Ordering::SeqCst) + size > self.max_disk {
+    /// Counts `size` against the quota, or against `share` of it if that's lower.
+    fn reserve(&self, size: u64, share: Option<u64>) -> bool {
+        let max = share.map_or(self.max_disk, |share| share.min(self.max_disk));
+        if self.used.fetch_add(size, Ordering::SeqCst) + size > max {
             self.release(size);
             return false;
         }
@@ -270,15 +272,17 @@ impl Store {
     }
 
     /// Store a clip, then evict the channel's oldest clips beyond `max_clips`.
+    /// With a `disk_share`, refused once the store holds that much.
     pub async fn put(
         &self,
         channel: &ChannelId,
         body: &[u8],
         now_ms: u64,
         expires_at_ms: u64,
+        disk_share: Option<u64>,
     ) -> Result<ClipMeta, PutError> {
         let size = body.len() as u64;
-        if !self.reserve(size) {
+        if !self.reserve(size, disk_share) {
             return Err(PutError::Full);
         }
 
@@ -332,7 +336,8 @@ impl Store {
     /// Start a chunked upload. `header` is the clip's envelope; the whole
     /// upload counts against the quota from now on. The TTL starts once it's
     /// complete. With a `deadline_ms`, the upload is dropped then if it isn't
-    /// complete; otherwise only once it's idle for [`UPLOAD_IDLE_MS`].
+    /// complete; otherwise only once it's idle for [`UPLOAD_IDLE_MS`]. A
+    /// `disk_share` works as in [`put`](Self::put).
     #[allow(clippy::too_many_arguments)]
     pub async fn create_upload(
         &self,
@@ -342,6 +347,7 @@ impl Store {
         ttl_ms: u64,
         now_ms: u64,
         deadline_ms: Option<u64>,
+        disk_share: Option<u64>,
     ) -> Result<Ulid, UploadError> {
         let _guard = self.lock.lock().await;
         let open = self
@@ -353,7 +359,7 @@ impl Store {
             return Err(UploadError::TooMany);
         }
         let reserved = header.len() as u64 + layout.length;
-        if !self.reserve(reserved) {
+        if !self.reserve(reserved, disk_share) {
             return Err(UploadError::Full);
         }
 
@@ -531,24 +537,24 @@ impl Store {
             .collect())
     }
 
-    /// The clip's envelope; for a chunked clip, the header.
+    /// The clip's envelope, opened, with its length; for a chunked clip, the header.
     pub async fn get(
         &self,
         channel: &ChannelId,
         id: Ulid,
         now_ms: u64,
-    ) -> io::Result<Option<(ClipMeta, Vec<u8>)>> {
+    ) -> io::Result<Option<(ClipMeta, fs::File, u64)>> {
         let entries = live_entries(&self.channel_dir(channel), now_ms).await?;
-        read_entry(entries.iter().find(|e| e.id == id)).await
+        open_entry(entries.iter().find(|e| e.id == id)).await
     }
 
     pub async fn latest(
         &self,
         channel: &ChannelId,
         now_ms: u64,
-    ) -> io::Result<Option<(ClipMeta, Vec<u8>)>> {
+    ) -> io::Result<Option<(ClipMeta, fs::File, u64)>> {
         let entries = live_entries(&self.channel_dir(channel), now_ms).await?;
-        read_entry(entries.first()).await
+        open_entry(entries.first()).await
     }
 
     /// Chunk `index` of a chunked clip, opened, with its length.
@@ -725,15 +731,18 @@ async fn live_entries(dir: &Path, now_ms: u64) -> io::Result<Vec<Entry>> {
     Ok(entries)
 }
 
-/// A clip deleted between listing and reading counts as not found.
-async fn read_entry(entry: Option<&Entry>) -> io::Result<Option<(ClipMeta, Vec<u8>)>> {
+/// A clip deleted between listing and opening counts as not found.
+async fn open_entry(entry: Option<&Entry>) -> io::Result<Option<(ClipMeta, fs::File, u64)>> {
     let Some(entry) = entry else { return Ok(None) };
     let path = match entry.chunked {
         true => entry.path.join(HEADER_FILE),
         false => entry.path.clone(),
     };
-    match fs::read(&path).await {
-        Ok(bytes) => Ok(Some((entry.meta(), bytes))),
+    match fs::File::open(&path).await {
+        Ok(file) => {
+            let len = file.metadata().await?.len();
+            Ok(Some((entry.meta(), file, len)))
+        }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
@@ -842,16 +851,24 @@ mod tests {
         let late = Store::open(dir.path(), 50, 1000).await.unwrap();
         let early = Store::open(dir.path(), 50, 1000).await.unwrap();
 
-        early.put(&channel, &[0; 100], 1_000, 2_000).await.unwrap();
+        early
+            .put(&channel, &[0; 100], 1_000, 2_000, None)
+            .await
+            .unwrap();
         assert_eq!(late.used_bytes(), 0);
         // `late` removes a file it never counted.
         assert_eq!(late.reap(5_000).await.unwrap(), 1);
         assert_eq!(late.used_bytes(), 0);
-        late.put(&channel, &[0; 30], 6_000, 60_000).await.unwrap();
+        late.put(&channel, &[0; 30], 6_000, 60_000, None)
+            .await
+            .unwrap();
         assert_eq!(late.used_bytes(), 30);
 
         // `early` still counts its reaped clip and misses `late`'s: 150, but 80 are on disk.
-        early.put(&channel, &[0; 50], 7_000, 60_000).await.unwrap();
+        early
+            .put(&channel, &[0; 50], 7_000, 60_000, None)
+            .await
+            .unwrap();
         assert_eq!(early.used_bytes(), 150);
         early.reap(8_000).await.unwrap();
         assert_eq!(early.used_bytes(), 80);

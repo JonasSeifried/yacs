@@ -227,6 +227,18 @@ impl DailyQuota {
         fits
     }
 
+    /// Gives back `amount` taken earlier `today`, for something that didn't happen.
+    pub fn give_back(&self, client: &Client, amount: u64, today: u64) {
+        let mut used = self.used.lock().expect("daily quota lock poisoned");
+        for (key, _) in client.keys() {
+            if let Some((day, n)) = used.get_mut(&key) {
+                if *day == today {
+                    *n = n.saturating_sub(amount);
+                }
+            }
+        }
+    }
+
     /// Forgets the days before `today`.
     pub fn prune(&self, today: u64) {
         let mut used = self.used.lock().expect("daily quota lock poisoned");
@@ -300,8 +312,11 @@ pub const LOOKUPS_PER_WINDOW: u32 = 30;
 const CODE_WINDOW_MS: u64 = 10 * 60 * 1000;
 /// Event streams and waiting reads one address may hold open.
 pub const MAX_CONNECTIONS: usize = 32;
+/// Uploads one address may have in memory at once: each holds up to a clip's
+/// size until it's stored.
+pub const MAX_BUFFERED: usize = 4;
 
-/// The client holds [`MAX_CONNECTIONS`] open already.
+/// The client holds all the places it may already.
 #[derive(Debug)]
 pub struct Crowded;
 
@@ -313,6 +328,7 @@ pub struct Clients {
     pub codes: RateLimiter,
     pub lookups: RateLimiter,
     pub connections: Arc<Connections>,
+    pub buffers: Arc<Connections>,
     warned_unforwarded: AtomicBool,
     warned_cloudflare: AtomicBool,
 }
@@ -325,6 +341,7 @@ impl Clients {
             codes: RateLimiter::per(CODES_PER_WINDOW, CODE_WINDOW_MS, CODES_PER_WINDOW),
             lookups: RateLimiter::per(LOOKUPS_PER_WINDOW, CODE_WINDOW_MS, LOOKUPS_PER_WINDOW),
             connections: Connections::new(MAX_CONNECTIONS),
+            buffers: Connections::new(MAX_BUFFERED),
             warned_unforwarded: AtomicBool::new(false),
             warned_cloudflare: AtomicBool::new(false),
         }
@@ -351,8 +368,21 @@ impl Clients {
 
     /// A place for a long-lived response. `Err` when the client holds too many.
     pub fn connect(&self, client: Client) -> Result<Option<Connection>, Crowded> {
+        self.hold(&self.connections, client)
+    }
+
+    /// A place for an upload read into memory. `Err` when the client has too many.
+    pub fn buffer(&self, client: Client) -> Result<Option<Connection>, Crowded> {
+        self.hold(&self.buffers, client)
+    }
+
+    fn hold(
+        &self,
+        places: &Arc<Connections>,
+        client: Client,
+    ) -> Result<Option<Connection>, Crowded> {
         match self.enabled {
-            true => self.connections.open(client).map(Some).ok_or(Crowded),
+            true => places.open(client).map(Some).ok_or(Crowded),
             false => Ok(None),
         }
     }
@@ -493,6 +523,12 @@ mod tests {
         assert!(quota.take(&a, 4, 10, 0));
         assert!(quota.take(&a, 10, 10, 1));
         quota.prune(1);
+        assert!(!quota.take(&a, 1, 10, 1));
+        // Given back only on the day it was taken.
+        quota.give_back(&a, 3, 0);
+        assert!(!quota.take(&a, 1, 10, 1));
+        quota.give_back(&a, 3, 1);
+        assert!(quota.take(&a, 3, 10, 1));
         assert!(!quota.take(&a, 1, 10, 1));
     }
 

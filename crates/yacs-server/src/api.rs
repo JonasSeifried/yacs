@@ -28,7 +28,7 @@ use yacs_core::{
 };
 
 use crate::accounts::{Accounts, Limits, Refusal};
-use crate::clients::{Client, Clients, Crowded};
+use crate::clients::{Client, Clients, Connection, Crowded};
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::events::Events;
@@ -116,7 +116,8 @@ pub fn router(state: AppState) -> Router {
             "/rendezvous/{nameplate}/b/{index}",
             put(joiner_writes).layer(message_limit),
         )
-        .layer(middleware::from_fn_with_state(state.clone(), identify));
+        .layer(middleware::from_fn_with_state(state.clone(), identify))
+        .layer(middleware::map_response(api_headers));
 
     Router::new()
         .nest("/api/v1", api)
@@ -125,6 +126,7 @@ pub fn router(state: AppState) -> Router {
         .route("/imprint", get(imprint))
         .merge(crate::web::routes())
         .with_state(state)
+        .layer(middleware::map_response(hsts))
         .layer(
             // Log the route pattern, not the URI: the URI contains the channel id.
             TraceLayer::new_for_http()
@@ -137,6 +139,32 @@ pub fn router(state: AppState) -> Router {
                 })
                 .on_response(DefaultOnResponse::new().level(Level::INFO)),
         )
+}
+
+/// HTTPS only, for a year: the web app holds the space keys, so it mustn't be
+/// served over plain HTTP even once. Browsers ignore this over HTTP, so a
+/// relay without HTTPS (say, on a LAN) keeps working.
+async fn hsts(mut res: Response) -> Response {
+    res.headers_mut().insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=31536000"),
+    );
+    res
+}
+
+/// API responses carry bytes anyone in a space can upload, from the web
+/// app's origin: never render or run them.
+async fn api_headers(mut res: Response) -> Response {
+    let headers = res.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; frame-ancestors 'none'"),
+    );
+    res
 }
 
 async fn privacy(State(state): State<AppState>) -> Response {
@@ -172,6 +200,7 @@ enum ApiError {
     TooManyLookups,
     TooManyConnections,
     TooManyListeners,
+    TooManyBuffered,
     UploadsUsed,
     BodyTooLarge,
     StorageFull,
@@ -234,6 +263,10 @@ impl IntoResponse for ApiError {
             Self::TooManyListeners => (
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many devices are listening to this space",
+            ),
+            Self::TooManyBuffered => (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many uploads at once from your address",
             ),
             Self::UploadsUsed => (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -381,25 +414,74 @@ async fn address(Extension(client): Extension<Client>) -> Response {
         .into_response()
 }
 
-/// Counts an upload of `bytes` to a free space against the uploader's
-/// address, on a public relay.
-fn charge_upload(
-    state: &AppState,
-    client: &Client,
-    limits: &Limits,
+/// An upload counted against the uploader's address (for a free space, on a
+/// public relay) and the space's daily transfer. Given back when dropped,
+/// unless [`keep`](Self::keep) says the upload was stored.
+struct Charged<'a> {
+    state: &'a AppState,
+    channel: ChannelId,
+    client: Client,
     bytes: u64,
-) -> Result<(), ApiError> {
-    if limits.plan != Plan::Free || !state.clients.enabled() {
-        return Ok(());
+    now_ms: u64,
+    address: bool,
+    space: bool,
+}
+
+impl<'a> Charged<'a> {
+    fn take(
+        state: &'a AppState,
+        channel: &ChannelId,
+        client: &Client,
+        limits: &Limits,
+        bytes: u64,
+    ) -> Result<Self, ApiError> {
+        let mut charged = Self {
+            state,
+            channel: *channel,
+            client: *client,
+            bytes,
+            now_ms: state.clock.now_ms(),
+            address: false,
+            space: false,
+        };
+        if limits.plan == Plan::Free && state.clients.enabled() {
+            let limit = state.config.free_daily_upload_per_ip.as_u64();
+            if !state
+                .accounts
+                .charge_upload(client, bytes, limit, charged.now_ms)
+            {
+                return Err(ApiError::UploadsUsed);
+            }
+            charged.address = true;
+        }
+        charge(state, channel, limits, bytes)?;
+        charged.space = limits.daily_transfer.is_some();
+        Ok(charged)
     }
-    let limit = state.config.free_daily_upload_per_ip.as_u64();
-    match state
-        .accounts
-        .charge_upload(client, bytes, limit, state.clock.now_ms())
-    {
-        true => Ok(()),
-        false => Err(ApiError::UploadsUsed),
+
+    fn keep(mut self) {
+        (self.address, self.space) = (false, false);
     }
+}
+
+impl Drop for Charged<'_> {
+    fn drop(&mut self) {
+        let accounts = &self.state.accounts;
+        if self.address {
+            accounts.refund_upload(&self.client, self.bytes, self.now_ms);
+        }
+        if self.space {
+            accounts.refund(&self.channel, self.bytes, self.now_ms);
+        }
+    }
+}
+
+/// A place among the uploads `client` has in memory at once, on a public relay.
+fn buffer(state: &AppState, client: Client) -> Result<Option<Connection>, ApiError> {
+    state
+        .clients
+        .buffer(client)
+        .map_err(|Crowded| ApiError::TooManyBuffered)
 }
 
 /// The body, up to what the space's plan allows for a clip.
@@ -499,14 +581,18 @@ async fn create(
     body: Body,
 ) -> Result<(StatusCode, Json<ClipMeta>), ApiError> {
     let channel = parse_channel(&channel)?;
+    let _buffer = buffer(&state, client)?;
     let body = read_body(&state, &limits, body).await?;
     check_envelope(&body)?;
     let ttl_ms = ttl_ms(&limits, query.ttl)?;
     check_clip_size(&limits, body.len() as u64)?;
-    charge_upload(&state, &client, &limits, body.len() as u64)?;
-    charge(&state, &channel, &limits, body.len() as u64)?;
+    let charged = Charged::take(&state, &channel, &client, &limits, body.len() as u64)?;
     let now = state.clock.now_ms();
-    let meta = state.store.put(&channel, &body, now, now + ttl_ms).await?;
+    let meta = state
+        .store
+        .put(&channel, &body, now, now + ttl_ms, limits.disk_share)
+        .await?;
+    charged.keep();
     state
         .events
         .publish(&channel, ChannelEvent::Added { clip: meta.clone() });
@@ -793,22 +879,31 @@ async fn create_upload(
     body: Body,
 ) -> Result<(StatusCode, Json<UploadCreated>), ApiError> {
     let channel = parse_channel(&channel)?;
+    let _buffer = buffer(&state, client)?;
     let body = read_body(&state, &limits, body).await?;
     check_envelope(&body)?;
     let ttl_ms = ttl_ms(&limits, query.ttl)?;
     let layout = ChunkLayout::new(query.length, query.chunk_size).map_err(ApiError::BadRequest)?;
     let size = (body.len() as u64).saturating_add(query.length);
     check_clip_size(&limits, size)?;
-    charge_upload(&state, &client, &limits, size)?;
-    charge(&state, &channel, &limits, size)?;
+    let charged = Charged::take(&state, &channel, &client, &limits, size)?;
     let now = state.clock.now_ms();
     // A free upload can't hold its share of the disk for longer than its clip could.
     let deadline =
         (limits.plan == Plan::Free).then(|| now + limits.max_ttl_ms.max(MIN_UPLOAD_DEADLINE_MS));
     let id = state
         .store
-        .create_upload(&channel, &body, layout, ttl_ms, now, deadline)
+        .create_upload(
+            &channel,
+            &body,
+            layout,
+            ttl_ms,
+            now,
+            deadline,
+            limits.disk_share,
+        )
         .await?;
+    charged.keep();
     Ok((
         StatusCode::CREATED,
         Json(UploadCreated { id: id.to_string() }),
@@ -919,7 +1014,7 @@ async fn latest(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let channel = parse_channel(&channel)?;
-    let (meta, body) = state
+    let (meta, file, len) = state
         .store
         .latest(&channel, state.clock.now_ms())
         .await?
@@ -932,8 +1027,8 @@ async fn latest(
     {
         return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag)]).into_response());
     }
-    charge(&state, &channel, &limits, body.len() as u64)?;
-    Ok(envelope_response(&meta, body, "private, no-cache"))
+    charge(&state, &channel, &limits, len)?;
+    Ok(envelope_response(&meta, file, len, "private, no-cache"))
 }
 
 async fn get_clip(
@@ -943,16 +1038,16 @@ async fn get_clip(
 ) -> Result<Response, ApiError> {
     let (channel, id) = (parse_channel(&channel)?, parse_id(&id)?);
     let now = state.clock.now_ms();
-    let (meta, body) = state
+    let (meta, file, len) = state
         .store
         .get(&channel, id, now)
         .await?
         .ok_or(ApiError::NotFound)?;
-    charge(&state, &channel, &limits, body.len() as u64)?;
+    charge(&state, &channel, &limits, len)?;
     // A clip never changes, so it may be cached until it expires.
     let max_age = meta.expires_at_ms.saturating_sub(now) / 1000;
     let cache = format!("private, max-age={max_age}, immutable");
-    Ok(envelope_response(&meta, body, &cache))
+    Ok(envelope_response(&meta, file, len, &cache))
 }
 
 async fn delete_clip(
@@ -1003,7 +1098,13 @@ fn etag(meta: &ClipMeta) -> String {
     format!("\"{}\"", meta.id)
 }
 
-fn envelope_response(meta: &ClipMeta, body: Vec<u8>, cache_control: &str) -> Response {
+/// Streamed from the file, like chunks: a clip may be megabytes.
+fn envelope_response(
+    meta: &ClipMeta,
+    file: tokio::fs::File,
+    len: u64,
+    cache_control: &str,
+) -> Response {
     let header =
         |v: String| HeaderValue::try_from(v).expect("ids and numbers are valid header values");
     (
@@ -1012,6 +1113,7 @@ fn envelope_response(meta: &ClipMeta, body: Vec<u8>, cache_control: &str) -> Res
                 header::CONTENT_TYPE,
                 HeaderValue::from_static(ENVELOPE_CONTENT_TYPE),
             ),
+            (header::CONTENT_LENGTH, HeaderValue::from(len)),
             (header::ETAG, header(etag(meta))),
             (header::CACHE_CONTROL, header(cache_control.to_owned())),
         ],
@@ -1022,7 +1124,7 @@ fn envelope_response(meta: &ClipMeta, body: Vec<u8>, cache_control: &str) -> Res
             (HEADER_SIZE, header(meta.size.to_string())),
             (HEADER_CHUNKED, header(u8::from(meta.chunked).to_string())),
         ],
-        body,
+        Body::from_stream(ReaderStream::with_capacity(file, IO_BUFFER)),
     )
         .into_response()
 }

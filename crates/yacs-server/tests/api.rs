@@ -1673,3 +1673,104 @@ async fn small_requests_stay_small() {
     let big = app.post(&clips(&channel(1)), vec![0; 21_000_000]).await;
     assert_eq!(big.status, StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+#[tokio::test]
+async fn free_spaces_leave_the_owner_disk_space() {
+    let size = envelope("hi").len();
+    let (max, free) = (format!("{}B", 4 * size), format!("{}B", 2 * size));
+    let app = public_app(&[
+        "--access-token",
+        "s3cret",
+        "--max-disk",
+        &max,
+        "--max-size",
+        &max,
+        "--free-max-disk",
+        &free,
+    ])
+    .await;
+    let (free_space, owned) = (channel(1), channel(2));
+    app.create(&free_space, None).await;
+    app.create(&free_space, None).await;
+    let full = app.post(&clips(&free_space), envelope("hi")).await;
+    assert_eq!(full.status, StatusCode::INSUFFICIENT_STORAGE);
+    // What the refused clip was charged is given back.
+    let limits: SpaceLimits = app.get(&limits_uri(&free_space)).await.json();
+    assert_eq!(limits.transfer_used_bytes, 2 * size as u64);
+
+    app.get_as(&limits_uri(&owned), "s3cret").await;
+    app.create(&owned, None).await;
+    app.create(&owned, None).await;
+    let full = app.post(&clips(&owned), envelope("hi")).await;
+    assert_eq!(full.status, StatusCode::INSUFFICIENT_STORAGE);
+}
+
+#[tokio::test]
+async fn one_address_has_a_few_uploads_in_memory_at_once() {
+    let app = public_app(&[]).await;
+    let ip = "203.0.113.1";
+    let mut senders = Vec::new();
+    let mut pending = Vec::new();
+    for _ in 0..yacs_server::clients::MAX_BUFFERED {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1);
+        let body = futures_util::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|b| (Ok::<_, std::io::Error>(b), rx))
+        });
+        let slow = Request::post(clips(&channel(1)))
+            .header("x-forwarded-for", ip)
+            .body(Body::from_stream(body))
+            .unwrap();
+        pending.push(tokio::spawn(app.router.clone().oneshot(slow)));
+        tx.send(envelope("hi")[..10].to_vec()).await.unwrap();
+        senders.push(tx);
+    }
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let more = app
+        .call(Method::POST, &clips(&channel(1)), &from(ip), envelope("hi"))
+        .await;
+    assert_eq!(more.status, StatusCode::TOO_MANY_REQUESTS);
+    let elsewhere = app
+        .call(
+            Method::POST,
+            &clips(&channel(1)),
+            &from("203.0.113.2"),
+            envelope("hi"),
+        )
+        .await;
+    assert_eq!(elsewhere.status, StatusCode::CREATED);
+
+    // Each place frees up once its upload is done.
+    for tx in &senders {
+        tx.send(envelope("hi")[10..].to_vec()).await.unwrap();
+    }
+    drop(senders);
+    for upload in pending {
+        assert_eq!(upload.await.unwrap().unwrap().status(), StatusCode::CREATED);
+    }
+    let again = app
+        .call(Method::POST, &clips(&channel(1)), &from(ip), envelope("hi"))
+        .await;
+    assert_eq!(again.status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn responses_are_https_only_and_api_bytes_never_render() {
+    let app = app(&[]).await;
+    let meta = app.create(&channel(1), None).await;
+    let clip = app
+        .get(&format!("{}/{}", clips(&channel(1)), meta.id))
+        .await;
+    assert_eq!(clip.headers[header::CONTENT_LENGTH], meta.size.to_string());
+    assert_eq!(clip.headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(
+        clip.headers[header::CONTENT_SECURITY_POLICY],
+        "default-src 'none'; frame-ancestors 'none'"
+    );
+    for res in [clip, app.get("/").await, app.get("/healthz").await] {
+        assert_eq!(
+            res.headers[header::STRICT_TRANSPORT_SECURITY],
+            "max-age=31536000"
+        );
+    }
+}

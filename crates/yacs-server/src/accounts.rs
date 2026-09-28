@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use yacs_core::ChannelId;
 use yacs_core::api::{Plan, SpaceLimits};
 
@@ -70,6 +71,9 @@ pub struct Limits {
     pub max_clip_bytes: Option<u64>,
     pub daily_transfer: Option<u64>,
     pub max_clips: usize,
+    /// New clips are refused once the store holds this much, all spaces'
+    /// together; `None` means only the disk quota.
+    pub disk_share: Option<u64>,
 }
 
 impl Limits {
@@ -81,6 +85,7 @@ impl Limits {
             max_clip_bytes: None,
             daily_transfer: None,
             max_clips: config.max_clips_per_channel,
+            disk_share: None,
         }
     }
 
@@ -93,6 +98,7 @@ impl Limits {
             max_clip_bytes: Some(config.free_max_size.as_u64()),
             daily_transfer: Some(config.free_daily_transfer.as_u64()),
             max_clips: config.max_clips_per_channel,
+            disk_share: Some(config.free_disk()),
         }
     }
 
@@ -275,10 +281,25 @@ impl Accounts {
         true
     }
 
+    /// Gives back `bytes` charged earlier today, for an upload that failed.
+    pub fn refund(&self, channel: &ChannelId, bytes: u64, now_ms: u64) {
+        let today = day(now_ms);
+        let mut transfer = self.transfer.lock().expect("transfer lock poisoned");
+        if let Some(used) = transfer.get_mut(channel) {
+            let left = used.get(today).saturating_sub(bytes);
+            used.set(today, left);
+        }
+    }
+
     /// Counts `bytes` uploaded to a free space against `client`'s daily
     /// `limit`, unless they'd go over.
     pub fn charge_upload(&self, client: &Client, bytes: u64, limit: u64, now_ms: u64) -> bool {
         self.free_uploads.take(client, bytes, limit, day(now_ms))
+    }
+
+    /// Gives back what [`charge_upload`](Self::charge_upload) took today.
+    pub fn refund_upload(&self, client: &Client, bytes: u64, now_ms: u64) {
+        self.free_uploads.give_back(client, bytes, day(now_ms));
     }
 
     /// Bytes the space moved today.
@@ -317,18 +338,25 @@ impl Accounts {
     pub async fn save(&self) -> io::Result<()> {
         let _saving = self.saving.lock().await;
         self.dirty.store(false, Ordering::SeqCst);
+        // Encoded without the lock, which every request takes.
+        let spaces = self.spaces().clone();
         let file = File {
-            spaces: self
-                .spaces()
+            spaces: spaces
                 .iter()
                 .map(|(c, r)| (hex::encode(c.as_bytes()), r.clone()))
                 .collect(),
         };
         let json = serde_json::to_vec(&file).expect("registrations serialize");
         let tmp = self.path.with_extension("json.tmp");
+        // On disk before the rename, so a power cut leaves the old file or
+        // the new one, never an empty one: the relay won't start with that.
         let written = async {
-            fs::write(&tmp, json).await?;
-            fs::rename(&tmp, &self.path).await
+            let mut out = fs::File::create(&tmp).await?;
+            out.write_all(&json).await?;
+            out.sync_all().await?;
+            drop(out);
+            fs::rename(&tmp, &self.path).await?;
+            sync_dir(&self.path).await
         };
         if let Err(e) = written.await {
             self.dirty.store(true, Ordering::SeqCst);
@@ -344,4 +372,18 @@ impl Accounts {
     fn spaces(&self) -> std::sync::MutexGuard<'_, HashMap<ChannelId, Registration>> {
         self.spaces.lock().expect("spaces lock poisoned")
     }
+}
+
+/// Makes a rename in `file`'s dir durable. Only Unix can open a dir for that.
+async fn sync_dir(file: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    if let Some(dir) = file.parent() {
+        let dir = if dir.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            dir
+        };
+        fs::File::open(dir).await?.sync_all().await?;
+    }
+    Ok(())
 }

@@ -58,6 +58,16 @@ pub struct Config {
     #[arg(long, env = "YACS_FREE_MAX_TTL", default_value = "1h", value_parser = humantime::parse_duration)]
     pub free_max_ttl: Duration,
 
+    /// Free plan: disk space all free spaces may fill together, so they leave
+    /// the rest to the owner's. Half of the max disk if not set.
+    // A string, so the compose files can pass it on empty.
+    #[arg(long, env = "YACS_FREE_MAX_DISK")]
+    pub free_max_disk: Option<String>,
+
+    /// `free_max_disk` in bytes, set by `validate`.
+    #[arg(skip)]
+    free_disk: u64,
+
     /// Free plan: bytes a space may upload and download per day.
     #[arg(long, env = "YACS_FREE_DAILY_TRANSFER", default_value = "500MB")]
     pub free_daily_transfer: ByteSize,
@@ -87,6 +97,11 @@ pub struct Config {
 }
 
 impl Config {
+    /// Disk space free spaces may fill together (see `free_max_disk`).
+    pub fn free_disk(&self) -> u64 {
+        self.free_disk
+    }
+
     /// Reject settings that parse but make no sense together.
     pub fn validate(mut self) -> Result<Self, String> {
         if self.default_ttl.is_zero() || self.max_ttl.is_zero() {
@@ -122,6 +137,15 @@ impl Config {
                 }
             }
         }
+        let max = self.max_disk.as_u64();
+        self.free_disk = match self.free_max_disk.as_deref().map(str::trim) {
+            None | Some("") => max / 2,
+            Some(size) => size
+                .parse::<ByteSize>()
+                .map_err(|e| format!("free max disk {size:?}: {e}"))?
+                .as_u64()
+                .min(max),
+        };
         if self.public {
             if self.free_max_ttl.is_zero() {
                 return Err("the free plan's TTL must be greater than zero".into());
@@ -157,6 +181,18 @@ mod tests {
         assert_eq!(c.free_max_ttl, Duration::from_secs(3600));
         assert_eq!(c.free_daily_transfer, ByteSize::mb(500));
         assert_eq!(c.free_daily_upload_per_ip, ByteSize::gb(1));
+        assert_eq!(c.free_disk(), ByteSize::gb(25).as_u64() / 2);
+    }
+
+    #[test]
+    fn free_disk_is_at_most_the_disk() {
+        let c = parse(&["--max-disk", "1GB", "--free-max-disk", "5GB"]).unwrap();
+        assert_eq!(c.free_disk(), ByteSize::gb(1).as_u64());
+        let c = parse(&["--max-disk", "1GB", "--free-max-disk", "100MB"]).unwrap();
+        assert_eq!(c.free_disk(), ByteSize::mb(100).as_u64());
+        let c = parse(&["--max-disk", "1GB", "--free-max-disk", " "]).unwrap();
+        assert_eq!(c.free_disk(), ByteSize::mb(500).as_u64());
+        assert!(parse(&["--free-max-disk", "lots"]).is_err());
     }
 
     #[test]
