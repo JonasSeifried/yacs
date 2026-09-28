@@ -425,6 +425,10 @@ function InviteDevice({ relay }: { relay: string }) {
           <strong>Another computer:</strong> get YACS at yacs.jonasseifried.com, choose “I already use YACS on another
           device” and type the code below, or paste the link.
         </li>
+        <li>
+          <strong>Server or terminal</strong>, e.g. over SSH: install the <code>yacs</code> command there, run{" "}
+          <code>yacs join</code> and type the code.
+        </li>
       </ul>
       <p className="hint">
         The QR code and link work once, within 24 hours: whoever opens them first joins your space, so send the link

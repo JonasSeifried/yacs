@@ -1396,6 +1396,13 @@ function AddDevices(props: { client: WebClient; spaceName: string; first: boolea
                   <span className="muted"> The code is for your own relay, {location.origin}: choose that there.</span>
                 )}
               </li>
+              <li>
+                <b>Server or terminal</b>, e.g. over SSH:{" "}
+                <a href="https://github.com/JonasSeifried/yacs#command-line" target="_blank" rel="noreferrer">
+                  install the <code>yacs</code> command
+                </a>
+                , run <code>yacs join</code> and type the code.
+              </li>
             </ul>
             {codeError && <p className="muted small">No code this time: {codeError}</p>}
             <p className="muted small">
