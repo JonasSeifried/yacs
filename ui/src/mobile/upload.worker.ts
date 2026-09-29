@@ -86,7 +86,9 @@ async function upload(req: UploadRequest, signal: AbortSignal): Promise<ClipMeta
     };
     await Promise.all(Array.from({ length: IN_FLIGHT }, lane));
     if (signal.aborted) throw new Error("Upload cancelled.");
-    const res = await relayRequest(`${base}/${id}/complete`, req.token, { method: "POST", signal });
+    // Retried like the chunks, or one bad gateway loses all of them. Safe:
+    // the relay makes the clip once, and a retry after that finds no upload.
+    const res = await retrying(() => relayRequest(`${base}/${id}/complete`, req.token, { method: "POST", signal }), signal);
     return (await res.json()) as ClipMeta;
   } catch (e) {
     // Frees the relay's quota now rather than in a day. Awaited: the page
