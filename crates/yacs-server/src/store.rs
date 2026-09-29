@@ -612,16 +612,32 @@ impl Store {
         let _guard = self.lock.lock().await;
         let mut removed = 0;
         let mut kept = 0;
+        // Anything that fails is logged and skipped, so one stuck file can't
+        // stop the rest from being reaped. The recount at the end only
+        // replaces `used` if every channel was read, or it would count low.
+        let mut counted_all = true;
         for dir in channel_dirs(&self.root).await? {
-            for entry in entries(&dir).await? {
-                if entry.expires_at_ms <= now_ms {
-                    self.remove(&entry).await?;
-                    removed += 1;
-                } else {
+            let entries = match entries(&dir).await {
+                Ok(entries) => entries,
+                Err(e) => {
+                    tracing::warn!(error = %e, "reaper can't list a channel");
+                    counted_all = false;
+                    continue;
+                }
+            };
+            for entry in entries {
+                if entry.expires_at_ms > now_ms {
                     kept += entry.size;
+                } else if let Err(e) = self.remove(&entry).await {
+                    tracing::warn!(error = %e, "reaper can't delete an expired clip");
+                    kept += entry.size;
+                } else {
+                    removed += 1;
                 }
             }
-            remove_dir_if_empty(&dir).await?;
+            if let Err(e) = remove_dir_if_empty(&dir).await {
+                tracing::warn!(error = %e, "reaper can't remove an empty channel");
+            }
         }
 
         let (idle, open): (Vec<_>, Vec<_>) = {
@@ -638,9 +654,23 @@ impl Store {
             (idle, uploads.keys().copied().collect())
         };
         for id in idle {
-            remove_dir_all(&self.upload_dir(id)).await?;
+            // One that stays is swept below next time: it's no longer open.
+            if let Err(e) = remove_dir_all(&self.upload_dir(id)).await {
+                tracing::warn!(error = %e, "reaper can't delete an idle upload");
+            }
         }
-        // Dirs of uploads that failed to clean up after themselves.
+        if let Err(e) = self.sweep_tmp(&open).await {
+            tracing::warn!(error = %e, "reaper can't sweep failed uploads");
+        }
+
+        if counted_all {
+            self.used.store(kept, Ordering::SeqCst);
+        }
+        Ok(removed)
+    }
+
+    /// Dirs of uploads that failed to clean up after themselves.
+    async fn sweep_tmp(&self, open: &[Ulid]) -> io::Result<()> {
         let mut tmp = fs::read_dir(self.root.join(TMP_DIR)).await?;
         while let Some(item) = tmp.next_entry().await? {
             let name = item.file_name();
@@ -649,12 +679,12 @@ impl Store {
                 .and_then(|n| n.strip_suffix(UPLOAD_SUFFIX))
                 .and_then(|id| id.parse::<Ulid>().ok());
             if upload.is_some_and(|id| !open.contains(&id)) {
-                remove_dir_all(&item.path()).await?;
+                if let Err(e) = remove_dir_all(&item.path()).await {
+                    tracing::warn!(error = %e, "reaper can't delete a failed upload");
+                }
             }
         }
-
-        self.used.store(kept, Ordering::SeqCst);
-        Ok(removed)
+        Ok(())
     }
 
     async fn remove(&self, entry: &Entry) -> io::Result<()> {
@@ -873,6 +903,41 @@ mod tests {
             .unwrap();
         assert!(!store.reserve(u64::MAX - 5, None));
         assert_eq!(store.used_bytes(), 10);
+    }
+
+    /// A clip that can't be deleted (a dir left to root after a migration, say)
+    /// must not stop the reaper for every other channel.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reap_goes_on_past_what_it_cant_delete() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path(), 50, 1000).await.unwrap();
+        let stuck = ChannelId::from_bytes([1; 32]);
+        let other = ChannelId::from_bytes([2; 32]);
+        store
+            .put(&stuck, &[0; 10], 1_000, 2_000, None)
+            .await
+            .unwrap();
+        store
+            .put(&other, &[0; 20], 1_000, 2_000, None)
+            .await
+            .unwrap();
+        store
+            .put(&other, &[0; 30], 1_000, 60_000, None)
+            .await
+            .unwrap();
+        let read_only = std::fs::Permissions::from_mode(0o555);
+        std::fs::set_permissions(store.channel_dir(&stuck), read_only).unwrap();
+
+        let reaped = store.reap(5_000).await;
+        let writable = std::fs::Permissions::from_mode(0o755);
+        std::fs::set_permissions(store.channel_dir(&stuck), writable).unwrap();
+        assert_eq!(reaped.unwrap(), 1);
+        // The stuck clip is still on disk, so it still counts.
+        assert_eq!(store.used_bytes(), 40);
+        assert!(store.latest(&other, 5_000).await.unwrap().is_some());
     }
 
     /// Two servers on one data dir: each one's count misses the other's files.
