@@ -128,12 +128,16 @@ impl Client {
             () = cancel => Err(Error::Cancelled),
         };
         let result = match result {
+            // Retried like the chunks, or one bad gateway loses all of them.
+            // Safe: the relay makes the clip once, and a retry after that
+            // finds no upload.
             Ok(()) => {
                 let url = self.upload_url(&id, &["complete"]);
-                match self.send(self.http.post(url)).await {
-                    Ok(res) => res.json().await.map_err(|_| Error::BadResponse),
-                    Err(e) => Err(e),
-                }
+                retry(|| async {
+                    let res = self.send(self.http.post(url.clone())).await?;
+                    res.json().await.map_err(|_| Error::BadResponse)
+                })
+                .await
             }
             Err(e) => Err(e),
         };
@@ -333,5 +337,101 @@ mod tests {
         let shrunk = LocalFiles::new(vec![(dir.path().join("a"), 9)]);
         let err = shrunk.read(0, 9).unwrap_err().to_string();
         assert!(err.contains("got shorter"), "{err}");
+    }
+
+    #[derive(Default)]
+    struct Calls {
+        completes: AtomicU64,
+        deletes: AtomicU64,
+    }
+
+    /// Takes an upload, but answers its `complete` with `status` the first
+    /// `fails` times, as a proxy in front of a relay might.
+    async fn flaky_relay(status: StatusCode, fails: u64) -> (String, Arc<Calls>) {
+        use axum::http::Method;
+        use axum::response::IntoResponse;
+
+        let calls = Arc::new(Calls::default());
+        let counted = calls.clone();
+        let app = axum::Router::new().fallback(move |method: Method, uri: axum::http::Uri| {
+            let calls = counted.clone();
+            async move {
+                let path = uri.path();
+                match method {
+                    Method::POST if path.ends_with("/uploads") => (
+                        StatusCode::CREATED,
+                        axum::Json(UploadCreated { id: "u".into() }),
+                    )
+                        .into_response(),
+                    Method::PUT => StatusCode::NO_CONTENT.into_response(),
+                    Method::POST if path.ends_with("/complete") => {
+                        if calls.completes.fetch_add(1, Ordering::SeqCst) < fails {
+                            return status.into_response();
+                        }
+                        let meta = ClipMeta {
+                            id: "c".into(),
+                            created_at_ms: 1,
+                            expires_at_ms: 2,
+                            size: 3,
+                            chunked: true,
+                        };
+                        (StatusCode::CREATED, axum::Json(meta)).into_response()
+                    }
+                    Method::DELETE => {
+                        calls.deletes.fetch_add(1, Ordering::SeqCst);
+                        StatusCode::NO_CONTENT.into_response()
+                    }
+                    _ => StatusCode::NOT_FOUND.into_response(),
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (url, calls)
+    }
+
+    async fn push(relay: &str) -> Result<ClipMeta> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        std::fs::write(&path, b"hello").unwrap();
+        let file = yacs_core::StreamFile {
+            name: "f".into(),
+            mime: "application/octet-stream".into(),
+            size: 5,
+        };
+        let clip = Clip {
+            created_at_ms: 1,
+            device_name: "test".into(),
+            items: vec![ClipItem::Stream(Stream::new(vec![file]).unwrap())],
+        };
+        let pairing = yacs_core::Pairing {
+            channel_id: yacs_core::ChannelId::from_bytes([1; 32]),
+            key: yacs_core::ChannelKey::from_bytes([2; 32]),
+        };
+        let client = Client::new(relay, None, pairing).unwrap();
+        let files = LocalFiles::new(vec![(path, 5)]);
+        let pending = std::future::pending();
+        client
+            .push_stream(&clip, files, None, &|_, _| {}, pending)
+            .await
+    }
+
+    /// Losing every chunk of a big file to one bad gateway would be a waste.
+    #[tokio::test]
+    async fn completing_an_upload_is_retried() {
+        let (relay, calls) = flaky_relay(StatusCode::BAD_GATEWAY, 1).await;
+        assert_eq!(push(&relay).await.unwrap().id, "c");
+        assert_eq!(calls.completes.load(Ordering::SeqCst), 2);
+        assert_eq!(calls.deletes.load(Ordering::SeqCst), 0);
+    }
+
+    /// A refusal isn't retried, and the upload is dropped to free its quota.
+    #[tokio::test]
+    async fn a_refused_upload_is_dropped() {
+        let (relay, calls) = flaky_relay(StatusCode::CONFLICT, u64::MAX).await;
+        assert!(push(&relay).await.is_err());
+        assert_eq!(calls.completes.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.deletes.load(Ordering::SeqCst), 1);
     }
 }
