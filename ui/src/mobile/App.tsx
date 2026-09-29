@@ -5,6 +5,7 @@ import {
   LiveUnsupported,
   type Session,
   type Stored,
+  type TakenInvite,
   CodesUnsupported,
   WebClient,
   enterSpace,
@@ -123,6 +124,8 @@ function JoinFromLink(props: { link: InviteLink; stored: Stored | null; onDone: 
   const [deviceName, setDeviceName] = useState(() => props.stored?.deviceName ?? guessDeviceName());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /** The relay hands an invite out once, so a retry after a failed join can't take it again. */
+  const taken = useRef<TakenInvite | null>(null);
   const replacing = (props.stored?.spaces.length ?? 0) > 0;
 
   const submit = async (e: FormEvent) => {
@@ -131,7 +134,8 @@ function JoinFromLink(props: { link: InviteLink; stored: Stored | null; onDone: 
     setError(null);
     try {
       if (link.kind === "invite" || link.kind === "code") {
-        const invite = link.kind === "invite" ? await takeInvite(link.secret) : await joinWithCode(link.code, deviceName);
+        const invite = (taken.current ??=
+          link.kind === "invite" ? await takeInvite(link.secret) : await joinWithCode(link.code, deviceName));
         props.onDone(await enterSpace(invite.space, invite.name, invite.token, deviceName));
       } else {
         props.onDone(await enterSpace(link.secret, link.name ?? DEFAULT_SPACE_NAME, link.token, deviceName));
