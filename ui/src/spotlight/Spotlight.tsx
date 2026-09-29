@@ -308,16 +308,21 @@ export function Spotlight() {
           YACS
         </span>
         {space && (
-          <span className="server" title={`Through ${new URL(space.relay).host}`}>
-            {space.name}
+          <span className="tip tip-start server-tip" data-tip={`Through ${new URL(space.relay).host}`}>
+            <span className="server">{space.name}</span>
           </span>
         )}
         {(status?.update || status?.updateInstalling) && (
-          <button className="update-pill" title="Install it in Settings" onClick={() => platform.openSettings()}>
+          <button className="update-pill tip" data-tip="Install it in Settings" onClick={() => platform.openSettings()}>
             {status.updateInstalling ? `Installing ${status.updateInstalling}…` : `Update ${status.update} available`}
           </button>
         )}
-        <button className="icon-button" title={`Settings (${modKey(os, ",")})`} onClick={() => platform.openSettings()}>
+        <button
+          className="icon-button tip"
+          data-tip={`Settings (${modKey(os, ",")})`}
+          aria-label="Settings"
+          onClick={() => platform.openSettings()}
+        >
           <GearIcon />
         </button>
       </header>
@@ -389,7 +394,7 @@ export function Spotlight() {
               </>
             )}
             <Hint keys={modKey(os, "V")} label="send clipboard" />
-            <label className="ttl" title="Tab / Shift+Tab to change">
+            <label className="ttl tip tip-above" data-tip="Tab / Shift+Tab to change">
               expires in
               <select value={ttl} onChange={(e) => changeTtl(Number(e.target.value))} tabIndex={-1}>
                 {choices.map((o) => (

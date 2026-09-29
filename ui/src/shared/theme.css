@@ -137,6 +137,15 @@ select {
   scrollbar-color: var(--scrollbar) transparent;
 }
 
+/* Windows 11's own overlay scrollbars (see windows.rs), which follow the
+   theme and have no arrows; styling them turns them back into classic ones.
+   The root too: the page's own scrollbar takes its style from there. */
+html[data-os="windows"],
+html[data-os="windows"] * {
+  scrollbar-width: auto;
+  scrollbar-color: auto;
+}
+
 kbd {
   font-family: var(--font);
   font-size: 11px;

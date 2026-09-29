@@ -295,6 +295,8 @@ function SpaceName({ name }: { name: string }) {
       <input
         required
         maxLength={64}
+        spellCheck={false}
+        autoCorrect="off"
         value={value}
         onChange={(e) => {
           const next = e.target.value;
@@ -513,6 +515,8 @@ function SetUpSpace() {
   const isCode = /^\s*\d/.test(link);
   const join = (e: FormEvent) => {
     e.preventDefault();
+    if (!link.trim()) return setError({ form: "join", text: "Type the code, or paste the link." });
+    if (isCode && own && !serverUrl.trim()) return setError({ form: "join", text: "Enter your relay's URL." });
     run("join", () => platform.joinSpace(link, isCode && own ? serverUrl : null));
   };
   /** The invite panel opens once the space is there, as the next step. */
@@ -537,6 +541,9 @@ function SetUpSpace() {
       <input
         type="url"
         required
+        spellCheck={false}
+        autoCorrect="off"
+        autoCapitalize="off"
         placeholder="https://clip.example.com"
         value={serverUrl}
         onChange={(e) => {
@@ -555,7 +562,7 @@ function SetUpSpace() {
 
   if (step === "join") {
     return (
-      <form onSubmit={join}>
+      <form onSubmit={join} noValidate>
         <p className="hint lead">
           On the device that has YACS, open <strong>Settings → Invite a device</strong>. Then type the code it shows here,
           or paste its link.
@@ -601,8 +608,10 @@ function SetUpSpace() {
       <form
         onSubmit={(e) => {
           e.preventDefault();
+          if (!serverUrl.trim()) return setError({ form: "create", text: "Enter your relay's URL." });
           create(serverUrl, token || null);
         }}
+        noValidate
       >
         <p className="hint lead">A relay you run, with your own limits. You'll add your other devices next.</p>
         {relayUrl("")}
@@ -719,10 +728,17 @@ function PreferencesForm({ status, maxTtlSecs }: { status: Status; maxTtlSecs: n
   const options = ttlChoices(prefs.defaultTtlSecs, maxTtlSecs);
 
   return (
-    <form onSubmit={submit}>
+    <form onSubmit={submit} noValidate>
       <label>
         Device name <span className="optional">shown to your other devices</span>
-        <input required value={prefs.deviceName} onChange={(e) => set("deviceName", e.target.value)} onBlur={() => nameTimer.current && save(prefs)} />
+        <input
+          required
+          spellCheck={false}
+          autoCorrect="off"
+          value={prefs.deviceName}
+          onChange={(e) => set("deviceName", e.target.value)}
+          onBlur={() => nameTimer.current && save(prefs)}
+        />
       </label>
       {status.manualShortcut ? (
         <ManualShortcutHelp shortcut={status.manualShortcut} />

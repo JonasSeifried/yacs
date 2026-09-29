@@ -47,13 +47,18 @@ html[data-os="windows"] .panel {
   flex: none;
 }
 
+.server-tip {
+  display: inline-flex;
+  min-width: 0;
+  max-width: 60%;
+}
+
 .server {
   font-size: 12px;
   color: var(--muted);
   padding: 2px 8px;
   border-radius: 999px;
   background: var(--surface-2);
-  max-width: 60%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -453,4 +458,46 @@ button.primary kbd {
   background-color: var(--surface-2);
   background-position: right 7px center;
   font-size: 12px;
+}
+
+/* Tooltips in the theme rather than the system's: below the element and
+   ending at its right edge unless told otherwise, after a short hover. */
+.tip {
+  position: relative;
+}
+
+.tip::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 4px 12px rgb(0 0 0 / 14%);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 100ms;
+}
+
+.tip:hover::after {
+  opacity: 1;
+  transition-delay: 600ms;
+}
+
+.tip-start::after {
+  right: auto;
+  left: 0;
+}
+
+.tip-above::after {
+  top: auto;
+  bottom: calc(100% + 6px);
 }

@@ -1,5 +1,20 @@
 body {
   background: var(--bg);
+  cursor: default;
+}
+
+/* Headings, labels and buttons don't select like a web page's; what's worth
+   copying (hints with paths and relays, commands, errors) still does. */
+h2,
+label,
+button,
+.actions,
+.autosave {
+  user-select: none;
+}
+
+input {
+  user-select: text;
 }
 
 .settings {

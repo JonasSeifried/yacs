@@ -2,6 +2,8 @@
 //! Both are created hidden at startup and only ever shown/hidden afterwards,
 //! so the hotkey opens Spotlight instantly.
 
+#[cfg(windows)]
+use tauri::webview::ScrollBarStyle;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 pub const SPOTLIGHT: &str = "spotlight";
@@ -30,14 +32,22 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             .visible_on_all_workspaces(true)
             .shadow(true)
             .visible(false)
-            .center();
+            .center()
+            .general_autofill_enabled(false);
     // macOS draws the rounded panel itself on a transparent window; Windows 11
     // rounds undecorated windows with a shadow on its own.
     #[cfg(target_os = "macos")]
     let spotlight = spotlight.transparent(true);
+    // Windows 11's thin scrollbars that show on hover, not the classic ones
+    // with arrows. Both windows share a data directory, so both use it.
+    #[cfg(windows)]
+    let spotlight = spotlight.scroll_bar_style(ScrollBarStyle::FluentOverlay);
     let spotlight = spotlight.build()?;
     #[cfg(windows)]
-    set_frame(&spotlight, spotlight.theme().unwrap_or(tauri::Theme::Light));
+    {
+        disable_browser_keys(&spotlight);
+        set_frame(&spotlight, spotlight.theme().unwrap_or(tauri::Theme::Light));
+    }
 
     let handle = app.clone();
     #[cfg(windows)]
@@ -56,9 +66,15 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             .min_inner_size(440.0, 520.0)
             .visible(false)
             .center()
-            .build()?;
+            .general_autofill_enabled(false);
     #[cfg(windows)]
-    set_frame(&settings, settings.theme().unwrap_or(tauri::Theme::Light));
+    let settings = settings.scroll_bar_style(ScrollBarStyle::FluentOverlay);
+    let settings = settings.build()?;
+    #[cfg(windows)]
+    {
+        disable_browser_keys(&settings);
+        set_frame(&settings, settings.theme().unwrap_or(tauri::Theme::Light));
+    }
 
     let handle = app.clone();
     #[cfg(windows)]
@@ -76,21 +92,65 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// WebView2 keeps Edge's shortcuts on: F5 and Ctrl+R reload the window,
+/// Ctrl+P prints it, Ctrl+F searches it, F7 turns on caret browsing. Editing
+/// shortcuts (copy, paste, undo) aren't affected.
+#[cfg(windows)]
+fn disable_browser_keys(window: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2Controller, ICoreWebView2Settings3,
+    };
+    use windows_core::Interface;
+
+    unsafe fn disable(controller: &ICoreWebView2Controller) -> windows_core::Result<()> {
+        unsafe {
+            controller
+                .CoreWebView2()?
+                .Settings()?
+                .cast::<ICoreWebView2Settings3>()?
+                .SetAreBrowserAcceleratorKeysEnabled(false)
+        }
+    }
+
+    let result = window.with_webview(|webview| {
+        if let Err(e) = unsafe { disable(&webview.controller()) } {
+            tracing::warn!(error = %e, "can't turn off browser shortcuts");
+        }
+    });
+    if let Err(e) = result {
+        tracing::warn!(error = %e, "can't turn off browser shortcuts");
+    }
+}
+
 /// With "Show accent colour on title bars and window borders" on, Windows 11
 /// draws window borders, and Settings' title bar, in the accent colour. They're
 /// drawn in the theme instead: the border in `--border` (so Spotlight skips its
-/// own), the title bar in `--bg` and `--text`, like the page under it.
+/// own), the title bar in `--bg` and `--text`, like the page under it. The
+/// window's background is the page's too, for the moment a resize shows it.
 #[cfg(windows)]
 fn set_frame(window: &tauri::WebviewWindow, theme: tauri::Theme) {
+    use tauri::window::Color;
     use windows_sys::Win32::Graphics::Dwm::{
         DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DwmSetWindowAttribute,
     };
+    let dark = theme == tauri::Theme::Dark;
+    // Spotlight's panel is `--surface`, Settings' page `--bg`.
+    let background = match (window.label() == SPOTLIGHT, dark) {
+        (true, true) => Color(0x21, 0x1f, 0x28, 0xff),
+        (true, false) => Color(0xff, 0xff, 0xff, 0xff),
+        (false, true) => Color(0x17, 0x16, 0x1c, 0xff),
+        (false, false) => Color(0xf6, 0xf6, 0xf8, 0xff),
+    };
+    if let Err(e) = window.set_background_color(Some(background)) {
+        tracing::warn!(error = %e, "can't set the window background");
+    }
     // COLORREF is 0x00BBGGRR.
-    let (border, caption, text): (u32, u32, u32) = match theme {
+    let (border, caption, text): (u32, u32, u32) = if dark {
         // #35323f, #17161c, #eceaf2
-        tauri::Theme::Dark => (0x003f_3235, 0x001c_1617, 0x00f2_eaec),
+        (0x003f_3235, 0x001c_1617, 0x00f2_eaec)
+    } else {
         // #e3e1ea, #f6f6f8, #1c1b22
-        _ => (0x00ea_e1e3, 0x00f8_f6f6, 0x0022_1b1c),
+        (0x00ea_e1e3, 0x00f8_f6f6, 0x0022_1b1c)
     };
     let Ok(hwnd) = window.hwnd() else { return };
     // Each fails harmlessly before Windows 11, which has none of them, and
