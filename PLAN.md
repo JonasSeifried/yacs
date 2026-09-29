@@ -380,9 +380,9 @@ This reorders the original roadmap: crypto and the protocol come first, so the U
 | **5: v1.x** | Breadth | ✅ SSE live updates (0.2.0) and the relay version in desktop Settings; ✅ CLI for servers: `yacs pair` saves the pairing (from the desktop's link or the phrase), `yacs send FILE`, static release binaries, `yacs update` (signed), `yacs relay update` (Docker compose); the desktop apps bundle `yacs` and put it on the PATH on request (macOS, Windows); ✅ Linux desktop (0.2.3); files through the relay, up to its size limit | |
 | **6: Large files** ✅ (0.3.0; 80 MB verified on Android + iPhone in 0.3.1) | Any size through the relay | Chunked, streamed uploads and downloads on every client (section 7) | A multi-GB file goes phone ↔ desktop through the relay, memory stays flat |
 | **7: Native mobile** (on hold) | Tauri mobile | Native clipboard plugins + share extensions | |
-| **8: Spaces + invites** ✅ (codes: desktop and CLI show them, every client types them; the phone app doesn't show codes yet) | Pairing without moving secrets by hand (section 8) | Vocabulary in all apps; spaces stored as a list (one shown), with a name you can edit in Settings and the PWA; random space keys, phrase + Argon2id removed; invite links/QR and codes (SPAKE2) with the relay routes; Join field; `yacs join` / `yacs invite` / `yacs space export` | A second computer joins by typing a code, a phone by scanning, a friend by a link sent over a messenger |
-| **9: Public relay** (code ✅; not live yet) | People without a server | Public mode (per-IP limits, free plan); account keys + channel registration (self-hosted token becomes the owner's key); per-space limits in `/limits`; onboarding "free relay or your own"; `yacs-relay.jonasseifried.com` live with privacy policy + Impressum | A new user installs the app and syncs a phone without setting anything up |
-| **10: Multiple spaces UI** | Spaces with friends | Spotlight switcher and new-clip dots, Settings list (invite, reset, leave), PWA picker, `--space` in the CLI | Personal and shared spaces side by side on every client |
+| **8: Spaces + invites** ✅ (every client shows and types codes) | Pairing without moving secrets by hand (section 8) | Vocabulary in all apps; spaces stored as a list (one shown), with a name you can edit in Settings and the PWA; random space keys, phrase + Argon2id removed; invite links/QR and codes (SPAKE2) with the relay routes; Join field; `yacs join` / `yacs invite` / `yacs space export` | A second computer joins by typing a code, a phone by scanning, a friend by a link sent over a messenger |
+| **9: Public relay** ✅ (live since 0.5.2) | People without a server | Public mode (per-IP limits, free plan); account keys + channel registration (self-hosted token becomes the owner's key); per-space limits in `/limits`; onboarding "free relay or your own"; `yacs-relay.jonasseifried.com` live with privacy policy + Impressum | A new user installs the app and syncs a phone without setting anything up |
+| **10: Multiple spaces UI** | Spaces with friends | Spotlight switcher and new-clip dots, Settings list (invite, reset, leave), PWA picker, `--space` in the CLI. Joining keeps the other spaces (today every client replaces the one in use, the PWA after a warning). Before building it: the review items marked *phase 10* in section 12 | Personal and shared spaces side by side on every client |
 | **11: Send as link** | Files for people without YACS | `/d/<id>#<key>` downloads in the web app, byte-counted download limit, plan limits | A link sent to someone without YACS downloads once, then stops working |
 | **12: Premium** | Paid tier | Stripe Managed Payments checkout + webhooks, account keys with N spaces, upgrade/move in the apps, premium badge, terms | Buying premium upgrades a space for all its members |
 
@@ -419,3 +419,49 @@ Direct device-to-device transfer (iroh or WebRTC) was considered for big files a
 - **Plan limits:** the starting values in section 8.
 
 Settled: `YACS_MAX_CLIPS_PER_CHANNEL=50`, with a disk quota covering the worst case, and `7d` stays in the dropdown but only shows when a self-hoster raises `YACS_MAX_TTL`.
+
+## 12. Review backlog (Sept 2026)
+
+A review of the whole codebase after 0.7.1, sorted by how bad each problem is and how much work the fix is. Every fix is one commit with a test that fails without it, or, where the UI can't be tested that way, a check in the real app.
+
+### Fixed in 0.7.2
+- CI: the desktop app passes clippy on Windows and Linux again (an unused variable outside macOS since 0.7.1).
+- Relay: an announced upload length near `u64::MAX` wrapped the disk reservation to a few bytes, so a member of an unlimited space could fill the disk past `YACS_MAX_DISK`; the reservation is checked and one compare-and-swap now.
+- Relay: the reaper stopped at the first clip it couldn't delete, every minute at the same place, so the disk filled with expired clips; it logs and skips now, and only recounts usage when it could read every channel.
+- Relay: a damaged `accounts.json` crash-looped the relay; it falls back to `accounts.json.bak` (section 8).
+- Desktop and CLI: an unreadable spaces file was overwritten by the next join, keys and all; it's kept as `spaces.json.corrupt-<time>` / `cli.json.corrupt-<time>` now, and saves are fsynced before the rename.
+- All clients: the request that completes a chunked upload wasn't retried, so one 502 there deleted every chunk.
+- Spotlight: a click into the HTML preview blurred the window and sent pending deletes while Undo still showed.
+- PWA: deletes sent on hiding could be cut off when iOS froze the app (now `keepalive`, and on `pagehide` too); the Undo toast goes once its delete is sent; a join that failed after taking the invite can be retried without "already used".
+
+### Serious, plan first
+Each needs a short design or a test on a real machine before code.
+- **Linux clipboard leak** (desktop): every `ClipboardContext::new()` in `clipboard.rs` opens two X connections and a thread that never ends (clipboard-rs 0.3.5, X11 and XWayland), so after ~120 copies or sends the X server's 256-client limit stops new apps from opening. One context for the app's lifetime, on a clipboard thread the commands talk to. Test on a real X11 and a Wayland desktop.
+- **Envelope version** (core): `aad()` always uses the current `PROTOCOL_VERSION` and `from_bytes` accepts only it, so version 2 would make every v1 clip and stream unreadable. Store the version in `Envelope` and pass it to `aad`; give streams their own fixed version; put the sealed-invite format byte into its AAD. Add a last `ClipItem::Ext { kind, data }` variant so later item types can be skipped by older clients instead of failing the whole clip. Test vectors for old and new first, native and wasm.
+- **Too big for the plan** (desktop): clipboard sends aren't checked against `max_clip_bytes`, so a screenshot or a Word range with its image over 10 MB fails whole on the free relay. Drop the image, then RTF, then HTML while text is left ("sent without the image"); a lone big image goes as a chunked file.
+- **Transfers vs. update and quit** (desktop): installing an update or quitting kills a running transfer without asking; a download that finishes minutes later overwrites the clipboard and hides Spotlight. Ask first; only write the clipboard if it hasn't changed since the download started.
+- **The owner's uploads block the free tier** (relay): the free share of the disk is checked against all usage, owner's included, so a 13 GB owner upload makes every free space "storage full". Count free spaces' usage separately.
+- **Desktop clip cache** (desktop): up to 256 MB of decrypted clips stay in memory, expired ones too, while Spotlight is never opened. Evict on `expires_at_ms`, lower the cap.
+
+### Minor and cheap
+- PWA: huge text clips aren't truncated like the desktop's previews (20,000 chars, 512 KB HTML), so a multi-MB log freezes an iPhone; `previewDocument` runs on every render (`useMemo`).
+- PWA: call `navigator.storage.persist()` after joining, so the browser doesn't evict the spaces.
+- PWA: `.ttl select` is 14px, so iOS zooms on tap (needs 16px).
+- PWA: the "Sent · expires in" toast uses the stored TTL, not the relay's clamped `expires_at_ms`.
+- Client: the 120 s total timeout also covers single-envelope pushes (8 MiB at 0.5 Mbit/s fails every time), and big-file chunks have no idle timeout. `read_timeout` on both clients instead.
+- CLI: `yacs join` / `yacs invite` by code fail on one transient network error; retry inside the long-poll loops.
+- CLI: `yacs recv` of a clip with two files of the same name overwrites the first; `cat file.bin | yacs send` refuses binary stdin.
+- Deploy: no Docker healthcheck (`yacs-server --healthcheck`), no log rotation, no `stop_grace_period`; shutdown waits for every long-poll without a deadline and saves accounts only after that. `/healthz` should fail when the reaper hasn't run for a few minutes. One INFO line per reap with usage and refusal counts, no IPs or ids. The Caddyfile has no Cloudflare `trusted_proxies` note.
+- CI: pin the Rust version (a new stable can add a lint that fails `-D warnings`), check MSRV 1.85, add `cargo-deny`, run core/client/CLI tests on macOS and Windows too.
+- Release: caches saved on tags can't be restored by the next tag, so every release builds from scratch and then spends up to 2.5 min saving a cache nobody uses. `save-if: false` in release.yml now; later a release cache filled from `main`. The desktop job could reuse the CLI job's binaries.
+
+### Later, or with phase 10
+- *Phase 10:* the desktop's `clips::load` and upload completions can land in the next space's cache after a switch; key the cache by channel, drop out-of-order list responses (both apps). One `switch_space()` for `use_space` and `leave_space`. Skip bad entries in `spaces.json` one by one instead of rejecting the file.
+- *Phase 10:* split `mobile/App.tsx` (screens and hooks into files), `Settings.tsx` (one file per card), `Spotlight.tsx` (`useClipList`, `usePendingDeletes`, `useSpotlightKeys`), `commands.rs` and the relay's `api.rs`; tests first, since refactors carry the most risk.
+- Desktop: narrow the Tauri capabilities (only `core:event` listen/unlisten; declared app commands per window).
+- Desktop: on Windows, clicking the tray icon to close Spotlight may reopen it (blur hides it, the click toggles it back); confirm on Windows. A slow send can be started twice by reopening Spotlight. Hidden windows refresh from the relay on every status change.
+- Protocol: old envelopes can be posted again as new clips; flag clips whose `created_at_ms` is far from the relay's time, and bind a client-chosen id in the next envelope version. `yacs update` doesn't refuse an older signed binary; compare the signature's timestamp with the build's.
+- PWA: the service worker shows a proxy's 502 page instead of the cached app, caches nothing until the second launch, and never prunes old assets. Every live event re-fetches config, limits and list, and responses aren't ordered; patch the list from the event instead. Accessibility: clip cards aren't buttons, the settings sheet doesn't trap focus, errors aren't live regions. A code join can't be cancelled for up to 10 minutes.
+- Relay: the reaper holds the store lock for its whole scan; its recount drops reservations of `put`s in flight; a cancelled request can leave `.tmp` and `.part` files. `authorize` parses the channel id and 20 handlers parse it again.
+- Core: derived keys aren't zeroized; nothing but the callers stops sealing a chunk twice.
+- If the answer to `complete` is lost, the retry finds no upload and the send is reported as failed although the clip exists.
