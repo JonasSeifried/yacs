@@ -678,6 +678,8 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
     async (id: string) => {
       clearTimeout(pendingDeletes.current.get(id));
       pendingDeletes.current.delete(id);
+      // Too late for Undo now, so don't offer it.
+      setToast((t) => (t?.undo === id ? null : t));
       try {
         await client.delete(id);
         setList((l) => (l.state === "ok" ? { ...l, clips: l.clips.filter((c) => c.id !== id) } : l));
@@ -707,11 +709,16 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
   };
 
   // A phone may freeze a page in the background: send pending deletes first.
+  // pagehide too, for browsers that close a page without hiding it first.
   useEffect(() => {
-    const onHidden = () =>
-      document.visibilityState === "hidden" && [...pendingDeletes.current.keys()].forEach(commitDelete);
+    const flush = () => [...pendingDeletes.current.keys()].forEach(commitDelete);
+    const onHidden = () => document.visibilityState === "hidden" && flush();
     document.addEventListener("visibilitychange", onHidden);
-    return () => document.removeEventListener("visibilitychange", onHidden);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      document.removeEventListener("visibilitychange", onHidden);
+      window.removeEventListener("pagehide", flush);
+    };
   }, [commitDelete]);
 
   const space = stored.spaces[0];

@@ -471,8 +471,9 @@ export class WebClient {
     return this.remember(await res.json(), clip);
   }
 
+  /** Kept alive, so it still goes out when the phone freezes or closes the page. */
   async delete(id: string): Promise<void> {
-    await this.request(`${await this.clipsUrl()}/${encodeURIComponent(id)}`, { method: "DELETE" }, [404]);
+    await this.request(`${await this.clipsUrl()}/${encodeURIComponent(id)}`, { method: "DELETE", keepalive: true }, [404]);
     this.cache.delete(id);
   }
 
