@@ -42,7 +42,7 @@ What the automated tests couldn't cover, or covered only in a browser. Everythin
 
 **Spotlight: Undo after clicking into the preview** (macOS and Windows)
 - [ ] Copy something with formatting (a paragraph from a web page) on another device, so its clip has an HTML preview.
-- [ ] In Spotlight, select another clip and delete it (⌘⌫ / Delete), then click into the preview of the clip that's now selected, then press Undo (or ⌘Z / Ctrl+Z). The deleted clip comes back and stays on the other devices.
+- [ ] In Spotlight, delete the clip just above the formatted one (⌘⌫ / Delete), so the formatted one is selected next. Click into its preview, then press Undo (or ⌘Z / Ctrl+Z). The deleted clip comes back and stays on the other devices.
 - [ ] Delete a clip again and click into another app right away. Spotlight closes, and the clip is gone on the other devices.
 - [ ] Delete a clip and wait until the notice goes away: the clip is gone on the other devices, and no Undo is left on screen.
 
