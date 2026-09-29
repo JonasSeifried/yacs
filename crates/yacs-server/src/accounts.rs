@@ -160,16 +160,27 @@ pub fn day(now_ms: u64) -> u64 {
 }
 
 impl Accounts {
+    /// A damaged file is replaced by the previous save (`accounts.json.bak`),
+    /// and kept as `accounts.json.damaged`. Without a good backup the relay
+    /// won't start: starting empty would drop the owner's spaces to free.
     pub async fn open(data_dir: &Path) -> io::Result<Self> {
         let path = data_dir.join(FILE);
-        let file: File = match fs::read(&path).await {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{} is damaged: {e}", path.display()),
-                )
-            })?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => File::default(),
+        let file = match read_file(&path).await {
+            Ok(file) => file.unwrap_or_default(),
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                let backup = path.with_extension("json.bak");
+                let Ok(Some(file)) = read_file(&backup).await else {
+                    return Err(e);
+                };
+                tracing::error!(error = %e, "using the previous save of the registrations");
+                if let Err(e) = fs::copy(&path, path.with_extension("json.damaged")).await {
+                    tracing::warn!(error = %e, "can't keep the damaged registrations");
+                }
+                // Not atomic, but a copy cut short is just damaged again,
+                // and the backup is still there.
+                fs::copy(&backup, &path).await?;
+                file
+            }
             Err(e) => return Err(e),
         };
         let spaces = file
@@ -355,6 +366,12 @@ impl Accounts {
             out.write_all(&json).await?;
             out.sync_all().await?;
             drop(out);
+            // The previous save, for when this one gets damaged later.
+            match fs::copy(&self.path, self.path.with_extension("json.bak")).await {
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => tracing::warn!(error = %e, "can't back up the registrations"),
+            }
             fs::rename(&tmp, &self.path).await?;
             sync_dir(&self.path).await
         };
@@ -374,6 +391,21 @@ impl Accounts {
     }
 }
 
+/// `None` if there's no file yet.
+async fn read_file(path: &Path) -> io::Result<Option<File>> {
+    let bytes = match fs::read(path).await {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is damaged: {e}", path.display()),
+        )
+    })
+}
+
 /// Makes a rename in `file`'s dir durable. Only Unix can open a dir for that.
 async fn sync_dir(file: &Path) -> io::Result<()> {
     #[cfg(unix)]
@@ -388,4 +420,62 @@ async fn sync_dir(file: &Path) -> io::Result<()> {
     #[cfg(not(unix))]
     let _ = file;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn register(accounts: &Accounts, byte: u8) -> ChannelId {
+        let channel = ChannelId::from_bytes([byte; 32]);
+        let registration = Registration {
+            account: Account::Owner,
+            used_day: 1,
+        };
+        accounts.spaces().insert(channel, registration);
+        channel
+    }
+
+    #[tokio::test]
+    async fn a_damaged_file_falls_back_to_the_previous_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let accounts = Accounts::open(dir.path()).await.unwrap();
+        let first = register(&accounts, 1);
+        accounts.save().await.unwrap();
+        let second = register(&accounts, 2);
+        accounts.save().await.unwrap();
+        std::fs::write(dir.path().join(FILE), b"{\"spa").unwrap();
+
+        let reopened = Accounts::open(dir.path()).await.unwrap();
+        assert_eq!(reopened.account(&first), Some(Account::Owner));
+        // Registered after the save the backup holds.
+        assert_eq!(reopened.account(&second), None);
+        // The damaged file is kept for a look, and replaced by the backup,
+        // so the next save doesn't back up the damage.
+        let damaged = std::fs::read(dir.path().join("accounts.json.damaged")).unwrap();
+        assert_eq!(damaged, b"{\"spa");
+        drop(reopened);
+        let again = Accounts::open(dir.path()).await.unwrap();
+        again.save().await.unwrap();
+        std::fs::write(dir.path().join(FILE), b"").unwrap();
+        let last = Accounts::open(dir.path()).await.unwrap();
+        assert_eq!(last.account(&first), Some(Account::Owner));
+    }
+
+    /// Starting empty would quietly drop the owner's spaces to the free plan.
+    #[tokio::test]
+    async fn without_a_good_backup_a_damaged_file_stops_the_relay() {
+        let dir = tempfile::tempdir().unwrap();
+        let accounts = Accounts::open(dir.path()).await.unwrap();
+        register(&accounts, 1);
+        // The first save has nothing to back up.
+        accounts.save().await.unwrap();
+        std::fs::write(dir.path().join(FILE), b"{\"spa").unwrap();
+        let opened = Accounts::open(dir.path()).await;
+        assert_eq!(opened.err().unwrap().kind(), io::ErrorKind::InvalidData);
+
+        std::fs::write(dir.path().join("accounts.json.bak"), b"nope").unwrap();
+        let opened = Accounts::open(dir.path()).await;
+        assert_eq!(opened.err().unwrap().kind(), io::ErrorKind::InvalidData);
+    }
 }
