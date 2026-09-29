@@ -26,14 +26,19 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Reads settings and spaces. Broken spaces are logged and treated as
-    /// none, so the user can simply join again.
+    /// Reads settings and spaces. Broken spaces are logged, kept aside and
+    /// treated as none, so the user can simply join again.
     pub fn load(config_dir: &Path) -> Self {
         let settings_file = SettingsFile::new(config_dir);
         let settings = settings_file.load();
         let spaces_file = SpacesFile::new(config_dir);
         let spaces = spaces_file.load().unwrap_or_else(|e| {
             tracing::warn!(error = %e, "can't read the spaces");
+            match spaces_file.set_aside() {
+                Ok(Some(aside)) => tracing::warn!(path = %aside.display(), "kept them aside"),
+                Ok(None) => {}
+                Err(e) => tracing::error!(error = %e, "can't keep the spaces aside"),
+            }
             Spaces::default()
         });
         let client = client_for(&spaces);

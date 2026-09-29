@@ -6,6 +6,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use yacs_client::spaces::{DEFAULT_SPACE_NAME, Space, Spaces};
@@ -45,6 +46,21 @@ impl SpacesFile {
             return Err(SpacesError::Corrupt);
         }
         Ok(spaces)
+    }
+
+    /// Moves a file `load` couldn't read to `spaces.json.corrupt-<unix secs>`,
+    /// so saving a space afterwards can't overwrite keys that may still be
+    /// in it. `None` if there's no file.
+    pub fn set_aside(&self) -> io::Result<Option<PathBuf>> {
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let aside = self.dir.join(format!("{FILE}.corrupt-{secs}"));
+        match fs::rename(self.dir.join(FILE), &aside) {
+            Ok(()) => Ok(Some(aside)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     pub fn save(&self, spaces: &Spaces) -> Result<(), SpacesError> {
@@ -101,8 +117,10 @@ fn read(path: &Path) -> io::Result<Option<String>> {
     }
 }
 
-/// Readable only by the current user (on Unix), written atomically. On
-/// Windows the app's config dir is already private to the user.
+/// Readable only by the current user (on Unix), written atomically and on
+/// disk before the rename, so a power cut leaves the old file or the new
+/// one, never an empty one. On Windows the app's config dir is already
+/// private to the user.
 fn write_private(path: &Path, contents: &str) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
@@ -113,7 +131,10 @@ fn write_private(path: &Path, contents: &str) -> io::Result<()> {
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    std::io::Write::write_all(&mut options.open(&tmp)?, contents.as_bytes())?;
+    let mut file = options.open(&tmp)?;
+    std::io::Write::write_all(&mut file, contents.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
     fs::rename(&tmp, path)
 }
 
@@ -156,6 +177,30 @@ mod tests {
 
         fs::write(config_dir.join(FILE), "garbage").unwrap();
         assert!(matches!(file.load(), Err(SpacesError::Corrupt)));
+    }
+
+    /// Joining again after that must not overwrite the keys that may still
+    /// be in the file.
+    #[test]
+    fn an_unreadable_file_is_kept_aside() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = SpacesFile::new(dir.path());
+        assert_eq!(file.set_aside().unwrap(), None);
+
+        fs::write(dir.path().join(FILE), "garbage").unwrap();
+        assert!(matches!(file.load(), Err(SpacesError::Corrupt)));
+        let aside = file.set_aside().unwrap().unwrap();
+        assert_eq!(aside.parent(), Some(dir.path()));
+        assert!(
+            aside
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("spaces.json.corrupt-")
+        );
+        assert_eq!(fs::read_to_string(&aside).unwrap(), "garbage");
+        assert_eq!(file.load().unwrap(), Spaces::default());
     }
 
     #[test]
