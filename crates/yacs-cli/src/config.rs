@@ -2,6 +2,7 @@
 //! no flags. The format is shared with the desktop app, see `yacs_client::spaces`.
 
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -59,6 +60,23 @@ pub fn load(path: &Path) -> Result<Spaces> {
     Ok(spaces)
 }
 
+/// Moves a file `load` couldn't read to `<name>.corrupt-<unix secs>`, so
+/// saving a space afterwards can't overwrite keys that may still be in it.
+/// `None` if there's no file.
+pub fn set_aside(path: &Path) -> Result<Option<PathBuf>> {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut aside = path.as_os_str().to_owned();
+    aside.push(format!(".corrupt-{secs}"));
+    let aside = PathBuf::from(aside);
+    match std::fs::rename(path, &aside) {
+        Ok(()) => Ok(Some(aside)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("moving {} aside", path.display())),
+    }
+}
+
 /// Readable by the owner only: the file holds the spaces' keys and tokens.
 pub fn save(path: &Path, saved: &Spaces) -> Result<()> {
     if let Some(dir) = path.parent() {
@@ -75,18 +93,23 @@ fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
     let _ = std::fs::remove_file(path);
-    std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(path)?
-        .write_all(bytes)
+        .open(path)?;
+    file.write_all(bytes)?;
+    // On disk before `save` renames it over the old file.
+    file.sync_all()
 }
 
 #[cfg(not(unix))]
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
     // The profile directory is already private to the user on Windows.
-    std::fs::write(path, bytes)
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
 }
 
 /// Removes the file once no space is left, rather than leaving an empty one.

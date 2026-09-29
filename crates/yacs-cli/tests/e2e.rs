@@ -470,6 +470,36 @@ fn joins_with_a_link_and_remembers_it() {
     assert!(err.contains("not in a space"), "{err}");
 }
 
+/// Joining again, as the error says to, keeps what's left of the old file.
+#[test]
+fn joining_over_a_damaged_file_keeps_it_aside() {
+    let relay = relay(&[]);
+    let config = relay.home.path().join("cli.json");
+    std::fs::write(&config, "garbage").unwrap();
+    let err = stderr_of_failure(&mut saved(&relay, &["list"]));
+    assert!(err.contains("is damaged"), "{err}");
+
+    let out = saved(&relay, &["join"])
+        .write_stdin(invite_link(&relay, None))
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    let out = String::from_utf8(out).unwrap();
+    assert!(out.contains("cli.json.corrupt-"), "{out}");
+    let aside: Vec<_> = std::fs::read_dir(relay.home.path())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.to_string_lossy().contains("cli.json.corrupt-"))
+        .collect();
+    assert_eq!(aside.len(), 1, "{aside:?}");
+    assert_eq!(std::fs::read_to_string(&aside[0]).unwrap(), "garbage");
+    saved(&relay, &["send", "-t", "joined again"])
+        .assert()
+        .success();
+}
+
 #[test]
 fn starts_a_space_and_invites_another_machine() {
     let relay = relay(&[]);

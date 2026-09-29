@@ -543,7 +543,16 @@ async fn check(
 
 fn save_current(space: Space, token: Option<String>) -> Result<PathBuf> {
     let path = config::path()?;
-    let mut saved = config::load(&path).unwrap_or_default();
+    // Joining again is how a damaged file is fixed, but not by overwriting it.
+    let mut saved = match config::load(&path) {
+        Ok(saved) => saved,
+        Err(e) => {
+            if let Some(aside) = config::set_aside(&path)? {
+                eprintln!("{e:#}. Kept it as {}.", aside.display());
+            }
+            Spaces::default()
+        }
+    };
     if let Some(old) = saved
         .current()
         .filter(|old| old.pairing().ok() != space.pairing().ok())
