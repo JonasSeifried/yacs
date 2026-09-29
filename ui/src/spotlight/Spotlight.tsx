@@ -312,6 +312,11 @@ export function Spotlight() {
             {space.name}
           </span>
         )}
+        {(status?.update || status?.updateInstalling) && (
+          <button className="update-pill" title="Install it in Settings" onClick={() => platform.openSettings()}>
+            {status.updateInstalling ? `Installing ${status.updateInstalling}…` : `Update ${status.update} available`}
+          </button>
+        )}
         <button className="icon-button" title={`Settings (${modKey(os, ",")})`} onClick={() => platform.openSettings()}>
           <GearIcon />
         </button>

@@ -20,13 +20,16 @@ mod update;
 mod windows;
 
 use tauri::{Manager, RunEvent};
-use tauri_plugin_autostart::MacosLauncher;
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::ShortcutState;
 use tracing_subscriber::EnvFilter;
 
 use crate::state::AppState;
 
 const TOGGLE_ARG: &str = "--toggle";
+/// Passed by the launch-at-login entry. Only that launch starts quietly in the
+/// tray; opening YACS by hand shows Settings.
+const AUTOSTART_ARG: &str = "--autostart";
 
 pub fn run() {
     tracing_subscriber::fmt()
@@ -60,12 +63,22 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
-            None,
+            Some(vec![AUTOSTART_ARG]),
         ))
         .setup(|app| {
             // Menu bar app: no Dock icon, no Cmd+Tab entry.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            let at_login = std::env::args_os().any(|a| a == AUTOSTART_ARG);
+            // Rewrite the login entry, so one made before `AUTOSTART_ARG`
+            // (or for an app that has since moved) launches it the same way.
+            let autolaunch = app.autolaunch();
+            if autolaunch.is_enabled().unwrap_or(false) {
+                if let Err(e) = autolaunch.enable() {
+                    tracing::warn!(error = %e, "can't refresh launch at login");
+                }
+            }
 
             let state = AppState::load(&app.path().app_config_dir()?);
             let hotkey = state.settings().hotkey.clone();
@@ -86,7 +99,8 @@ pub fn run() {
                     .lock()
                     .expect("lock poisoned") = Some(e);
             }
-            if !in_space {
+            let updated = update::just_updated(app.handle());
+            if !in_space || !at_login || updated {
                 windows::show_settings(app.handle());
             }
             update::spawn_checks(app.handle());
@@ -126,12 +140,12 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("failed to build YACS")
-        .run(|_app, event| {
+        .run(|app, event| match event {
             // Hiding the last window must not quit a tray app; only "Quit" does.
-            if let RunEvent::ExitRequested { api, code, .. } = event {
-                if code.is_none() {
-                    api.prevent_exit();
-                }
-            }
+            RunEvent::ExitRequested { api, code, .. } if code.is_none() => api.prevent_exit(),
+            // Opening YACS from Finder or Spotlight while it's already running.
+            #[cfg(target_os = "macos")]
+            RunEvent::Reopen { .. } => windows::show_settings(app),
+            _ => {}
         });
 }

@@ -68,12 +68,13 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             "settings" => windows::show_settings(app),
             "quit" => app.exit(0),
             "update" => {
+                // Settings shows the install running, and why it failed
+                // (`Status::update_error`).
+                windows::show_settings(app);
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    // Settings shows why (`Status::update_error`).
                     if let Err(e) = update::install(&app).await {
                         tracing::warn!(error = %e, "update failed");
-                        windows::show_settings(&app);
                     }
                 });
             }

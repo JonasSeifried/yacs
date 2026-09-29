@@ -111,6 +111,7 @@ pub fn toggle_spotlight(app: &AppHandle) {
         }
         let _ = app.emit_to(SPOTLIGHT, EVENT_SPOTLIGHT_SHOWN, ());
         crate::live::wake(app);
+        crate::update::check_in_background(app);
     }
 }
 
@@ -133,6 +134,7 @@ pub fn show_settings(app: &AppHandle) {
         let _ = w.show();
         let _ = w.set_focus();
         let _ = app.emit_to(SETTINGS, EVENT_SETTINGS_SHOWN, ());
+        crate::update::check_in_background(app);
     }
     hide_spotlight(app);
 }
