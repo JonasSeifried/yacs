@@ -6,6 +6,7 @@ import { guessOs, modKey } from "../shared/hotkey";
 import { maxTtlSecs } from "../shared/plan";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
 import type { ClipMeta, ClipView, FileInfo, ServerConfig, SpaceLimits, Status, Transfer } from "../shared/types";
+import { onFocusLeft } from "./focus";
 
 /** A failed refresh keeps the clips it had, with `error` set, instead of hiding them. */
 type List =
@@ -188,6 +189,8 @@ export function Spotlight() {
   const commitDelete = useCallback(async (id: string) => {
     clearTimeout(pendingDeletes.current.get(id));
     pendingDeletes.current.delete(id);
+    // Too late for ⌘Z now, so don't offer it.
+    setNotice((n) => (n?.undo === id ? null : n));
     try {
       await platform.deleteClip(id);
       setList((l) => (l.state === "ok" ? { ...l, clips: l.clips.filter((c) => c.id !== id) } : l));
@@ -219,13 +222,14 @@ export function Spotlight() {
   }, []);
 
   // Undo only lasts while Spotlight is open: hiding sends pending deletes now.
+  // A click into the HTML preview doesn't count (see `onFocusLeft`).
   useEffect(() => {
     const flush = () => [...pendingDeletes.current.keys()].forEach(commitDelete);
     const onHidden = () => document.visibilityState === "hidden" && flush();
-    window.addEventListener("blur", flush);
+    const stop = onFocusLeft(flush);
     document.addEventListener("visibilitychange", onHidden);
     return () => {
-      window.removeEventListener("blur", flush);
+      stop();
       document.removeEventListener("visibilitychange", onHidden);
     };
   }, [commitDelete]);
@@ -282,20 +286,6 @@ export function Spotlight() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [os, status, clips, selected, choices, ttl, sent, notice, copy, send, remove, undoDelete, changeTtl, cancelHide]);
-
-  // A click into the HTML preview moves focus into its iframe, where our keys
-  // don't arrive. Take it straight back.
-  useEffect(() => {
-    const onBlur = () =>
-      setTimeout(() => {
-        if (document.activeElement instanceof HTMLIFrameElement) {
-          document.activeElement.blur();
-          window.focus();
-        }
-      });
-    window.addEventListener("blur", onBlur);
-    return () => window.removeEventListener("blur", onBlur);
-  }, []);
 
   const space = status?.space ?? null;
   const selectedLoaded = selected ? loaded[selected.id] : undefined;
