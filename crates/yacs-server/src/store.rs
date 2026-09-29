@@ -252,13 +252,14 @@ impl Store {
     }
 
     /// Counts `size` against the quota, or against `share` of it if that's lower.
+    /// Checked: a huge announced size must not wrap the counter.
     fn reserve(&self, size: u64, share: Option<u64>) -> bool {
         let max = share.map_or(self.max_disk, |share| share.min(self.max_disk));
-        if self.used.fetch_add(size, Ordering::SeqCst) + size > max {
-            self.release(size);
-            return false;
-        }
-        true
+        self.used
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |used| {
+                used.checked_add(size).filter(|&total| total <= max)
+            })
+            .is_ok()
     }
 
     /// Saturating: a file this store didn't count (see `reap`) must not wrap
@@ -358,7 +359,9 @@ impl Store {
         if open >= MAX_OPEN_UPLOADS {
             return Err(UploadError::TooMany);
         }
-        let reserved = header.len() as u64 + layout.length;
+        let Some(reserved) = (header.len() as u64).checked_add(layout.length) else {
+            return Err(UploadError::Full);
+        };
         if !self.reserve(reserved, disk_share) {
             return Err(UploadError::Full);
         }
@@ -841,6 +844,35 @@ mod tests {
         assert!(ChunkLayout::new(size + tag, size).is_err());
         assert!(ChunkLayout::new(size, size - 1).is_err());
         assert!(ChunkLayout::new(size, u64::from(MAX_CHUNK_SIZE) + tag + 1).is_err());
+    }
+
+    /// An announced length near u64::MAX must not wrap the reservation to a
+    /// few bytes and let the chunks through uncounted.
+    #[tokio::test]
+    async fn huge_uploads_dont_wrap_the_quota() {
+        let dir = tempfile::tempdir().unwrap();
+        let channel = ChannelId::from_bytes([1; 32]);
+        let store = Store::open(dir.path(), 50, 1000).await.unwrap();
+        // Header plus length is u64::MAX + 100: 99 once wrapped.
+        let header = [0; 200];
+        let tag = CHUNK_TAG_LEN as u64;
+        let layout = (u64::from(MIN_CHUNK_SIZE) + tag..=u64::from(MAX_CHUNK_SIZE) + tag)
+            .find_map(|size| ChunkLayout::new(u64::MAX - 100, size).ok())
+            .unwrap();
+
+        let created = store
+            .create_upload(&channel, &header, layout, 60_000, 1_000, None, None)
+            .await;
+        assert!(matches!(created, Err(UploadError::Full)), "{created:?}");
+        assert_eq!(store.used_bytes(), 0);
+
+        // The counter itself doesn't wrap either.
+        store
+            .put(&channel, &[0; 10], 1_000, 60_000, None)
+            .await
+            .unwrap();
+        assert!(!store.reserve(u64::MAX - 5, None));
+        assert_eq!(store.used_bytes(), 10);
     }
 
     /// Two servers on one data dir: each one's count misses the other's files.
