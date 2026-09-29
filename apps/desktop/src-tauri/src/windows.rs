@@ -37,7 +37,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let spotlight = spotlight.transparent(true);
     let spotlight = spotlight.build()?;
     #[cfg(windows)]
-    set_border(&spotlight, spotlight.theme().unwrap_or(tauri::Theme::Light));
+    set_frame(&spotlight, spotlight.theme().unwrap_or(tauri::Theme::Light));
 
     let handle = app.clone();
     #[cfg(windows)]
@@ -45,7 +45,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     spotlight.on_window_event(move |event| match event {
         WindowEvent::Focused(false) => hide_spotlight(&handle),
         #[cfg(windows)]
-        WindowEvent::ThemeChanged(theme) => set_border(&window, *theme),
+        WindowEvent::ThemeChanged(theme) => set_frame(&window, *theme),
         _ => {}
     });
 
@@ -57,38 +57,57 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
             .visible(false)
             .center()
             .build()?;
+    #[cfg(windows)]
+    set_frame(&settings, settings.theme().unwrap_or(tauri::Theme::Light));
 
     let handle = app.clone();
-    settings.on_window_event(move |event| {
+    #[cfg(windows)]
+    let window = settings.clone();
+    settings.on_window_event(move |event| match event {
         // Closing only hides: YACS keeps running in the tray.
-        if let WindowEvent::CloseRequested { api, .. } = event {
+        WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             hide_settings(&handle);
         }
+        #[cfg(windows)]
+        WindowEvent::ThemeChanged(theme) => set_frame(&window, *theme),
+        _ => {}
     });
     Ok(())
 }
 
-/// Windows 11 draws a 1px border around the undecorated Spotlight, in the
-/// accent colour when "Show accent colour on title bars and window borders" is
-/// on. It's drawn in the theme's `--border` instead, so the panel skips its own.
+/// With "Show accent colour on title bars and window borders" on, Windows 11
+/// draws window borders, and Settings' title bar, in the accent colour. They're
+/// drawn in the theme instead: the border in `--border` (so Spotlight skips its
+/// own), the title bar in `--bg` and `--text`, like the page under it.
 #[cfg(windows)]
-fn set_border(window: &tauri::WebviewWindow, theme: tauri::Theme) {
-    use windows_sys::Win32::Graphics::Dwm::{DWMWA_BORDER_COLOR, DwmSetWindowAttribute};
-    // COLORREF is 0x00BBGGRR: #35323f and #e3e1ea.
-    let color: u32 = match theme {
-        tauri::Theme::Dark => 0x003f_3235,
-        _ => 0x00ea_e1e3,
+fn set_frame(window: &tauri::WebviewWindow, theme: tauri::Theme) {
+    use windows_sys::Win32::Graphics::Dwm::{
+        DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR, DwmSetWindowAttribute,
+    };
+    // COLORREF is 0x00BBGGRR.
+    let (border, caption, text): (u32, u32, u32) = match theme {
+        // #35323f, #17161c, #eceaf2
+        tauri::Theme::Dark => (0x003f_3235, 0x001c_1617, 0x00f2_eaec),
+        // #e3e1ea, #f6f6f8, #1c1b22
+        _ => (0x00ea_e1e3, 0x00f8_f6f6, 0x0022_1b1c),
     };
     let Ok(hwnd) = window.hwnd() else { return };
-    // Fails harmlessly before Windows 11, which has no such border.
-    unsafe {
-        DwmSetWindowAttribute(
-            hwnd.0,
-            DWMWA_BORDER_COLOR as _,
-            (&raw const color).cast(),
-            size_of::<u32>() as u32,
-        );
+    // Each fails harmlessly before Windows 11, which has none of them, and
+    // the caption ones do nothing on the undecorated Spotlight.
+    for (attribute, color) in [
+        (DWMWA_BORDER_COLOR, border),
+        (DWMWA_CAPTION_COLOR, caption),
+        (DWMWA_TEXT_COLOR, text),
+    ] {
+        unsafe {
+            DwmSetWindowAttribute(
+                hwnd.0,
+                attribute as _,
+                (&raw const color).cast(),
+                size_of::<u32>() as u32,
+            );
+        }
     }
 }
 
