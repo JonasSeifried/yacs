@@ -140,12 +140,17 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("failed to build YACS")
-        .run(|app, event| match event {
-            // Hiding the last window must not quit a tray app; only "Quit" does.
-            RunEvent::ExitRequested { api, code, .. } if code.is_none() => api.prevent_exit(),
-            // Opening YACS from Finder or Spotlight while it's already running.
-            #[cfg(target_os = "macos")]
-            RunEvent::Reopen { .. } => windows::show_settings(app),
-            _ => {}
+        .run(|app, event| {
+            // Only macOS uses it, for Reopen.
+            #[cfg(not(target_os = "macos"))]
+            let _ = app;
+            match event {
+                // Hiding the last window must not quit a tray app; only "Quit" does.
+                RunEvent::ExitRequested { api, code, .. } if code.is_none() => api.prevent_exit(),
+                // Opening YACS from Finder or Spotlight while it's already running.
+                #[cfg(target_os = "macos")]
+                RunEvent::Reopen { .. } => windows::show_settings(app),
+                _ => {}
+            }
         });
 }
