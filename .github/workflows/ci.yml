@@ -33,6 +33,20 @@ jobs:
           cargo test -p yacs-core --target wasm32-unknown-unknown --test vectors
           cargo test -p yacs-wasm --target wasm32-unknown-unknown
 
+  # The same tests on the other platforms the CLI ships for, where paths,
+  # file permissions and replacing a file work differently.
+  rust-os:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --exclude yacs-desktop
+
   # The PWA imports yacs-wasm, so the UI needs Rust to type-check and build.
   ui:
     runs-on: ubuntu-latest
