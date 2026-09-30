@@ -683,7 +683,9 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
     setLoaded((l) => ({ ...l, [id]: { state: "ok", clip: sent } }));
     setList((l) => ({ state: "ok", clips: [sent.view.meta, ...(l.state === "ok" ? l.clips : [])] }));
     setOpenId(id);
-    notify("ok", `Sent · expires in ${formatDuration(ttl * 1000)}`);
+    // The relay's, since it caps the TTL to the space's plan.
+    const { created_at_ms, expires_at_ms } = sent.view.meta;
+    notify("ok", `Sent · expires in ${formatDuration(expires_at_ms - created_at_ms)}`);
   };
 
   const commitDelete = useCallback(
