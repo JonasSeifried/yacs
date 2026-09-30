@@ -86,6 +86,14 @@ export function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
+  // The spaces' keys live in this site's storage, which Safari clears after
+  // 7 days unused in a tab and Chrome may evict when the disk runs low. Best
+  // effort: the browser decides.
+  const secret = current?.secret;
+  useEffect(() => {
+    if (secret) navigator.storage?.persist?.().catch(() => {});
+  }, [secret]);
+
   if (link) {
     return (
       <JoinFromLink
