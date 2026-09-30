@@ -288,7 +288,9 @@ impl Client {
 
 /// Retries network trouble and server errors with backoff; anything the
 /// relay refused on purpose fails right away.
-async fn retry<T, F: Future<Output = Result<T>>>(mut attempt: impl FnMut() -> F) -> Result<T> {
+pub(crate) async fn retry<T, F: Future<Output = Result<T>>>(
+    mut attempt: impl FnMut() -> F,
+) -> Result<T> {
     let mut delay = BACKOFF_MIN;
     for _ in 1..ATTEMPTS {
         match attempt().await {
