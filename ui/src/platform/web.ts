@@ -12,7 +12,7 @@ import { cutText, htmlFitsPreview } from "../shared/clip";
 import { SseParser } from "../shared/sse";
 import { chunkSizeFor } from "../shared/stream";
 import type { ChannelEvent, Clip, ClipItem, ClipMeta, ClipView, ServerConfig, SpaceLimits, StreamInfo } from "../shared/types";
-import { API, relayRequest, relayUpload } from "./relay";
+import { API, relayRequest, relayUpload, retrying } from "./relay";
 
 const STORAGE_KEY = "yacs.spaces";
 /** Before spaces: one pairing, `{ secret, token, deviceName }`. */
@@ -166,10 +166,16 @@ export async function joinWithCode(code: string, deviceName: string): Promise<Ta
   const joiner = new CodeJoiner(code.trim());
   try {
     const base = `${API}/rendezvous/${joiner.nameplate}`;
-    /** A message the other device leaves, or null once the rendezvous is gone. */
+    /**
+     * A message the other device leaves, or null once the rendezvous is gone.
+     * Retried on network trouble, since asking again changes nothing. The
+     * answer isn't: one whose response got lost would be refused the second
+     * time, as if someone else had used the code.
+     */
+    const never = new AbortController().signal;
     const read = async (path: string) => {
       for (;;) {
-        const res = await relayRequest(`${base}/${path}?wait=25`, null, {}, [204, 404]);
+        const res = await retrying(() => relayRequest(`${base}/${path}?wait=25`, null, {}, [204, 404]), never);
         if (res.status === 404) return null;
         if (res.status === 200) return new Uint8Array(await res.arrayBuffer());
       }
@@ -317,10 +323,13 @@ export class WebClient {
     }
   }
 
-  /** A message the other side of a rendezvous leaves, or null once it's gone. */
+  /**
+   * A message the other side of a rendezvous leaves, or null once it's gone.
+   * Retried on network trouble, like the joiner's reads (see `joinWithCode`).
+   */
   private async waitFor(url: string, signal: AbortSignal): Promise<Uint8Array | null> {
     for (;;) {
-      const res = await this.request(`${url}?wait=25`, { signal }, [204, 404]);
+      const res = await retrying(() => this.request(`${url}?wait=25`, { signal }, [204, 404]), signal);
       if (res.status === 404) return null;
       if (res.status === 200) return new Uint8Array(await res.arrayBuffer());
     }
