@@ -94,6 +94,16 @@ struct Envelope { version: u8, nonce: [u8; 24], ciphertext: Vec<u8> }
 - The payload type sits **inside** the ciphertext, so the server only sees opaque bytes and their size. New kinds of payload never need a visible `type` field.
 - Default max size is 20 MB and configurable.
 
+### Versioning (planned, see section 12)
+Nothing is wrong on the wire today; the risk is the day the format changes. `PROTOCOL_VERSION` is used three ways at once: the byte written first, the only byte `from_bytes` accepts, and the first byte of the AAD, for envelopes *and* for every chunk of a big file (`stream.rs` reuses `aad`). Bumping it to 2 would make every stored v1 clip and every v1 stream fail to decrypt, on devices that updated before the others. And postcard can't skip an enum variant it doesn't know, so a clip with a new kind of item next to its text fails whole on older devices, text included.
+
+The plan, in three steps, each on its own:
+1. **Keep the version with the envelope** (a refactor, same bytes). `Envelope` stores the version it was read with; `from_bytes` accepts a list of supported versions (just 1 today); `open` computes the AAD from the envelope's own version; `seal` writes the current one. Streams get their own constant for their AAD, fixed at 1, so an envelope version change never touches chunks. The stored-envelope and stream vectors in `tests/vectors.rs` must pass unchanged, on native and wasm: that's the proof nothing moved.
+2. **Room for new kinds of item** (additive). Append `ClipItem::Ext { kind: u32, data: Vec<u8> }`. From then on, a new item type is sent as `Ext` with its own `kind` and its postcard bytes in `data`, and every client skips kinds it doesn't know: desktop views and clipboard writes, the CLI, the PWA's `clipView` and copy (whose last `else` today assumes anything else is a `Stream`). Nothing sends `Ext` yet, so no client sees a change. Clients before this release still fail on a clip carrying one, so the first real use waits until they've auto-updated. The same goes for new fields: postcard structs can't grow, so a field that old clients may ignore goes into an `Ext`, and one they must understand needs a new envelope version.
+3. **Sealed format 2, when it comes** (a rule, no code now). `sealed.rs` checks its format byte but doesn't authenticate it. That's fine while there's one format; a format 2 puts the byte into its AAD.
+
+Tests first for each: for 1, the vectors, plus one that opens an envelope whose version is in the accepted list but isn't the current one (a test-only version); for 2, a vector with an `Ext` item that every client, native and wasm, decodes and skips while keeping the clip's text.
+
 ## 4. Relay server (`yacs-server`)
 
 ```
