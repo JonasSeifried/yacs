@@ -53,7 +53,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      # A cache saved on a tag can only be restored by that same tag, so
+      # saving one only costs time.
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
       - run: pnpm install --frozen-lockfile
 
       - name: Release-only config
