@@ -50,9 +50,10 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+      # The version in rust-toolchain.toml, plus both Macs for the universal app.
+      - run: rustup toolchain install
+      - if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       # A cache saved on a tag can only be restored by that same tag, so
       # saving one only costs time.
       - uses: Swatinem/rust-cache@v2
@@ -282,12 +283,12 @@ jobs:
       - if: runner.os == 'Linux'
         run: |
           docker run --rm -v "$PWD:/src" -w /src rust:1-alpine sh -c \
-            'apk add --no-cache musl-dev && cargo build --release --locked -p yacs-cli'
+            'apk add --no-cache musl-dev && rustup toolchain install && cargo build --release --locked -p yacs-cli'
           mkdir dist && cp target/release/yacs "dist/$ASSET"
       - if: runner.os != 'Linux'
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+        run: rustup toolchain install
+      - if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - if: runner.os == 'macOS'
         run: |
           for target in aarch64-apple-darwin x86_64-apple-darwin; do

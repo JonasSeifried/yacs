@@ -2,6 +2,7 @@
 # The relay with the PWA built in, as one static binary on a distroless base.
 # Build from the repo root:  docker build -f deploy/Dockerfile -t yacs .
 
+# Only brings rustup: the Rust version is the one in rust-toolchain.toml.
 ARG RUST_VERSION=1
 ARG NODE_VERSION=22
 
@@ -9,10 +10,11 @@ ARG NODE_VERSION=22
 FROM rust:${RUST_VERSION}-slim-bookworm AS wasm
 ARG WASM_PACK_VERSION=0.13.1
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/* \
- && rustup target add wasm32-unknown-unknown \
  && curl -sSfL "https://github.com/rustwasm/wasm-pack/releases/download/v${WASM_PACK_VERSION}/wasm-pack-v${WASM_PACK_VERSION}-$(uname -m)-unknown-linux-musl.tar.gz" \
     | tar -xz --strip-components=1 -C /usr/local/bin "wasm-pack-v${WASM_PACK_VERSION}-$(uname -m)-unknown-linux-musl/wasm-pack"
 WORKDIR /src
+COPY rust-toolchain.toml ./
+RUN rustup toolchain install
 COPY . .
 RUN wasm-pack build crates/yacs-wasm --target web --release --out-dir ../../ui/src/wasm --out-name yacs --no-pack
 
@@ -34,6 +36,8 @@ RUN pnpm --filter @yacs/ui build:web
 FROM rust:${RUST_VERSION}-alpine AS server
 RUN apk add --no-cache musl-dev
 WORKDIR /src
+COPY rust-toolchain.toml ./
+RUN rustup toolchain install
 COPY . .
 COPY --from=ui /src/ui/dist/web ui/dist/web
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
