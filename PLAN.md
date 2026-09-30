@@ -446,6 +446,7 @@ A review of the whole codebase after 0.7.1, sorted by how bad each problem is an
 - PWA: previews are cut like the desktop's (20,000 characters, HTML up to 512 KB), so a multi-MB log no longer freezes an iPhone; the sanitized HTML is kept between renders. The expiry picker is 16px, so iOS doesn't zoom on tap. The app asks for persistent storage while in a space. "Sent · expires in" shows the relay's expiry, capped to the plan.
 - Client: single-clip uploads get time for their size (at 128 kbit/s, 120 s at least) instead of 120 s in all; single-clip downloads fail after 60 s without data instead.
 - Core: an envelope opens with the version it carries and chunks use a fixed AAD version, so a new envelope version can't make stored clips or streams unreadable; `ClipItem::Ext` lets later kinds of item be skipped by older builds (section 3, Versioning).
+- CI: Rust is pinned (1.98.1 in `rust-toolchain.toml`, so a new stable's lints can't fail `-D warnings`), and `rust-version` is 1.98 to match: nobody builds YACS from source with an older Rust, and 1.85 only held back syntax and dependency updates. The Rust tests run on macOS and Windows too. Releases no longer save a Rust cache that no later tag can restore.
 - All clients: the reads of a code exchange are retried on network trouble, so one 502 no longer ends `yacs join` / `yacs invite` or the apps' codes (and typing the code again no longer says someone else used it). The writes still aren't.
 
 ### Serious, plan first
@@ -461,8 +462,8 @@ Each needs a short design or a test on a real machine before code.
 - PWA and Spotlight: the TTL picker keeps a saved choice above the plan's maximum (`ttlChoices` adds it), and the relay silently caps it; clamp the choice to `maxTtlSecs`.
 - CLI: `yacs recv` of a clip with two files of the same name overwrites the first; `cat file.bin | yacs send` refuses binary stdin.
 - Deploy: no Docker healthcheck (`yacs-server --healthcheck`), no log rotation, no `stop_grace_period`; shutdown waits for every long-poll without a deadline and saves accounts only after that. `/healthz` should fail when the reaper hasn't run for a few minutes. One INFO line per reap with usage and refusal counts, no IPs or ids. The Caddyfile has no Cloudflare `trusted_proxies` note.
-- CI: pin the Rust version (a new stable can add a lint that fails `-D warnings`), check MSRV 1.85, add `cargo-deny`, run core/client/CLI tests on macOS and Windows too.
-- Release: caches saved on tags can't be restored by the next tag, so every release builds from scratch and then spends up to 2.5 min saving a cache nobody uses. `save-if: false` in release.yml now; later a release cache filled from `main`. The desktop job could reuse the CLI job's binaries.
+- CI: add `cargo-deny`.
+- Release: caches saved on tags can't be restored by the next tag, so every release builds from scratch and then spends up to 2.5 min saving a cache nobody uses. Later a release cache filled from `main`. The desktop job could reuse the CLI job's binaries.
 
 ### Later, or with phase 10
 - *Phase 10:* the desktop's `clips::load` and upload completions can land in the next space's cache after a switch; key the cache by channel, drop out-of-order list responses (both apps). One `switch_space()` for `use_space` and `leave_space`. Skip bad entries in `spaces.json` one by one instead of rejecting the file.
