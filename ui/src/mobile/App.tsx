@@ -1154,6 +1154,9 @@ function ClipPreview({ clip }: { clip: Decrypted }) {
     [image],
   );
   const url = useObjectUrl(blob);
+  // Sanitizing again on every render (progress, the clock) adds up.
+  const html = clip.view.html;
+  const srcDoc = useMemo(() => (html === null ? null : previewDocument(html)), [html]);
   const kind = previewKind(clip.view);
   if (kind === "files") {
     return (
@@ -1171,10 +1174,17 @@ function ClipPreview({ clip }: { clip: Decrypted }) {
     );
   }
   if (kind === "image") return url ? <img className="clip-image" src={url} alt="" /> : null;
-  if (kind === "html" && clip.view.html !== null) {
-    return <iframe className="clip-html" sandbox="" srcDoc={previewDocument(clip.view.html)} title="Preview" />;
+  if (kind === "html" && srcDoc !== null) {
+    return <iframe className="clip-html" sandbox="" srcDoc={srcDoc} title="Preview" />;
   }
-  if (kind === "text") return <pre className="clip-text">{clip.view.text}</pre>;
+  if (kind === "text") {
+    return (
+      <pre className="clip-text">
+        {clip.view.text}
+        {clip.view.textTruncated && <span className="muted">{"\n"}… (preview cut short; copy gets everything)</span>}
+      </pre>
+    );
+  }
   return <p className="muted">Rich text without a preview. Copy works in apps that take it.</p>;
 }
 

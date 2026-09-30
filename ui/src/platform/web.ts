@@ -8,6 +8,7 @@ import type { DownloadMessage, DownloadMode, DownloadRequest } from "../mobile/d
 import { OPFS_DIR } from "../mobile/download.worker";
 import { isIos } from "../mobile/link";
 import type { UploadMessage, UploadRequest } from "../mobile/upload.worker";
+import { cutText, htmlFitsPreview } from "../shared/clip";
 import { SseParser } from "../shared/sse";
 import { chunkSizeFor } from "../shared/stream";
 import type { ChannelEvent, Clip, ClipItem, ClipMeta, ClipView, ServerConfig, SpaceLimits, StreamInfo } from "../shared/types";
@@ -603,9 +604,16 @@ export function clipView(meta: ClipMeta, clip: Clip): ClipView {
     files: [],
   };
   for (const item of clip.items) {
-    if ("Text" in item) view.text ??= item.Text;
-    else if ("Html" in item) view.html ??= item.Html;
-    else if ("Rtf" in item) view.rtf = true;
+    // Capped like the desktop's previews; copying takes the whole clip.
+    if ("Text" in item) {
+      if (view.text === null) {
+        const preview = cutText(item.Text);
+        view.text = preview.text;
+        view.textTruncated = preview.cut;
+      }
+    } else if ("Html" in item) {
+      if (view.html === null && htmlFitsPreview(item.Html)) view.html = item.Html;
+    } else if ("Rtf" in item) view.rtf = true;
     else if ("Image" in item) view.image ??= { mime: item.Image.mime, size: item.Image.data.length, width: null, height: null };
     else if ("File" in item) view.files.push({ name: item.File.name, mime: item.File.mime, size: item.File.data.length });
     else view.files.push(...item.Stream.files);

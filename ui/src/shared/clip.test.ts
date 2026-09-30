@@ -1,6 +1,15 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { clipIcon, clipTitle, previewDocument, previewKind } from "./clip";
+import {
+  PREVIEW_HTML_BYTES,
+  PREVIEW_TEXT_CHARS,
+  clipIcon,
+  clipTitle,
+  cutText,
+  htmlFitsPreview,
+  previewDocument,
+  previewKind,
+} from "./clip";
 import type { ClipView } from "./types";
 
 function clip(fields: Partial<ClipView>): ClipView {
@@ -88,5 +97,25 @@ describe("previewDocument", () => {
   it("keeps a meta refresh or CSP override out of the body", () => {
     const body = previewDocument(`<meta http-equiv="refresh" content="0;url=https://evil.example"><base href="https://evil.example/">`);
     expect(body.slice(body.indexOf("<body>"))).not.toMatch(/<meta|<base/i);
+  });
+});
+
+describe("preview limits", () => {
+  it("cuts text by characters, not UTF-16 units", () => {
+    expect(cutText("short")).toEqual({ text: "short", cut: false });
+    const long = "é😀".repeat(PREVIEW_TEXT_CHARS);
+    const { text, cut } = cutText(long);
+    expect(cut).toBe(true);
+    expect(Array.from(text)).toHaveLength(PREVIEW_TEXT_CHARS);
+    expect(long.startsWith(text)).toBe(true);
+    expect(cutText("x".repeat(PREVIEW_TEXT_CHARS)).cut).toBe(false);
+  });
+
+  it("leaves out HTML too big to render, by its UTF-8 size", () => {
+    expect(htmlFitsPreview("<b>hi</b>")).toBe(true);
+    expect(htmlFitsPreview("x".repeat(PREVIEW_HTML_BYTES))).toBe(true);
+    expect(htmlFitsPreview("x".repeat(PREVIEW_HTML_BYTES + 1))).toBe(false);
+    // Two bytes each in UTF-8, one unit in JS.
+    expect(htmlFitsPreview("é".repeat(PREVIEW_HTML_BYTES / 2 + 1))).toBe(false);
   });
 });

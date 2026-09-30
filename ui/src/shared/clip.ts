@@ -52,6 +52,29 @@ export type PreviewKind = "files" | "html" | "text" | "image" | "none";
  * usually a rendering of it (Word), while a copied picture from a browser
  * comes with an `<img>` tag pointing at a URL that is never loaded.
  */
+/** As in the desktop's previews (`clips.rs`): text beyond this isn't needed for one. */
+export const PREVIEW_TEXT_CHARS = 20_000;
+/** Rendering huge HTML is slow; plain text is shown instead. */
+export const PREVIEW_HTML_BYTES = 512 * 1024;
+
+/** `text` cut to `max` characters (code points, like Rust's `chars`), and whether it was. */
+export function cutText(text: string, max = PREVIEW_TEXT_CHARS): { text: string; cut: boolean } {
+  let units = 0;
+  let chars = 0;
+  for (const ch of text) {
+    if (chars === max) return { text: text.slice(0, units), cut: true };
+    units += ch.length;
+    chars++;
+  }
+  return { text, cut: false };
+}
+
+/** At most `PREVIEW_HTML_BYTES` in UTF-8, as the desktop counts it. */
+export function htmlFitsPreview(html: string): boolean {
+  // Every UTF-16 unit is at least one byte, so a longer string can't fit.
+  return html.length <= PREVIEW_HTML_BYTES && new TextEncoder().encode(html).length <= PREVIEW_HTML_BYTES;
+}
+
 export function previewKind(clip: ClipView): PreviewKind {
   // Without a working sanitizer, HTML is never rendered.
   const html = clip.html !== null && DOMPurify.isSupported;
