@@ -74,11 +74,20 @@ pub const PUBLIC_RELAY: &str = "https://yacs-relay.jonasseifried.com";
 /// A live event stream sends a keep-alive every 20 s; this much silence means
 /// the connection is dead (e.g. after the computer slept).
 const EVENTS_IDLE: Duration = Duration::from_secs(60);
+/// Whole requests, apart from the ones below.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// A clip download fails once the connection sends nothing for this long.
+const DOWNLOAD_IDLE: Duration = Duration::from_secs(60);
+/// The slowest uplink a clip upload gets time for: about 128 kbit/s.
+const SLOWEST_UPLOAD_BYTES_PER_SEC: u64 = 16_000;
 
 pub struct Client {
     http: reqwest::Client,
     /// Without the overall timeout, which would cut off the event stream.
     stream_http: reqwest::Client,
+    /// For clips, which can take longer than `REQUEST_TIMEOUT` to download
+    /// on a slow connection: fails when the connection stalls instead.
+    download_http: reqwest::Client,
     events_url: Url,
     clips_url: Url,
     uploads_url: Url,
@@ -110,8 +119,9 @@ impl Client {
                 .connect_timeout(Duration::from_secs(10))
         };
         Ok(Self {
-            http: builder().timeout(Duration::from_secs(120)).build()?,
+            http: builder().timeout(REQUEST_TIMEOUT).build()?,
             stream_http: builder().build()?,
+            download_http: builder().read_timeout(DOWNLOAD_IDLE).build()?,
             events_url: api(&format!("channels/{}/events", pairing.channel_id))?,
             clips_url: api(&format!("channels/{}/clips", pairing.channel_id))?,
             uploads_url: api(&format!("channels/{}/uploads", pairing.channel_id))?,
@@ -206,6 +216,7 @@ impl Client {
             .post(self.clips_url.clone())
             .header(header::CONTENT_TYPE, ENVELOPE_CONTENT_TYPE)
             .header(header::CONTENT_LENGTH, len)
+            .timeout(upload_timeout(len as u64))
             .body(body);
         if let Some(ttl) = ttl {
             req = req.query(&[("ttl", ttl.as_secs().max(1))]);
@@ -311,7 +322,7 @@ impl Client {
     }
 
     async fn fetch(&self, url: Url) -> Result<Option<(ClipMeta, Payload)>> {
-        let res = match self.send(self.http.get(url)).await {
+        let res = match self.send(self.download_http.get(url)).await {
             Ok(res) => res,
             Err(Error::Server { status: 404, .. }) => return Ok(None),
             Err(e) => return Err(e),
@@ -431,6 +442,12 @@ impl Events {
     }
 }
 
+/// Time for `len` bytes to go out over a slow uplink, at least
+/// `REQUEST_TIMEOUT`.
+fn upload_timeout(len: u64) -> Duration {
+    REQUEST_TIMEOUT.max(Duration::from_secs(len / SLOWEST_UPLOAD_BYTES_PER_SEC))
+}
+
 /// `body_len` is the size for relays that don't say (before 0.3.0).
 fn meta_from_headers(headers: &HeaderMap, body_len: u64) -> Option<ClipMeta> {
     let get = |name: &str| headers.get(name)?.to_str().ok();
@@ -443,4 +460,18 @@ fn meta_from_headers(headers: &HeaderMap, body_len: u64) -> Option<ClipMeta> {
             .unwrap_or(body_len),
         chunked: get(HEADER_CHUNKED) == Some("1"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 120 s cut off a clip of a few MB on a slow uplink every time.
+    #[test]
+    fn uploads_get_time_for_their_size() {
+        assert_eq!(upload_timeout(1_000), REQUEST_TIMEOUT);
+        // 8 MiB at 0.5 Mbit/s takes 134 s.
+        let slow_uplink = Duration::from_secs(8 * 1024 * 1024 * 8 / 500_000);
+        assert!(upload_timeout(8 * 1024 * 1024) > slow_uplink * 2);
+    }
 }
