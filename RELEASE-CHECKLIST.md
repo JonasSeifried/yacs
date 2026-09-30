@@ -29,7 +29,7 @@ Checks after a release, on the real apps, instead of building on every platform 
 
 ## 0.7.2
 
-What the automated tests couldn't cover, or covered only in a browser. Everything not listed (the relay's disk limit, the upload retries, the damaged spaces files) is covered by tests that failed without the fix.
+What the automated tests couldn't cover, or covered only in a browser. Everything not listed (the relay's disk limit, the upload retries, the damaged spaces files, the client's timeouts) is covered by tests that failed without the fix.
 
 **CI fix**
 - [ ] The `desktop (windows-latest)` and `desktop (ubuntu-22.04)` CI jobs are green again (they failed for 0.7.1).
@@ -50,6 +50,14 @@ What the automated tests couldn't cover, or covered only in a browser. Everythin
 - [ ] Delete a clip and swipe the app away at once. On a computer, the clip is gone from Spotlight (close and reopen it if it's still listed).
 - [ ] Delete a clip, switch to another app within a second or two, and come back: no "Undo" is offered any more, and the clip is gone on the other devices.
 - [ ] Delete a clip and tap Undo in the app: it comes back and stays on the other devices.
+
+**Phone: previews, the picker and storage** (iPhone)
+- [ ] Tap "Expires in": the page doesn't zoom in.
+- [ ] Copy a very long text on a computer (a big log file, a few MB): the phone app opens quickly, shows "preview cut short", and Copy there gets the whole text.
+- [ ] Send a clip with "Expires in" set to more than the free plan's hour, if an old choice is still saved: the toast says "expires in 1 h".
+
+**Codes** (a computer and a phone)
+- [ ] Show a code on the phone (Settings → Invite a device) and type it on the computer, and the other way round: both join as before. (Riding out a failed request was checked with injected errors in a browser and in the client's tests.)
 
 **Phone: joining** (one phone, fresh: delete the home-screen app or use a private tab)
 - [ ] Join from a computer's QR code or link: it works as before. (Retrying after a failed join was checked in a browser with an injected error; a real failure is hard to cause on purpose.)

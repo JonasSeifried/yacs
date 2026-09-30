@@ -433,6 +433,9 @@ A review of the whole codebase after 0.7.1, sorted by how bad each problem is an
 - All clients: the request that completes a chunked upload wasn't retried, so one 502 there deleted every chunk.
 - Spotlight: a click into the HTML preview blurred the window and sent pending deletes while Undo still showed.
 - PWA: deletes sent on hiding could be cut off when iOS froze the app (now `keepalive`, and on `pagehide` too); the Undo toast goes once its delete is sent; a join that failed after taking the invite can be retried without "already used".
+- PWA: previews are cut like the desktop's (20,000 characters, HTML up to 512 KB), so a multi-MB log no longer freezes an iPhone; the sanitized HTML is kept between renders. The expiry picker is 16px, so iOS doesn't zoom on tap. The app asks for persistent storage while in a space. "Sent · expires in" shows the relay's expiry, capped to the plan.
+- Client: single-clip uploads get time for their size (at 128 kbit/s, 120 s at least) instead of 120 s in all; single-clip downloads fail after 60 s without data instead.
+- All clients: the reads of a code exchange are retried on network trouble, so one 502 no longer ends `yacs join` / `yacs invite` or the apps' codes (and typing the code again no longer says someone else used it). The writes still aren't.
 
 ### Serious, plan first
 Each needs a short design or a test on a real machine before code.
@@ -444,12 +447,8 @@ Each needs a short design or a test on a real machine before code.
 - **Desktop clip cache** (desktop): up to 256 MB of decrypted clips stay in memory, expired ones too, while Spotlight is never opened. Evict on `expires_at_ms`, lower the cap.
 
 ### Minor and cheap
-- PWA: huge text clips aren't truncated like the desktop's previews (20,000 chars, 512 KB HTML), so a multi-MB log freezes an iPhone; `previewDocument` runs on every render (`useMemo`).
-- PWA: call `navigator.storage.persist()` after joining, so the browser doesn't evict the spaces.
-- PWA: `.ttl select` is 14px, so iOS zooms on tap (needs 16px).
-- PWA: the "Sent · expires in" toast uses the stored TTL, not the relay's clamped `expires_at_ms`.
-- Client: the 120 s total timeout also covers single-envelope pushes (8 MiB at 0.5 Mbit/s fails every time), and big-file chunks have no idle timeout. `read_timeout` on both clients instead.
-- CLI: `yacs join` / `yacs invite` by code fail on one transient network error; retry inside the long-poll loops.
+- Big-file chunks have no idle timeout, only 10 minutes per chunk, so a stalled connection takes up to an hour of retries to fail. (`read_timeout` isn't safe for uploads: it may run while the body is still going out.)
+- PWA and Spotlight: the TTL picker keeps a saved choice above the plan's maximum (`ttlChoices` adds it), and the relay silently caps it; clamp the choice to `maxTtlSecs`.
 - CLI: `yacs recv` of a clip with two files of the same name overwrites the first; `cat file.bin | yacs send` refuses binary stdin.
 - Deploy: no Docker healthcheck (`yacs-server --healthcheck`), no log rotation, no `stop_grace_period`; shutdown waits for every long-poll without a deadline and saves accounts only after that. `/healthz` should fail when the reaper hasn't run for a few minutes. One INFO line per reap with usage and refusal counts, no IPs or ids. The Caddyfile has no Cloudflare `trusted_proxies` note.
 - CI: pin the Rust version (a new stable can add a lint that fails `-D warnings`), check MSRV 1.85, add `cargo-deny`, run core/client/CLI tests on macOS and Windows too.
