@@ -7,6 +7,9 @@
 //!
 //! Binding the channel id into the AAD means a ciphertext copied into another
 //! channel fails to decrypt, even if both channels happened to share a key.
+//!
+//! An envelope opens with the version it carries, so a build that writes a
+//! newer one still reads the ones it lists in [`SUPPORTED_VERSIONS`].
 
 use chacha20poly1305::aead::{Aead, Generate, KeyInit, Payload as AeadPayload};
 use chacha20poly1305::{Key, XChaCha20Poly1305, XNonce};
@@ -16,13 +19,17 @@ use crate::error::{Error, Result};
 use crate::pairing::{ChannelId, Pairing};
 use crate::payload::Payload;
 
+/// The version new envelopes are sealed with.
 pub const PROTOCOL_VERSION: u8 = 1;
+/// The versions this build opens.
+const SUPPORTED_VERSIONS: &[u8] = &[1];
 const NONCE_LEN: usize = 24;
 const TAG_LEN: usize = 16;
 const HEADER_LEN: usize = 1 + NONCE_LEN;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Envelope {
+    version: u8,
     nonce: [u8; NONCE_LEN],
     ciphertext: Vec<u8>,
 }
@@ -30,17 +37,22 @@ pub struct Envelope {
 impl Envelope {
     /// Encrypt a payload for the pairing's channel, with a fresh random nonce.
     pub fn seal(pairing: &Pairing, payload: &Payload) -> Result<Self> {
+        Self::seal_as(PROTOCOL_VERSION, pairing, payload)
+    }
+
+    fn seal_as(version: u8, pairing: &Pairing, payload: &Payload) -> Result<Self> {
         let nonce = XNonce::try_generate().map_err(|_| Error::Rng)?;
         let mut plaintext = payload.to_bytes();
         let ciphertext = cipher(pairing).encrypt(
             &nonce,
             AeadPayload {
                 msg: &plaintext,
-                aad: &aad(&pairing.channel_id),
+                aad: &aad(version, &pairing.channel_id),
             },
         );
         plaintext.zeroize();
         Ok(Self {
+            version,
             nonce: nonce.into(),
             ciphertext: ciphertext.map_err(|_| Error::Encrypt)?,
         })
@@ -54,7 +66,7 @@ impl Envelope {
                 &XNonce::from(self.nonce),
                 AeadPayload {
                     msg: &self.ciphertext,
-                    aad: &aad(&pairing.channel_id),
+                    aad: &aad(self.version, &pairing.channel_id),
                 },
             )
             .map_err(|_| Error::Decrypt)?;
@@ -65,7 +77,7 @@ impl Envelope {
 
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(HEADER_LEN + self.ciphertext.len());
-        bytes.push(PROTOCOL_VERSION);
+        bytes.push(self.version);
         bytes.extend_from_slice(&self.nonce);
         bytes.extend_from_slice(&self.ciphertext);
         bytes
@@ -74,7 +86,7 @@ impl Envelope {
     /// Parse the wire format. Only checks structure; authenticity is checked by [`open`](Self::open).
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let (&version, rest) = bytes.split_first().ok_or(Error::Truncated)?;
-        if version != PROTOCOL_VERSION {
+        if !SUPPORTED_VERSIONS.contains(&version) {
             return Err(Error::UnsupportedVersion(version));
         }
         if rest.len() < NONCE_LEN + TAG_LEN {
@@ -82,6 +94,7 @@ impl Envelope {
         }
         let (nonce, ciphertext) = rest.split_at(NONCE_LEN);
         Ok(Self {
+            version,
             nonce: nonce.try_into().expect("split at NONCE_LEN"),
             ciphertext: ciphertext.to_vec(),
         })
@@ -92,9 +105,9 @@ fn cipher(pairing: &Pairing) -> XChaCha20Poly1305 {
     XChaCha20Poly1305::new(&Key::from(*pairing.key.as_bytes()))
 }
 
-pub(crate) fn aad(channel_id: &ChannelId) -> [u8; 33] {
+pub(crate) fn aad(version: u8, channel_id: &ChannelId) -> [u8; 33] {
     let mut aad = [0u8; 33];
-    aad[0] = PROTOCOL_VERSION;
+    aad[0] = version;
     aad[1..].copy_from_slice(channel_id.as_bytes());
     aad
 }
@@ -170,6 +183,21 @@ mod tests {
             let env = Envelope::from_bytes(&tampered).unwrap();
             assert_eq!(env.open(&p), Err(Error::Decrypt), "byte {i}");
         }
+    }
+
+    /// Opens with the version it was sealed with, not the current one, so a
+    /// build that writes a later version still reads what this one stored.
+    #[test]
+    fn opens_with_its_own_version() {
+        let p = pairing(1, 2);
+        let old = Envelope::seal_as(7, &p, &payload()).unwrap();
+        assert_eq!(old.open(&p), Ok(payload()));
+        // The version is authenticated: relabeling the envelope fails.
+        let relabeled = Envelope {
+            version: PROTOCOL_VERSION,
+            ..old
+        };
+        assert_eq!(relabeled.open(&p), Err(Error::Decrypt));
     }
 
     #[test]

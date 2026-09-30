@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! file key = HKDF-SHA256(ikm = channel key, salt, info = "yacs/v1/stream" || channel id)
-//! chunk i  = ChaCha20-Poly1305(file key, nonce = i as 11 bytes BE || last, AAD = version || channel id)
+//! chunk i  = ChaCha20-Poly1305(file key, nonce = i as 11 bytes BE || last, AAD = 1 || channel id)
 //! ```
 //!
 //! A clip's files are concatenated into one stream and cut into chunks of
@@ -29,6 +29,9 @@ use crate::pairing::Pairing;
 use crate::payload::{is_image_mime, safe_file_name};
 
 pub const HKDF_INFO_STREAM: &[u8] = b"yacs/v1/stream";
+/// First byte of every chunk's AAD. Fixed, and not the envelope's version:
+/// a new envelope version must not change how existing streams decrypt.
+const CHUNK_AAD_VERSION: u8 = 1;
 pub const SALT_LEN: usize = 32;
 /// Poly1305 tag at the end of every sealed chunk.
 pub const CHUNK_TAG_LEN: usize = 16;
@@ -154,7 +157,7 @@ impl Stream {
         key.zeroize();
         Ok(StreamCipher {
             cipher,
-            aad: aad(&pairing.channel_id),
+            aad: aad(CHUNK_AAD_VERSION, &pairing.channel_id),
             chunks: self.chunk_count(),
             stream: self.clone(),
         })
