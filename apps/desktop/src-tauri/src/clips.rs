@@ -59,6 +59,7 @@ impl Entry {
             ClipItem::Image(image) => image.data.len(),
             ClipItem::File(file) => file.data.len(),
             ClipItem::Stream(stream) => stream.files.iter().map(|f| f.name.len() + 64).sum(),
+            ClipItem::Ext(ext) => ext.data.len(),
         });
         items.sum::<usize>() as u64
     }
@@ -341,6 +342,24 @@ mod tests {
         assert!(view.rtf);
         assert_eq!(view.image, None);
         assert_eq!(view.device_name, "MacBook");
+    }
+
+    /// A kind of item newer than this build is skipped; the rest shows.
+    #[test]
+    fn view_skips_newer_kinds_of_item() {
+        let view = ClipView::from(&entry(
+            "a",
+            1,
+            vec![
+                ClipItem::Ext(yacs_core::Ext {
+                    kind: 1000,
+                    data: vec![1, 2, 3],
+                }),
+                ClipItem::Text("hi".into()),
+            ],
+        ));
+        assert_eq!(view.text.as_deref(), Some("hi"));
+        assert!(view.files.is_empty() && view.image.is_none());
     }
 
     #[test]

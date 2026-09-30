@@ -1,7 +1,10 @@
 //! What travels inside an [`Envelope`](crate::Envelope), after decryption.
 //!
 //! Serialized with postcard, which encodes enum variants by index. Never reorder
-//! or remove variants or fields; only append new variants at the end.
+//! or remove variants or fields. Postcard can't skip a variant or field it
+//! doesn't know, so new kinds of clip item travel as [`ClipItem::Ext`], which
+//! older builds skip, instead of as new variants, which make them fail the
+//! whole clip. Anything else new needs a new envelope version.
 
 use serde::{Deserialize, Serialize};
 
@@ -35,6 +38,19 @@ pub enum ClipItem {
     /// decrypt their chunks, which the relay stores next to the clip. At
     /// most one per clip.
     Stream(Stream),
+    /// A kind of item added after 0.7.2. Every build skips kinds it doesn't
+    /// know, keeping the clip's other items. The last variant for good.
+    Ext(Ext),
+}
+
+/// A clip item of a kind newer than [`ClipItem`]'s other variants.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Ext {
+    /// Which kind; numbers are handed out in this file as kinds are added.
+    pub kind: u32,
+    /// The item, encoded as its kind says (postcard, for Rust types).
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

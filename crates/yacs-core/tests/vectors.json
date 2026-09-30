@@ -67,6 +67,32 @@
           ]
         }
       }
+    },
+    {
+      "channel_id": "sD92fYor09GumXgF4Jf80RRCMM5QTU78Ko0ipESaWYo",
+      "envelope": "017300b68d2bad100ae929306593182081305719a8b206ff1efdb3b04dda25e2e09633e850879f92b3c8d8412ad263254ecce990a740f7b12e0db44bff8b49b2cb25c9b5a4a8e98ca7b8b0e74c4abdc5668a5253ec97e815e99fba17f9e3bf627ea0",
+      "key": "42b889c18c87629dd1b8c73347800946d95000101c807155a05c5fd4f5be99fc",
+      "payload": {
+        "Clip": {
+          "created_at_ms": 1758600120000,
+          "device_name": "Phone",
+          "items": [
+            {
+              "Ext": {
+                "data": [
+                  1,
+                  2,
+                  3
+                ],
+                "kind": 1000
+              }
+            },
+            {
+              "Text": "An item of a newer kind goes first"
+            }
+          ]
+        }
+      }
     }
   ],
   "invites": [

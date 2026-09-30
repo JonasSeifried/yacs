@@ -10,8 +10,8 @@
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 use yacs_core::{
-    Clip, Code, CodeInviter, CodeJoiner, CodeKey, Envelope, Invite, InviteSecret, Payload, Stream,
-    StreamCipher, StreamFile,
+    Clip, ClipItem, Code, CodeInviter, CodeJoiner, CodeKey, Envelope, Invite, InviteSecret,
+    Payload, Stream, StreamCipher, StreamFile,
 };
 
 #[wasm_bindgen(js_name = Pairing)]
@@ -47,9 +47,12 @@ impl WasmPairing {
         Ok(Envelope::seal(&self.0, &Payload::Clip(clip))?.to_bytes())
     }
 
-    /// Decrypt envelope bytes as fetched from the relay.
+    /// Decrypt envelope bytes as fetched from the relay. Items of kinds newer
+    /// than this build (`ClipItem::Ext`) are left out: the web app's types
+    /// know only the others.
     pub fn open(&self, envelope: &[u8]) -> Result<JsValue, JsError> {
-        let Payload::Clip(clip) = Envelope::from_bytes(envelope)?.open(&self.0)?;
+        let Payload::Clip(mut clip) = Envelope::from_bytes(envelope)?.open(&self.0)?;
+        clip.items.retain(|item| !matches!(item, ClipItem::Ext(_)));
         Ok(serde_wasm_bindgen::to_value(&clip)?)
     }
 

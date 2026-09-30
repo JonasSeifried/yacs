@@ -19,7 +19,7 @@ pub use envelope::{Envelope, PROTOCOL_VERSION};
 pub use error::{Error, Result};
 pub use invite::{Invite, InviteSecret, InviteSlot, MAX_INVITE_TTL_SECS, MAX_SEALED_INVITE};
 pub use pairing::{ChannelId, ChannelKey, Pairing};
-pub use payload::{Clip, ClipItem, File, Image, Payload};
+pub use payload::{Clip, ClipItem, Ext, File, Image, Payload};
 pub use stream::{
     CHUNK_TAG_LEN, DEFAULT_CHUNK_SIZE, MAX_CHUNK_SIZE, MIN_CHUNK_SIZE, Stream, StreamCipher,
     StreamFile,

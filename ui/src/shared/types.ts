@@ -167,7 +167,11 @@ export interface Preferences {
   autostart: boolean;
 }
 
-/** `yacs_core::ClipItem`, as serde hands it to JS through `yacs-wasm`. */
+/**
+ * `yacs_core::ClipItem`, as serde hands it to JS through `yacs-wasm`. Items of
+ * kinds newer than the build (`ClipItem::Ext`) are left out there, so this
+ * list is complete.
+ */
 export type ClipItem =
   | { Text: string }
   | { Html: string }

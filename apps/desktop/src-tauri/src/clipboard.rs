@@ -273,6 +273,8 @@ pub fn write(items: &[ClipItem]) -> Result<(), String> {
             ClipItem::Image(_) => {}
             // See `save_files` and `write_files`.
             ClipItem::File(_) | ClipItem::Stream(_) => {}
+            // Kinds newer than this build: skipped, the rest still copies.
+            ClipItem::Ext(_) => {}
         }
     }
     if let Some(image) = image {

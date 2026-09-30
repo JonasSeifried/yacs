@@ -3,7 +3,7 @@
 
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_test::wasm_bindgen_test;
-use yacs_core::{CodeInviter, Invite, Pairing};
+use yacs_core::{Clip, ClipItem, CodeInviter, Envelope, Ext, Invite, Pairing, Payload};
 use yacs_wasm::{
     WasmCodeInviter, WasmCodeJoiner, WasmPairing, invite_slot, new_stream, open_invite, qr_svg,
 };
@@ -27,6 +27,34 @@ fn seals_and_opens_through_a_stored_secret() {
     assert_eq!(
         String::from(json),
         r#"{"created_at_ms":1758600000000,"device_name":"iPhone","items":[{"Text":"hi"},{"Html":"<b>hi</b>"}]}"#
+    );
+}
+
+/// The web app only knows the kinds of item it was built with, so newer
+/// ones never reach it; the clip's other items still do.
+#[wasm_bindgen_test]
+fn newer_kinds_of_item_are_left_out() {
+    let pairing = WasmPairing::generate().unwrap();
+    let core = Pairing::from_secret(&pairing.secret()).unwrap();
+    let clip = Clip {
+        created_at_ms: 1758600000000,
+        device_name: "Mac".into(),
+        items: vec![
+            ClipItem::Ext(Ext {
+                kind: 1000,
+                data: vec![1, 2, 3],
+            }),
+            ClipItem::Text("hi".into()),
+        ],
+    };
+    let envelope = Envelope::seal(&core, &Payload::Clip(clip))
+        .unwrap()
+        .to_bytes();
+    let opened = pairing.open(&envelope).unwrap();
+    let json = js_sys::JSON::stringify(&opened).unwrap();
+    assert_eq!(
+        String::from(json),
+        r#"{"created_at_ms":1758600000000,"device_name":"Mac","items":[{"Text":"hi"}]}"#
     );
 }
 
