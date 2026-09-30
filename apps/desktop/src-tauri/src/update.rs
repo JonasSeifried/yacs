@@ -137,10 +137,10 @@ pub async fn install(app: &AppHandle) -> Result<(), String> {
     set_installing(app, Some(update.version.clone()));
     // Written first: on Windows the installer quits and relaunches YACS itself.
     let marker = updated_marker(app);
-    if let Some(marker) = &marker {
-        if let Err(e) = std::fs::write(marker, &update.version) {
-            tracing::warn!(error = %e, "can't note the update for the restart");
-        }
+    if let Some(marker) = &marker
+        && let Err(e) = std::fs::write(marker, &update.version)
+    {
+        tracing::warn!(error = %e, "can't note the update for the restart");
     }
     if let Err(e) = update.download_and_install(|_, _| {}, || {}).await {
         if let Some(marker) = &marker {

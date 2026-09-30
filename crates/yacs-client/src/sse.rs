@@ -20,15 +20,15 @@ impl Parser {
             let line = line.trim_end_matches('\n').trim_end_matches('\r');
             if line.is_empty() {
                 messages.extend(self.data.take());
-            } else if let Some(value) = line.strip_prefix("data") {
-                if let Some(value) = value.strip_prefix(':').or(value.is_empty().then_some("")) {
-                    let value = value.strip_prefix(' ').unwrap_or(value);
-                    let data = self.data.get_or_insert_with(String::new);
-                    if !data.is_empty() {
-                        data.push('\n');
-                    }
-                    data.push_str(value);
+            } else if let Some(value) = line.strip_prefix("data")
+                && let Some(value) = value.strip_prefix(':').or(value.is_empty().then_some(""))
+            {
+                let value = value.strip_prefix(' ').unwrap_or(value);
+                let data = self.data.get_or_insert_with(String::new);
+                if !data.is_empty() {
+                    data.push('\n');
                 }
+                data.push_str(value);
             }
         }
         messages

@@ -678,10 +678,10 @@ impl Store {
                 .to_str()
                 .and_then(|n| n.strip_suffix(UPLOAD_SUFFIX))
                 .and_then(|id| id.parse::<Ulid>().ok());
-            if upload.is_some_and(|id| !open.contains(&id)) {
-                if let Err(e) = remove_dir_all(&item.path()).await {
-                    tracing::warn!(error = %e, "reaper can't delete a failed upload");
-                }
+            if upload.is_some_and(|id| !open.contains(&id))
+                && let Err(e) = remove_dir_all(&item.path()).await
+            {
+                tracing::warn!(error = %e, "reaper can't delete a failed upload");
             }
         }
         Ok(())

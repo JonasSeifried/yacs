@@ -1,6 +1,7 @@
 # Pinned, so a new stable's lints can't break `-D warnings` on an unrelated
 # change. CI and the Docker builds install this version from here; bump it on
-# purpose and fix what the new lints find in the same commit.
+# purpose, together with rust-version in Cargo.toml, and fix what the new
+# lints find in the same commit.
 [toolchain]
 channel = "1.98.1"
 components = ["rustfmt", "clippy"]

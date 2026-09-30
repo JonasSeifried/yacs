@@ -80,10 +80,10 @@ fn read_image(ctx: &ClipboardContext) -> Option<Image> {
     }
     // Most sources offer PNG already: pass it through instead of decoding and
     // re-encoding a possibly huge screenshot.
-    if let Ok(data) = ctx.get_buffer(NATIVE_PNG) {
-        if data.starts_with(PNG_MAGIC) {
-            return Some(png(data));
-        }
+    if let Ok(data) = ctx.get_buffer(NATIVE_PNG)
+        && data.starts_with(PNG_MAGIC)
+    {
+        return Some(png(data));
     }
     let encoded = ctx.get_image().and_then(|image| image.to_png());
     match encoded {

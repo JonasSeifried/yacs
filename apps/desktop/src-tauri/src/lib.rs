@@ -74,10 +74,10 @@ pub fn run() {
             // Rewrite the login entry, so one made before `AUTOSTART_ARG`
             // (or for an app that has since moved) launches it the same way.
             let autolaunch = app.autolaunch();
-            if autolaunch.is_enabled().unwrap_or(false) {
-                if let Err(e) = autolaunch.enable() {
-                    tracing::warn!(error = %e, "can't refresh launch at login");
-                }
+            if autolaunch.is_enabled().unwrap_or(false)
+                && let Err(e) = autolaunch.enable()
+            {
+                tracing::warn!(error = %e, "can't refresh launch at login");
             }
 
             let state = AppState::load(&app.path().app_config_dir()?);

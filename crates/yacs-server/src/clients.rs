@@ -231,10 +231,10 @@ impl DailyQuota {
     pub fn give_back(&self, client: &Client, amount: u64, today: u64) {
         let mut used = self.used.lock().expect("daily quota lock poisoned");
         for (key, _) in client.keys() {
-            if let Some((day, n)) = used.get_mut(&key) {
-                if *day == today {
-                    *n = n.saturating_sub(amount);
-                }
+            if let Some((day, n)) = used.get_mut(&key)
+                && *day == today
+            {
+                *n = n.saturating_sub(amount);
             }
         }
     }
@@ -410,14 +410,13 @@ impl Clients {
             .get("cf-connecting-ip")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.trim().parse::<IpAddr>().ok());
-        if let Some(cf) = cloudflare {
-            if Client::from_ip(cf).line != client.line
-                && !self.warned_cloudflare.swap(true, Ordering::Relaxed)
-            {
-                tracing::warn!(
-                    "a request's CF-Connecting-IP differs from its client address: either the proxy takes Cloudflare's address instead of the client's (set up nginx's real_ip for Cloudflare), or someone reached this server without going through Cloudflare"
-                );
-            }
+        if let Some(cf) = cloudflare
+            && Client::from_ip(cf).line != client.line
+            && !self.warned_cloudflare.swap(true, Ordering::Relaxed)
+        {
+            tracing::warn!(
+                "a request's CF-Connecting-IP differs from its client address: either the proxy takes Cloudflare's address instead of the client's (set up nginx's real_ip for Cloudflare), or someone reached this server without going through Cloudflare"
+            );
         }
     }
 }

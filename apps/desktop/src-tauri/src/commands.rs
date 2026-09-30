@@ -426,10 +426,10 @@ pub async fn send_clipboard(
             let total: u64 = files.iter().map(|f| f.size).sum();
             if config.accounts.is_some() {
                 let limits = client.limits().await.map_err(|e| e.to_string())?;
-                if let Some(max) = limits.and_then(|l| l.max_clip_bytes) {
-                    if total > max {
-                        return Err(clipboard::files_over_plan(&files, max));
-                    }
+                if let Some(max) = limits.and_then(|l| l.max_clip_bytes)
+                    && total > max
+                {
+                    return Err(clipboard::files_over_plan(&files, max));
                 }
             }
             let limit = config.inline_file_limit();

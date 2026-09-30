@@ -131,10 +131,11 @@ impl Config {
             if url.as_deref().is_some_and(|u| u.trim().is_empty()) {
                 *url = None;
             }
-            if let Some(u) = url.as_deref() {
-                if !u.starts_with("https://") && !u.starts_with("http://") {
-                    return Err(format!("{u} isn't a web address (http:// or https://)"));
-                }
+            if let Some(u) = url.as_deref()
+                && !u.starts_with("https://")
+                && !u.starts_with("http://")
+            {
+                return Err(format!("{u} isn't a web address (http:// or https://)"));
             }
         }
         let max = self.max_disk.as_u64();

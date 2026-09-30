@@ -539,10 +539,10 @@ async fn server_config(
     headers: HeaderMap,
 ) -> Result<Json<ServerConfig>, ApiError> {
     let c = &state.config;
-    if let (Some(given), Some(expected)) = (bearer(&headers), &c.access_token) {
-        if !bool::from(given.as_bytes().ct_eq(expected.as_bytes())) {
-            return Err(ApiError::Unauthorized);
-        }
+    if let (Some(given), Some(expected)) = (bearer(&headers), &c.access_token)
+        && !bool::from(given.as_bytes().ct_eq(expected.as_bytes()))
+    {
+        return Err(ApiError::Unauthorized);
     }
     Ok(Json(ServerConfig {
         default_ttl_secs: c.default_ttl.as_secs(),
