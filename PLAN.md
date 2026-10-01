@@ -448,6 +448,7 @@ A review of the whole codebase after 0.7.1, sorted by how bad each problem is an
 - Core: an envelope opens with the version it carries and chunks use a fixed AAD version, so a new envelope version can't make stored clips or streams unreadable; `ClipItem::Ext` lets later kinds of item be skipped by older builds (section 3, Versioning).
 - CI: Rust is pinned (1.98.1 in `rust-toolchain.toml`, so a new stable's lints can't fail `-D warnings`), and `rust-version` is 1.98 to match: nobody builds YACS from source with an older Rust, and 1.85 only held back syntax and dependency updates. The Rust tests run on macOS and Windows too. Releases no longer save a Rust cache that no later tag can restore.
 - Relay: on a stop, it waited for every request (a code exchange waits 25 s) before saving the free spaces registered since the last reap, so Docker killed it after 10 s and they were lost; it saves first now and stops requests still running after 8 s.
+- CLI: `yacs recv` into a folder kept only the first of two files with one name (for big files, the second replaced it); they're numbered now, as on the desktop, and every target is checked before anything is written. Piped bytes that aren't text or an image go as `stdin.bin` instead of being refused.
 - All clients: the reads of a code exchange are retried on network trouble, so one 502 no longer ends `yacs join` / `yacs invite` or the apps' codes (and typing the code again no longer says someone else used it). The writes still aren't.
 
 ### Serious, plan first
@@ -461,7 +462,7 @@ Each needs a short design or a test on a real machine before code.
 ### Minor and cheap
 - Big-file chunks have no idle timeout, only 10 minutes per chunk, so a stalled connection takes up to an hour of retries to fail. (`read_timeout` isn't safe for uploads: it may run while the body is still going out.)
 - PWA and Spotlight: the TTL picker keeps a saved choice above the plan's maximum (`ttlChoices` adds it), and the relay silently caps it; clamp the choice to `maxTtlSecs`.
-- CLI: `yacs recv` of a clip with two files of the same name overwrites the first; `cat file.bin | yacs send` refuses binary stdin.
+- CLI: piped input always goes in one clip, so `tar cz … | yacs send` is limited to the plan's clip size; spool big input to a temp file and send it in chunks.
 - Deploy: no Docker healthcheck (`yacs-server --healthcheck`), no log rotation, no `stop_grace_period`. `/healthz` should fail when the reaper hasn't run for a few minutes. One INFO line per reap with usage and refusal counts, no IPs or ids. The Caddyfile has no Cloudflare `trusted_proxies` note.
 - CI: add `cargo-deny`.
 - Release: caches saved on tags can't be restored by the next tag, so every release builds from scratch and then spends up to 2.5 min saving a cache nobody uses. Later a release cache filled from `main`. The desktop job could reuse the CLI job's binaries.
