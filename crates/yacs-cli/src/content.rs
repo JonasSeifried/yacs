@@ -90,21 +90,39 @@ pub fn from_stdin() -> Result<(ClipItem, String)> {
     }
     let mut data = Vec::new();
     stdin.read_to_end(&mut data).context("reading stdin")?;
-    if let Some(mime) = image_type(&data) {
-        let label = format!("image ({})", crate::human_size(data.len() as u64));
-        return Ok((
-            ClipItem::Image(Image {
-                mime: mime.into(),
-                data,
-            }),
-            label,
-        ));
-    }
-    let text = String::from_utf8(data).context("stdin isn't text or an image")?;
-    let text = without_final_newline(text);
-    let label = format!("text ({})", crate::human_size(text.len() as u64));
-    Ok((ClipItem::Text(text), label))
+    Ok(piped(data))
 }
+
+/// What came in on stdin has no name, so anything that isn't text or an
+/// image arrives as [`STDIN_FILE`].
+fn piped(data: Vec<u8>) -> (ClipItem, String) {
+    let size = crate::human_size(data.len() as u64);
+    if let Some(mime) = image_type(&data) {
+        let item = ClipItem::Image(Image {
+            mime: mime.into(),
+            data,
+        });
+        return (item, format!("image ({size})"));
+    }
+    match String::from_utf8(data) {
+        Ok(text) => {
+            let text = without_final_newline(text);
+            let label = format!("text ({})", crate::human_size(text.len() as u64));
+            (ClipItem::Text(text), label)
+        }
+        Err(e) => {
+            let item = ClipItem::File(File {
+                name: STDIN_FILE.into(),
+                mime: "application/octet-stream".into(),
+                data: e.into_bytes(),
+            });
+            (item, format!("{STDIN_FILE} ({size})"))
+        }
+    }
+}
+
+/// The name piped bytes arrive under.
+const STDIN_FILE: &str = "stdin.bin";
 
 pub fn from_text(text: String) -> (ClipItem, String) {
     let label = format!("text ({})", crate::human_size(text.len() as u64));
@@ -192,6 +210,22 @@ mod tests {
         assert_eq!(at, big);
         assert_eq!((file.name.as_str(), file.size), ("log.txt", 101));
         assert!(from_file(dir.path(), false, 100).is_err());
+    }
+
+    #[test]
+    fn piped_bytes_go_as_a_file() {
+        assert_eq!(piped(b"hi\n".to_vec()).0, ClipItem::Text("hi".into()));
+        assert!(matches!(piped(b"GIF89a".to_vec()).0, ClipItem::Image(_)));
+        let (item, label) = piped(vec![0x1f, 0x8b, 0x08, 0xff]);
+        let ClipItem::File(file) = item else {
+            panic!("{item:?}")
+        };
+        assert_eq!(
+            (file.name.as_str(), file.mime.as_str()),
+            ("stdin.bin", "application/octet-stream")
+        );
+        assert_eq!(file.data, [0x1f, 0x8b, 0x08, 0xff]);
+        assert_eq!(label, "stdin.bin (4 B)");
     }
 
     #[test]

@@ -95,6 +95,23 @@ fn text_round_trip_via_argument_and_stdin() {
         .assert()
         .success();
     assert_eq!(stdout(&mut yacs(&relay, &["recv"])), "piped\nlines");
+
+    // Bytes that aren't text, like `tar cz … | yacs send`, go as a file.
+    let gzip = [0x1f, 0x8b, 0x08, 0x00, 0xff];
+    let sent = yacs(&relay, &["send"])
+        .write_stdin(gzip)
+        .assert()
+        .success()
+        .get_output()
+        .stderr
+        .clone();
+    let sent = String::from_utf8(sent).unwrap();
+    assert!(sent.starts_with("sent stdin.bin (5 B)"), "{sent}");
+    let dir = TempDir::new().unwrap();
+    yacs(&relay, &["recv", "-o", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+    assert_eq!(std::fs::read(dir.path().join("stdin.bin")).unwrap(), gzip);
 }
 
 #[test]

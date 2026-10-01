@@ -108,7 +108,8 @@ enum Command {
     /// Send a file, text, or stdin.
     Send {
         /// File to send; `-` or nothing reads stdin. Text files arrive as
-        /// text, images (png, jpg, gif, webp) as images, other files as files.
+        /// text, images (png, jpg, gif, webp) as images, other files as files
+        /// (piped ones as stdin.bin).
         file: Option<PathBuf>,
         /// Send this text instead of a file.
         #[arg(short, long, conflicts_with = "file")]
