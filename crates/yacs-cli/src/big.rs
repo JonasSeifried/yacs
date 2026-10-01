@@ -67,11 +67,8 @@ pub async fn recv(client: &Client, id: &str, stream: &Stream, output: Option<&Pa
         .join(", ");
     let targets = match (output, &files[..]) {
         (Some(dir), _) if dir.is_dir() => {
-            let paths: Vec<PathBuf> = files.iter().map(|f| dir.join(f.safe_name())).collect();
-            if let Some(taken) = paths.iter().find(|p| p.exists()) {
-                bail!("{} already exists", taken.display());
-            }
-            Some(paths)
+            let names: Vec<String> = files.iter().map(StreamFile::safe_name).collect();
+            Some(crate::folder_targets(dir, &names)?)
         }
         (Some(path), [_]) => Some(vec![path.to_owned()]),
         (Some(path), _) => bail!(

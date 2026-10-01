@@ -163,6 +163,43 @@ fn sends_text_files_as_text_and_other_files_as_files() {
     assert!(err.contains("--text"), "{err}");
 }
 
+/// Another device can send several files of one name (from different
+/// folders); none of them may replace another.
+#[test]
+fn files_of_the_same_name_are_all_kept() {
+    let relay = relay(&[]);
+    let file = |data: &[u8]| {
+        yacs_core::ClipItem::File(yacs_core::File {
+            name: "notes.txt".into(),
+            mime: "text/plain".into(),
+            data: data.to_vec(),
+        })
+    };
+    let clip = yacs_core::Payload::Clip(yacs_core::Clip {
+        created_at_ms: 0,
+        device_name: "laptop".into(),
+        items: vec![file(b"first"), file(b"second")],
+    });
+    let client = yacs_client::Client::new(&relay.url, None, space(7)).unwrap();
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(client.push(&clip, None))
+        .unwrap();
+
+    let dir = TempDir::new().unwrap();
+    yacs(&relay, &["recv", "-o", dir.path().to_str().unwrap()])
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read(dir.path().join("notes.txt")).unwrap(),
+        b"first"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("notes (1).txt")).unwrap(),
+        b"second"
+    );
+}
+
 #[test]
 fn history_list_recv_by_id_and_delete() {
     let relay = relay(&[]);

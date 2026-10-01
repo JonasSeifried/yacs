@@ -691,12 +691,9 @@ fn write_files(files: &[&yacs_core::File], output: Option<&Path>) -> Result<()> 
         .join(", ");
     match (output, files) {
         (Some(dir), _) if dir.is_dir() => {
-            for file in files {
-                let path = dir.join(file.safe_name());
-                if path.exists() {
-                    bail!("{} already exists", path.display());
-                }
-                write_file(&path, &file.data)?;
+            let names: Vec<String> = files.iter().map(|f| f.safe_name()).collect();
+            for (file, path) in files.iter().zip(folder_targets(dir, &names)?) {
+                write_new_file(&path, &file.data)?;
                 eprintln!("saved {}", path.display());
             }
             Ok(())
@@ -716,6 +713,50 @@ fn write_files(files: &[&yacs_core::File], output: Option<&Path>) -> Result<()> 
 
 fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
     std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))
+}
+
+/// Like [`write_file`], but never over a file that's there already.
+fn write_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    let context = || format!("writing {}", path.display());
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(context)?
+        .write_all(bytes)
+        .with_context(context)
+}
+
+/// Where a clip's files go in `dir`, under their names. Two with the same
+/// name (ignoring case, as macOS and Windows do) are numbered like the
+/// desktop app numbers them: `notes.txt`, `notes (1).txt`. Fails before
+/// anything is written if one is there already: the CLI doesn't overwrite.
+fn folder_targets(dir: &Path, names: &[String]) -> Result<Vec<PathBuf>> {
+    let mut chosen = std::collections::HashSet::new();
+    let mut paths = Vec::with_capacity(names.len());
+    for name in names {
+        let name = numbered(name)
+            .find(|n| chosen.insert(n.to_lowercase()))
+            .expect("some number is free");
+        let path = dir.join(name);
+        if path.exists() {
+            bail!("{} already exists", path.display());
+        }
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+/// `name`, then `name (1)`, `name (2)`, … keeping the extension.
+fn numbered(name: &str) -> impl Iterator<Item = String> + '_ {
+    let (stem, ext) = match name.rfind('.') {
+        Some(dot) if dot > 0 => (&name[..dot], &name[dot..]),
+        _ => (name, ""),
+    };
+    (0..).map(move |n| match n {
+        0 => name.to_owned(),
+        _ => format!("{stem} ({n}){ext}"),
+    })
 }
 
 fn print_list(clips: &[ClipMeta]) {
@@ -763,5 +804,42 @@ fn human_size(bytes: u64) -> String {
         1000..1_000_000 => format!("{:.1} KB", bytes as f64 / 1e3),
         1_000_000..1_000_000_000 => format!("{:.1} MB", bytes as f64 / 1e6),
         _ => format!("{:.1} GB", bytes as f64 / 1e9),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_names_in_a_clip_are_numbered() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["notes.txt", "Notes.txt", "notes.txt", "README", "README"].map(String::from);
+        let paths = folder_targets(dir.path(), &names).unwrap();
+        let got: Vec<_> = paths
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap())
+            .collect();
+        assert_eq!(
+            got,
+            [
+                "notes.txt",
+                "Notes (1).txt",
+                "notes (2).txt",
+                "README",
+                "README (1)"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_file_already_there_stops_the_whole_clip() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("b.txt"), "mine").unwrap();
+        let names = ["a.txt", "b.txt"].map(String::from);
+        let err = folder_targets(dir.path(), &names).unwrap_err();
+        assert!(err.to_string().ends_with("b.txt already exists"), "{err}");
+        assert!(write_new_file(&dir.path().join("b.txt"), b"theirs").is_err());
+        assert_eq!(std::fs::read(dir.path().join("b.txt")).unwrap(), b"mine");
     }
 }
