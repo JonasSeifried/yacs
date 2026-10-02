@@ -554,6 +554,27 @@ fn joining_over_a_damaged_file_keeps_it_aside() {
         .success();
 }
 
+/// A file that can't be read at all may be fine: joining stops instead of
+/// moving it aside or writing over it.
+#[test]
+fn joining_over_an_unreadable_file_leaves_it_alone() {
+    let relay = relay(&[]);
+    let config = relay.home.path().join("cli.json");
+    // Reading a dir fails on every platform.
+    std::fs::create_dir(&config).unwrap();
+    let err = stderr_of_failure(saved(&relay, &["join"]).write_stdin(invite_link(&relay, None)));
+    assert!(err.contains("cli.json"), "{err}");
+    assert!(config.is_dir());
+    let aside = std::fs::read_dir(relay.home.path())
+        .unwrap()
+        .filter(|e| {
+            let name = e.as_ref().unwrap().file_name();
+            name.to_string_lossy().contains("cli.json.corrupt-")
+        })
+        .count();
+    assert_eq!(aside, 0);
+}
+
 #[test]
 fn starts_a_space_and_invites_another_machine() {
     let relay = relay(&[]);

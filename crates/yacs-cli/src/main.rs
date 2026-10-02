@@ -544,11 +544,15 @@ async fn check(
 
 fn save_current(space: Space, token: Option<String>) -> Result<PathBuf> {
     let path = config::path()?;
-    // Joining again is how a damaged file is fixed, but not by overwriting it.
+    // Joining again is how a damaged file is fixed, but not by overwriting
+    // it. One that can't be read at all stays put: it may be fine.
     let mut saved = match config::load(&path) {
         Ok(saved) => saved,
+        Err(e) if e.downcast_ref::<std::io::Error>().is_some() => return Err(e),
         Err(e) => {
-            if let Some(aside) = config::set_aside(&path)? {
+            let aside = yacs_client::spaces::set_aside(&path)
+                .with_context(|| format!("moving {} aside", path.display()))?;
+            if let Some(aside) = aside {
                 eprintln!("{e:#}. Kept it as {}.", aside.display());
             }
             Spaces::default()

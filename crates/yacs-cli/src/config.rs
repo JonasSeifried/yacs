@@ -2,7 +2,6 @@
 //! no flags. The format is shared with the desktop app, see `yacs_client::spaces`.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -58,23 +57,6 @@ pub fn load(path: &Path) -> Result<Spaces> {
         bail!(damaged());
     }
     Ok(spaces)
-}
-
-/// Moves a file `load` couldn't read to `<name>.corrupt-<unix secs>`, so
-/// saving a space afterwards can't overwrite keys that may still be in it.
-/// `None` if there's no file.
-pub fn set_aside(path: &Path) -> Result<Option<PathBuf>> {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let mut aside = path.as_os_str().to_owned();
-    aside.push(format!(".corrupt-{secs}"));
-    let aside = PathBuf::from(aside);
-    match std::fs::rename(path, &aside) {
-        Ok(()) => Ok(Some(aside)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("moving {} aside", path.display())),
-    }
 }
 
 /// Readable by the owner only: the file holds the spaces' keys and tokens.
