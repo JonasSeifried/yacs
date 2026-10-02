@@ -437,7 +437,7 @@ A review of the whole codebase after 0.7.1, sorted by how bad each problem is an
 ### Fixed in 0.7.2
 - CI: the desktop app passes clippy on Windows and Linux again (an unused variable outside macOS since 0.7.1).
 - Relay: an announced upload length near `u64::MAX` wrapped the disk reservation to a few bytes, so a member of an unlimited space could fill the disk past `YACS_MAX_DISK`; the reservation is checked and one compare-and-swap now.
-- Relay: the reaper stopped at the first clip it couldn't delete, every minute at the same place, so the disk filled with expired clips; it logs and skips now, and only recounts usage when it could read every channel.
+- Relay: the reaper stopped at the first clip it couldn't delete, every minute at the same place, so the disk filled with expired clips; it logs and skips now, and only recounts usage when it could read every channel. Evicting old clips when a new one comes in does the same, so a clip it can't delete no longer fails the new one (stored, but reported as lost and never announced).
 - Relay: a damaged `accounts.json` crash-looped the relay; it falls back to `accounts.json.bak` (section 8).
 - Desktop and CLI: an unreadable spaces file was overwritten by the next join, keys and all; it's kept as `spaces.json.corrupt-<time>` / `cli.json.corrupt-<time>` now, and saves are fsynced before the rename. The desktop moves it only before a save, so a read that fails once doesn't lose the spaces; a `cli.json` that can't be read at all stops the join.
 - All clients: the request that completes a chunked upload wasn't retried, so one 502 there deleted every chunk. The relay answers a repeated `complete` with the same clip for 10 minutes, so a lost answer no longer reports a sent clip as failed.

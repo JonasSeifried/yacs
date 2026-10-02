@@ -316,7 +316,7 @@ impl Store {
             let _ = fs::remove_file(&tmp).await;
             return Err(e.into());
         }
-        self.evict(channel, now_ms).await?;
+        self.evict(channel, now_ms).await;
 
         Ok(ClipMeta {
             id: id.to_string(),
@@ -337,15 +337,24 @@ impl Store {
     /// Expired clips don't hold a history slot: a short-TTL clip may expire
     /// before an older long-TTL one, which must then survive eviction. Call
     /// with `lock` held.
-    async fn evict(&self, channel: &ChannelId, now_ms: u64) -> io::Result<()> {
-        let (live, expired): (Vec<_>, Vec<_>) = entries(&self.channel_dir(channel))
-            .await?
-            .into_iter()
-            .partition(|e| e.expires_at_ms > now_ms);
+    /// Never fails: it runs once the new clip is in, so failing would tell
+    /// the client a stored clip didn't go out, and the devices wouldn't hear
+    /// of it. What it can't remove is logged and left for the reaper.
+    async fn evict(&self, channel: &ChannelId, now_ms: u64) {
+        let entries = match entries(&self.channel_dir(channel)).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                tracing::warn!(error = %e, "can't list a channel to evict from");
+                return;
+            }
+        };
+        let (live, expired): (Vec<_>, Vec<_>) =
+            entries.into_iter().partition(|e| e.expires_at_ms > now_ms);
         for old in expired.iter().chain(live.iter().skip(self.max_clips)) {
-            self.remove(old).await?;
+            if let Err(e) = self.remove(old).await {
+                tracing::warn!(error = %e, "can't evict a clip");
+            }
         }
-        Ok(())
     }
 
     /// Start a chunked upload. `header` is the clip's envelope; the whole
@@ -537,7 +546,7 @@ impl Store {
             size,
             chunked: true,
         };
-        self.evict(channel, now_ms).await?;
+        self.evict(channel, now_ms).await;
         // Only now: a call that failed didn't tell the devices of the clip,
         // so asking again mustn't pass for that.
         let mut completed = self.completed();
@@ -980,6 +989,33 @@ mod tests {
         // The stuck clip is still on disk, so it still counts.
         assert_eq!(store.used_bytes(), 40);
         assert!(store.latest(&other, 5_000).await.unwrap().is_some());
+    }
+
+    /// A clip that can't be evicted must not fail the one that pushed it
+    /// out: that one is stored, and its client would report it as lost.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_clip_that_cant_be_evicted_doesnt_fail_the_new_one() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path(), 1, 1000).await.unwrap();
+        let channel = ChannelId::from_bytes([1; 32]);
+        // An older chunked clip whose chunks can't be deleted.
+        std::fs::create_dir_all(store.channel_dir(&channel)).unwrap();
+        let old = Ulid::from_parts(1, 0);
+        let stuck = store
+            .channel_dir(&channel)
+            .join(format!("{old}.{}.5.d", u64::MAX));
+        std::fs::create_dir(&stuck).unwrap();
+        std::fs::write(stuck.join(chunk_name(0)), [0; 5]).unwrap();
+        std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+        let put = store.put(&channel, &[0; 10], 1_000, 60_000, None).await;
+        std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let meta = put.unwrap();
+        let latest = store.latest(&channel, 1_000).await.unwrap().unwrap();
+        assert_eq!(latest.0, meta);
     }
 
     /// Two servers on one data dir: each one's count misses the other's files.
