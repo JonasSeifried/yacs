@@ -476,3 +476,6 @@ Each needs a short design or a test on a real machine before code.
 - PWA: the service worker shows a proxy's 502 page instead of the cached app, caches nothing until the second launch, and never prunes old assets. Every live event re-fetches config, limits and list, and responses aren't ordered; patch the list from the event instead. Accessibility: clip cards aren't buttons, the settings sheet doesn't trap focus, errors aren't live regions. A code join can't be cancelled for up to 10 minutes.
 - Relay: the reaper holds the store lock for its whole scan; its recount drops reservations of `put`s in flight; a cancelled request can leave `.tmp` and `.part` files. `authorize` parses the channel id and 20 handlers parse it again.
 - Core: derived keys aren't zeroized; nothing but the callers stops sealing a chunk twice.
+
+### Ideas from testing
+- Spotlight: ↵ copies and closes at once, with nothing to say it worked. Show a small "Copied" for about a second where Spotlight was, in its own window that never takes focus (a non-activating panel on macOS), so ⌘V into the previous app still works right away. No Undo: a copy only replaces the clipboard, and what was on it is usually in the history anyway.
