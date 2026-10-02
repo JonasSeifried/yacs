@@ -34,8 +34,8 @@ Checks after a release, on the real apps, instead of building on every platform 
 
 **One space for the app and the command** (a Mac or Windows PC with the command installed)
 - [ ] After the update, `yacs spaces` shows the app's space without installing the command again. If `yacs` was in another space before, its first command says it now uses the app's.
-- [ ] Leave the space in the app, then `yacs join` with a code or link: within a few seconds the app is in the space too (Settings and Spotlight show it, clips arrive).
-- [ ] `yacs leave`: the app shows "Welcome to YACS" within a few seconds. Join in the app: `yacs spaces` shows it.
+- [ ] Leave the space in the app, then `yacs join` with a code or link, then open Spotlight: it shows the space's clips, and new ones arrive.
+- [ ] `yacs leave`, then open Settings: it shows "Welcome to YACS". Join in the app: `yacs spaces` shows it.
 
 ## 0.7.2
 

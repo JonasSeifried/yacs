@@ -2,13 +2,12 @@
 //! keys and the relays' access tokens, stored in `spaces.json` in the app's
 //! config dir, readable only by the user. The `yacs` command on this computer
 //! uses the same file, so a space joined or left there is here too
-//! (`commands::watch_spaces`).
+//! (`commands::reread_spaces`).
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::SystemTime;
 
 use serde::Deserialize;
 use yacs_client::spaces::{DEFAULT_SPACE_NAME, Space, Spaces};
@@ -65,12 +64,6 @@ impl SpacesFile {
         // Readable again, e.g. because `yacs join` replaced a damaged file.
         self.unreadable.store(false, Ordering::SeqCst);
         Some(spaces)
-    }
-
-    /// Changes whenever the file is replaced or removed.
-    pub fn stamp(&self) -> Option<(SystemTime, u64)> {
-        let meta = fs::metadata(self.dir.join(FILE)).ok()?;
-        Some((meta.modified().ok()?, meta.len()))
     }
 
     fn read_spaces(&self) -> Result<Spaces, SpacesError> {
@@ -247,14 +240,11 @@ mod tests {
     fn rereads_what_yacs_changed() {
         let dir = tempfile::tempdir().unwrap();
         let file = SpacesFile::new(dir.path());
-        assert_eq!(file.stamp(), None);
         assert_eq!(file.reread(), Some(Spaces::default()));
 
         // A file `yacs` is just replacing reads as nothing new, and doesn't
         // make the next save move it aside.
         fs::write(dir.path().join(FILE), "garbage").unwrap();
-        let garbage = file.stamp();
-        assert!(garbage.is_some());
         assert_eq!(file.reread(), None);
 
         let mut joined = Spaces::default();
@@ -269,14 +259,12 @@ mod tests {
             serde_json::to_string(&joined).unwrap(),
         )
         .unwrap();
-        assert_ne!(file.stamp(), garbage);
         assert_eq!(file.reread(), Some(joined.clone()));
         file.save(&joined).unwrap();
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
 
         // `yacs leave` removes it with the last space.
         fs::remove_file(dir.path().join(FILE)).unwrap();
-        assert_eq!(file.stamp(), None);
         assert_eq!(file.reread(), Some(Spaces::default()));
     }
 

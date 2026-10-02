@@ -178,6 +178,7 @@ pub fn toggle_spotlight(app: &AppHandle) {
     if w.is_visible().unwrap_or(false) {
         hide_spotlight(app);
     } else {
+        crate::commands::reread_spaces(app);
         unhide_app(app);
         let _ = w.center();
         let _ = w.show();
@@ -208,6 +209,7 @@ pub fn show_settings(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(SETTINGS) {
         // Show Settings before hiding Spotlight, so focus isn't handed back
         // to the previous app in between.
+        crate::commands::reread_spaces(app);
         unhide_app(app);
         let _ = w.unminimize();
         let _ = w.show();

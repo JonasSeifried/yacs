@@ -198,28 +198,14 @@ pub fn leave_space(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> 
     Ok(())
 }
 
-/// How often to look whether `yacs` changed the spaces file.
-const SPACES_POLL: Duration = Duration::from_secs(2);
-
 /// The `yacs` command on this computer saves its spaces in this app's file,
-/// so a space joined, left or renamed there is here too, while the app runs.
-pub fn watch_spaces(app: &AppHandle) {
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        let state = app.state::<AppState>();
-        let mut seen = state.spaces_file.stamp();
-        loop {
-            tokio::time::sleep(SPACES_POLL).await;
-            let stamp = state.spaces_file.stamp();
-            if stamp == seen {
-                continue;
-            }
-            seen = stamp;
-            if let Some(spaces) = state.spaces_file.reread() {
-                adopt_spaces(&app, spaces);
-            }
-        }
-    });
+/// so a space joined, left or renamed there is here too. Called when
+/// Spotlight or Settings opens, rather than watching the file: until then,
+/// the app may still listen to the space it was in.
+pub fn reread_spaces(app: &AppHandle) {
+    if let Some(spaces) = app.state::<AppState>().spaces_file.reread() {
+        adopt_spaces(app, spaces);
+    }
 }
 
 /// Switches to the space in use in `next` if that's another one (or the
@@ -707,7 +693,7 @@ pub fn stop_code(app: AppHandle) {
     codes::stop(&app);
 }
 
-/// Puts `yacs` on the PATH, in this computer's space (see `watch_spaces`).
+/// Puts `yacs` on the PATH, in this computer's space (see `reread_spaces`).
 /// May wait for macOS's admin password prompt.
 #[tauri::command]
 pub async fn install_cli(app: AppHandle) -> CmdResult<()> {
