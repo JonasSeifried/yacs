@@ -122,6 +122,30 @@ export async function retrying<T>(attempt: () => Promise<T>, signal: AbortSignal
   }
 }
 
+/**
+ * The message the other device leaves in a rendezvous slot, or null once the
+ * rendezvous is gone. Retried on network trouble, up to `CODE_ATTEMPTS`. The
+ * relay closes the rendezvous as it hands over a slot that's
+ * `closedByReading` (a/1), so when that answer got lost, it's gone on the
+ * retry: the network failed, not the code. Gone anywhere else is gone.
+ */
+export async function readSlot(url: string, closedByReading: boolean): Promise<Uint8Array | null> {
+  const ask = () => relayRequest(`${url}?wait=25`, null, {}, [204, 404]);
+  const never = new AbortController().signal;
+  for (;;) {
+    let res: Response;
+    try {
+      res = await ask();
+    } catch (e) {
+      if (!(e instanceof RelayError && e.transient)) throw e;
+      res = await retrying(ask, never, CODE_ATTEMPTS);
+      if (res.status === 404 && closedByReading) throw e;
+    }
+    if (res.status === 404) return null;
+    if (res.status === 200) return new Uint8Array(await res.arrayBuffer());
+  }
+}
+
 /** Resolves after `ms`, or as soon as `signal` aborts. */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {

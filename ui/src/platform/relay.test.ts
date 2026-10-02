@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { relayRequest, retrying } from "./relay";
+import { readSlot, relayRequest, retrying } from "./relay";
 
 /** A fetch that answers with `statuses` in turn, counting the calls. */
 function answering(...statuses: number[]) {
@@ -66,5 +66,35 @@ describe("retrying", () => {
     await vi.runAllTimersAsync();
     await failed;
     expect(fetch).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("readSlot", () => {
+  it("rides out a bad gateway", async () => {
+    vi.useFakeTimers();
+    const fetch = answering(502, 204, 200);
+    const done = readSlot("/rendezvous/7/a/0", false);
+    await vi.runAllTimersAsync();
+    expect(await done).toEqual(new Uint8Array());
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  // Reading a/0 closes nothing, so it's gone because the code is wrong.
+  it("calls a code gone after a bad gateway gone", async () => {
+    vi.useFakeTimers();
+    answering(502, 404);
+    const done = readSlot("/rendezvous/9/a/0", false);
+    await vi.runAllTimersAsync();
+    expect(await done).toBeNull();
+  });
+
+  // The relay closed the rendezvous as it handed a/1 over; the answer got lost.
+  it("blames the network for a/1 gone after a bad gateway", async () => {
+    vi.useFakeTimers();
+    answering(502, 404);
+    const done = readSlot("/rendezvous/7/a/1", true);
+    const failed = expect(done).rejects.toMatchObject({ status: 502 });
+    await vi.runAllTimersAsync();
+    await failed;
   });
 });

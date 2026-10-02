@@ -139,15 +139,16 @@ pub async fn join_with_code(relay: &str, code: &Code, device_name: &str) -> Resu
 
     // The relay closes the exchange as it hands the joiner `a/1`, so when
     // that answer got lost, asking again finds it gone: the failure is the
-    // network's, not a wrong code.
-    let read = |path: &'static str| {
+    // network's, not a wrong code. Reading `a/0` closes nothing, so gone
+    // there means the code is.
+    let read = |path: &'static str, closed_by_reading: bool| {
         let (http, url) = (&http, &url);
         let once =
             move || async move { wait(checked(http.get(url(path)?).send().await?).await).await };
         async move {
             match once().await {
                 Err(e) if transient(&e) => match retry(once).await {
-                    Ok(Waited::Gone) => Err(e),
+                    Ok(Waited::Gone) if closed_by_reading => Err(e),
                     retried => retried,
                 },
                 first => first,
@@ -156,7 +157,7 @@ pub async fn join_with_code(relay: &str, code: &Code, device_name: &str) -> Resu
     };
 
     let message = loop {
-        match read("a/0").await? {
+        match read("a/0", false).await? {
             Waited::Message(bytes) => break bytes,
             Waited::Nothing => continue,
             Waited::Gone => return Err(Error::CodeNotFound),
@@ -179,7 +180,7 @@ pub async fn join_with_code(relay: &str, code: &Code, device_name: &str) -> Resu
     }
 
     let sealed = loop {
-        match read("a/1").await? {
+        match read("a/1", true).await? {
             Waited::Message(bytes) => break bytes,
             Waited::Nothing => continue,
             // The inviter couldn't open the answer and gave the code up.
@@ -216,7 +217,8 @@ mod tests {
     use super::*;
 
     /// A rendezvous that answers each read in `flaky` with a 502 once, as a
-    /// proxy in front of a relay might. Reads don't wait: nothing yet is 204.
+    /// proxy in front of a relay might. Reads don't wait: nothing yet is 204,
+    /// and a nameplate other than 7 is 404.
     /// A read in `lost` takes the message once it's there, like the relay
     /// does with `a/1`, but its answer comes back as a 502.
     async fn flaky_rendezvous(flaky: &[&str], lost: &[&str]) -> String {
@@ -247,7 +249,10 @@ mod tests {
                         Method::GET if flaky.lock().unwrap().remove(&slot) => {
                             StatusCode::BAD_GATEWAY.into_response()
                         }
-                        Method::GET if gone.lock().unwrap().contains(&slot) => {
+                        // Only nameplate 7 is open; others are codes nobody shows.
+                        Method::GET
+                            if gone.lock().unwrap().contains(&slot) || !slot.starts_with("7/") =>
+                        {
                             StatusCode::NOT_FOUND.into_response()
                         }
                         Method::GET
@@ -318,5 +323,15 @@ mod tests {
         assert!(matches!(outcome, Ok(CodeOutcome::Joined { .. })));
         let err = invite.unwrap_err();
         assert!(matches!(err, Error::Server { status: 502, .. }), "{err}");
+    }
+
+    /// A code nobody shows is a wrong code, even when the first lookup hit
+    /// a bad gateway: reading `a/0` doesn't close anything.
+    #[tokio::test]
+    async fn a_wrong_code_after_a_bad_gateway_is_still_wrong() {
+        let relay = flaky_rendezvous(&["9/a/0"], &[]).await;
+        let code = Code::generate(9).unwrap();
+        let err = join_with_code(&relay, &code, "Phone").await.unwrap_err();
+        assert!(matches!(err, Error::CodeNotFound), "{err}");
     }
 }
