@@ -124,6 +124,18 @@ impl ChunkLayout {
     }
 }
 
+/// A finished upload's clip, for a client asking to finish it again because
+/// the answer got lost.
+struct Completed {
+    channel: ChannelId,
+    meta: ClipMeta,
+    at_ms: u64,
+}
+
+/// How long [`Completed`] uploads are remembered: longer than any client
+/// retries for.
+const COMPLETED_FOR_MS: u64 = 10 * 60 * 1000;
+
 struct Upload {
     channel: ChannelId,
     layout: ChunkLayout,
@@ -171,6 +183,7 @@ pub struct Store {
     lock: tokio::sync::Mutex<()>,
     ids: Mutex<Generator>,
     uploads: Mutex<HashMap<Ulid, Upload>>,
+    completed: Mutex<HashMap<Ulid, Completed>>,
     /// Names chunk writes apart, so a repeated PUT doesn't clash with the first.
     parts: AtomicU64,
 }
@@ -224,6 +237,7 @@ impl Store {
             lock: tokio::sync::Mutex::new(()),
             ids: Mutex::new(Generator::new()),
             uploads: Mutex::new(HashMap::new()),
+            completed: Mutex::new(HashMap::new()),
             parts: AtomicU64::new(0),
         })
     }
@@ -475,20 +489,31 @@ impl Store {
     }
 
     /// Turn a finished upload into a clip, then evict like [`put`](Self::put).
-    /// The clip gets a new id, so it sorts as the newest.
+    /// The clip gets a new id, so it sorts as the newest. Returns whether
+    /// this call made it: asked again for an upload it just finished, it
+    /// returns the same clip, so a client whose answer got lost doesn't see
+    /// a clip that went out as failed.
     pub async fn complete_upload(
         &self,
         channel: &ChannelId,
         id: Ulid,
         now_ms: u64,
-    ) -> Result<ClipMeta, UploadError> {
+    ) -> Result<(ClipMeta, bool), UploadError> {
         let _guard = self.lock.lock().await;
         let upload = {
             let mut uploads = self.uploads();
-            let upload = uploads
+            let Some(upload) = uploads
                 .get(&id)
                 .filter(|u| u.channel == *channel && u.live(now_ms))
-                .ok_or(UploadError::NotFound)?;
+            else {
+                let completed = self.completed();
+                return match completed.get(&id) {
+                    Some(c) if c.channel == *channel && c.at_ms + COMPLETED_FOR_MS > now_ms => {
+                        Ok((c.meta.clone(), false))
+                    }
+                    _ => Err(UploadError::NotFound),
+                };
+            };
             if upload.received.len() as u64 != upload.layout.count() || !upload.writing.is_empty() {
                 return Err(UploadError::Incomplete);
             }
@@ -505,15 +530,32 @@ impl Store {
             let _ = fs::remove_dir_all(&dir).await;
             return Err(UploadError::Io(e));
         }
-        self.evict(channel, now_ms).await?;
-
-        Ok(ClipMeta {
+        let meta = ClipMeta {
             id: clip.to_string(),
             created_at_ms: clip.timestamp_ms(),
             expires_at_ms,
             size,
             chunked: true,
-        })
+        };
+        self.evict(channel, now_ms).await?;
+        // Only now: a call that failed didn't tell the devices of the clip,
+        // so asking again mustn't pass for that.
+        let mut completed = self.completed();
+        completed.retain(|_, c| c.at_ms + COMPLETED_FOR_MS > now_ms);
+        let completion = Completed {
+            channel: *channel,
+            meta: meta.clone(),
+            at_ms: now_ms,
+        };
+        completed.insert(id, completion);
+        drop(completed);
+        Ok((meta, true))
+    }
+
+    fn completed(&self) -> std::sync::MutexGuard<'_, HashMap<Ulid, Completed>> {
+        self.completed
+            .lock()
+            .expect("completed uploads lock poisoned")
     }
 
     /// Returns whether the upload existed.

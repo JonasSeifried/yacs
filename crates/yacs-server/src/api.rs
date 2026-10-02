@@ -939,15 +939,20 @@ async fn upload_status(
     Ok(Json(UploadStatus { received }))
 }
 
+/// Asked again for an upload it just finished, answers with the same clip
+/// (200 instead of 201), and the devices hear of it once.
 async fn complete_upload(
     State(state): State<AppState>,
     Path((channel, id)): Path<(String, String)>,
 ) -> Result<(StatusCode, Json<ClipMeta>), ApiError> {
     let (channel, id) = (parse_channel(&channel)?, parse_id(&id)?);
-    let meta = state
+    let (meta, made) = state
         .store
         .complete_upload(&channel, id, state.clock.now_ms())
         .await?;
+    if !made {
+        return Ok((StatusCode::OK, Json(meta)));
+    }
     state
         .events
         .publish(&channel, ChannelEvent::Added { clip: meta.clone() });

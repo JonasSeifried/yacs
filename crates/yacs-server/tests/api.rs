@@ -679,6 +679,52 @@ async fn event_streams_need_the_token_and_end_on_shutdown() {
     assert_eq!(listener.next().await, None);
 }
 
+/// A client whose answer to `complete` got lost asks again: it gets the same
+/// clip, the devices hear of it once, and only for a while.
+#[tokio::test]
+async fn completing_again_answers_with_the_same_clip() {
+    let app = app(&[]).await;
+    let ch = channel(1);
+    let data = sealed(CHUNK + 100);
+    let mut listener = app.listen(&ch, &[]).await;
+    let id = app.start_upload(&ch, data.len() as u64).await;
+    for (i, chunk) in data.chunks(CHUNK as usize).enumerate() {
+        let res = app.put(&chunk_uri(&ch, &id, i), chunk.to_vec()).await;
+        assert_eq!(res.status, StatusCode::NO_CONTENT);
+    }
+    let complete = format!("{}/complete", uploads(&ch, &id));
+    let first = app.post(&complete, vec![]).await;
+    assert_eq!(first.status, StatusCode::CREATED);
+    let meta: ClipMeta = first.json();
+
+    let again = app.post(&complete, vec![]).await;
+    assert_eq!(again.status, StatusCode::OK);
+    assert_eq!(again.json::<ClipMeta>(), meta);
+    assert_eq!(app.list(&ch).await, std::slice::from_ref(&meta));
+    // Not for another space.
+    let other = format!("{}/complete", uploads(&channel(2), &id));
+    assert_eq!(app.post(&other, vec![]).await.status, StatusCode::NOT_FOUND);
+
+    // Heard of once: the next event is the delete.
+    assert_eq!(
+        listener.next().await,
+        Some(ChannelEvent::Added { clip: meta.clone() })
+    );
+    app.delete(&format!("{}/{}", clips(&ch), meta.id)).await;
+    assert_eq!(
+        listener.next().await,
+        Some(ChannelEvent::Deleted {
+            id: meta.id.clone()
+        })
+    );
+
+    app.clock.advance(10 * MINUTE);
+    assert_eq!(
+        app.post(&complete, vec![]).await.status,
+        StatusCode::NOT_FOUND
+    );
+}
+
 #[tokio::test]
 async fn chunked_upload_round_trip() {
     let app = app(&[]).await;

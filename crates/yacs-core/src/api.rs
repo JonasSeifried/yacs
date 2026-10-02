@@ -140,6 +140,7 @@ impl ChunkedConfig {
 /// PUT    …/uploads/{id}/chunks/{i}            body: sealed chunk i (any order, repeatable)
 /// GET    …/uploads/{id}                       → UploadStatus
 /// POST   …/uploads/{id}/complete              → ClipMeta; only now is the clip listed
+///                                              (asked again soon after: the same ClipMeta)
 /// DELETE …/uploads/{id}                       abort
 /// ```
 ///

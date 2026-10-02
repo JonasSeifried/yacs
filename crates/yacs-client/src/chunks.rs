@@ -129,8 +129,8 @@ impl Client {
         };
         let result = match result {
             // Retried like the chunks, or one bad gateway loses all of them.
-            // Safe: the relay makes the clip once, and a retry after that
-            // finds no upload.
+            // Safe: the relay makes the clip once, and answers a retry after
+            // that with the same clip (relays before 0.7.2: no such upload).
             Ok(()) => {
                 let url = self.upload_url(&id, &["complete"]);
                 retry(|| async {
