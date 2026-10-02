@@ -18,6 +18,14 @@ fn space(n: u8) -> yacs_core::Pairing {
     yacs_core::Pairing::from_root(&[n; 32])
 }
 
+/// What `env_clear` must leave for `yacs` to run: without `SystemRoot`,
+/// Windows can't open a socket (os error 10106). Nothing elsewhere.
+fn os_env() -> impl Iterator<Item = (&'static str, std::ffi::OsString)> {
+    ["SystemRoot"]
+        .into_iter()
+        .filter_map(|var| Some((var, std::env::var_os(var)?)))
+}
+
 /// A relay running on its own thread for the lifetime of the test.
 struct Relay {
     url: String,
@@ -67,6 +75,7 @@ fn yacs(relay: &Relay, args: &[&str]) -> assert_cmd::Command {
 fn saved(relay: &Relay, args: &[&str]) -> assert_cmd::Command {
     let mut cmd = cargo_bin_cmd!("yacs");
     cmd.env_clear()
+        .envs(os_env())
         .env("YACS_CONFIG", relay.home.path().join("cli.json"))
         .env("YACS_DEVICE_NAME", "e2e")
         .args(args);
@@ -350,6 +359,7 @@ fn big_files_stream_through_the_relay() {
     // Piped, as with small files; counted, not kept.
     let mut recv = std::process::Command::new(env!("CARGO_BIN_EXE_yacs"))
         .env_clear()
+        .envs(os_env())
         .env("YACS_CONFIG", relay.home.path().join("cli.json"))
         .arg("recv")
         .stdout(std::process::Stdio::piped())
@@ -365,6 +375,7 @@ fn big_files_stream_through_the_relay() {
 fn measured(relay: &Relay, args: &[&str]) -> String {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_yacs"))
         .env_clear()
+        .envs(os_env())
         .env("YACS_CONFIG", relay.home.path().join("cli.json"))
         .env("YACS_DEVICE_NAME", "e2e")
         .args(args)
@@ -654,6 +665,7 @@ fn starts_a_space_and_invites_another_machine() {
         let mut script = cargo_bin_cmd!("yacs");
         script
             .env_clear()
+            .envs(os_env())
             .env("YACS_CONFIG", other.path().join("none.json"))
             .env(var, &relay.url)
             .env("YACS_SPACE", exported.trim())
@@ -738,6 +750,7 @@ fn invite_with_codes(
     use std::io::BufRead;
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_yacs"))
         .env_clear()
+        .envs(os_env())
         .env("YACS_CONFIG", relay.home.path().join("cli.json"))
         .env("YACS_DEVICE_NAME", "inviter")
         .args(["invite", "--code"])
