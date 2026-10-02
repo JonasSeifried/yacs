@@ -17,10 +17,6 @@ pub enum Content {
 /// Text and images are sent as such unless `as_file`, everything else as a
 /// file. Files over `inline_limit` bytes are always [`Content::Big`] files.
 pub fn from_file(path: &Path, as_file: bool, inline_limit: u64) -> Result<Content> {
-    if path == Path::new("-") {
-        let (item, label) = from_stdin()?;
-        return Ok(Content::Inline(item, label));
-    }
     let not_found = |e: std::io::Error| match e.kind() {
         std::io::ErrorKind::NotFound => anyhow::anyhow!(
             "no such file: {}\n(to send text, use --text \"…\" or pipe it in)",
@@ -83,13 +79,24 @@ fn mime(path: &Path) -> String {
     mime.essence_str().to_owned()
 }
 
-pub fn from_stdin() -> Result<(ClipItem, String)> {
-    let mut stdin = std::io::stdin();
+/// Fails without sending anything once more than `max` bytes come in,
+/// which the relay wouldn't take as one clip.
+pub fn from_stdin(max: u64) -> Result<(ClipItem, String)> {
+    let stdin = std::io::stdin();
     if stdin.is_terminal() {
         bail!("nothing to send: pass a file, --text \"…\", or pipe something in");
     }
     let mut data = Vec::new();
-    stdin.read_to_end(&mut data).context("reading stdin")?;
+    stdin
+        .take(max.saturating_add(1))
+        .read_to_end(&mut data)
+        .context("reading stdin")?;
+    if data.len() as u64 > max {
+        bail!(
+            "what's piped in is over {}, more than this relay takes in one clip; save it to a file and send that",
+            crate::human_size(max)
+        );
+    }
     Ok(piped(data))
 }
 

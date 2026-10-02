@@ -103,10 +103,15 @@ pub struct SpaceLimits {
 }
 
 impl ServerConfig {
+    /// The most bytes of content one clip can carry, whatever its kind.
+    pub fn inline_max(&self) -> u64 {
+        self.max_size_bytes.saturating_sub(ENVELOPE_SLACK)
+    }
+
     /// The most file bytes to put into one clip. Bigger files go as chunks
     /// if [`chunked`](Self::chunked) is set, and can't be sent otherwise.
     pub fn inline_file_limit(&self) -> u64 {
-        let fits = self.max_size_bytes.saturating_sub(ENVELOPE_SLACK);
+        let fits = self.inline_max();
         match self.chunked {
             Some(_) => fits.min(INLINE_FILE_BYTES),
             None => fits,

@@ -114,6 +114,23 @@ fn text_round_trip_via_argument_and_stdin() {
     assert_eq!(std::fs::read(dir.path().join("stdin.bin")).unwrap(), gzip);
 }
 
+/// Piped bytes can't go in chunks: more than one clip takes fails before
+/// anything is uploaded.
+#[test]
+fn piping_more_than_a_clip_takes_fails_early() {
+    // 36 KB for content, once the relay's room for the envelope is taken off.
+    let relay = relay(&["--max-size", "100KB"]);
+    let err = stderr_of_failure(yacs(&relay, &["send"]).write_stdin(vec![0xff; 50_000]));
+    assert!(err.contains("save it to a file"), "{err}");
+    let err = stderr_of_failure(&mut yacs(&relay, &["recv"]));
+    assert!(err.contains("no clip"), "{err}");
+
+    yacs(&relay, &["send", "-"])
+        .write_stdin(vec![0xff; 30_000])
+        .assert()
+        .success();
+}
+
 #[test]
 fn sends_text_files_as_text_and_other_files_as_files() {
     let relay = relay(&[]);

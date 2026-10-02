@@ -243,7 +243,7 @@ async fn run(cli: Cli) -> Result<()> {
         } => {
             let (item, what) = match (text, file) {
                 (Some(text), _) => content::from_text(text),
-                (None, Some(path)) => {
+                (None, Some(path)) if path != Path::new("-") => {
                     let config = client.config().await?;
                     match content::from_file(&path, as_file, config.inline_file_limit())? {
                         Content::Inline(item, what) => (item, what),
@@ -255,7 +255,7 @@ async fn run(cli: Cli) -> Result<()> {
                         }
                     }
                 }
-                (None, None) => content::from_stdin()?,
+                (None, _) => content::from_stdin(client.config().await?.inline_max())?,
             };
             let clip = Clip {
                 created_at_ms: now_ms() as i64,
