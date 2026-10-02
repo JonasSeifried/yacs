@@ -443,10 +443,10 @@ fn connect(cli: &Cli) -> Result<(String, Client)> {
 async fn join(cli: &Cli, name: Option<&str>) -> Result<()> {
     if std::io::stdin().is_terminal() {
         eprintln!(
-            "Paste an invite link or type the code (on a computer in the space: Settings → Invite a device…,\nor `yacs invite`). It isn't shown."
+            "Paste an invite link or type the code (on a computer in the space: Settings → Invite a device…,\nor `yacs invite`)."
         );
     }
-    let input = prompt_secret("Invite link or code: ")?;
+    let input = prompt("Invite link or code: ")?;
     let joining = if yacs_core::looks_like_code(&input) {
         let code: yacs_core::Code = input.parse()?;
         let relay = match &cli.server {
@@ -623,6 +623,16 @@ fn manage(command: &Command) -> Result<()> {
         _ => unreachable!("not a command that manages spaces"),
     }
     Ok(())
+}
+
+/// Shown as it's typed: an invite or a code works only once, and a typo
+/// you can't see is hard to find.
+fn prompt(label: &str) -> Result<String> {
+    if std::io::stdin().is_terminal() {
+        eprint!("{label}");
+        std::io::stderr().flush().context("writing the prompt")?;
+    }
+    Ok(read_line()?.trim().to_owned())
 }
 
 /// Hidden when typed; read as a plain line when piped in.
