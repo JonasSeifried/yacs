@@ -17,7 +17,7 @@ export function clipTitle(clip: ClipView): string {
     const { width, height } = clip.image;
     return width && height ? `Image · ${width}×${height}` : "Image";
   }
-  if (clip.html || clip.rtf) return "Formatted text";
+  if (clip.hasHtml || clip.rtf) return "Formatted text";
   return "Empty clip";
 }
 
@@ -38,10 +38,10 @@ export function clipIcon(clip: ClipView): ClipIcon {
   const text = clip.text?.trim();
   if (text) {
     if (/^https?:\/\/\S+$/i.test(text)) return "link";
-    return clip.html !== null || clip.rtf ? "formatted" : "text";
+    return clip.hasHtml || clip.rtf ? "formatted" : "text";
   }
   if (clip.image) return "image";
-  return clip.html !== null || clip.rtf ? "formatted" : "text";
+  return clip.hasHtml || clip.rtf ? "formatted" : "text";
 }
 
 export type PreviewKind = "files" | "html" | "text" | "image" | "none";

@@ -618,6 +618,7 @@ export function clipView(meta: ClipMeta, clip: Clip): ClipView {
     text: null,
     textTruncated: false,
     html: null,
+    hasHtml: false,
     rtf: false,
     image: null,
     files: [],
@@ -631,6 +632,7 @@ export function clipView(meta: ClipMeta, clip: Clip): ClipView {
         view.textTruncated = preview.cut;
       }
     } else if ("Html" in item) {
+      view.hasHtml = true;
       if (view.html === null && htmlFitsPreview(item.Html)) view.html = item.Html;
     } else if ("Rtf" in item) view.rtf = true;
     else if ("Image" in item) view.image ??= { mime: item.Image.mime, size: item.Image.data.length, width: null, height: null };

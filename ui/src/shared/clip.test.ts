@@ -19,6 +19,7 @@ function clip(fields: Partial<ClipView>): ClipView {
     text: null,
     textTruncated: false,
     html: null,
+    hasHtml: fields.html != null,
     rtf: false,
     image: null,
     files: [],
@@ -34,6 +35,8 @@ describe("clipIcon", () => {
     expect(clipIcon(clip({ text: "see https://example.com" }))).toBe("text");
     expect(clipIcon(clip({ text: "Hello", html: "<b>Hello</b>" }))).toBe("formatted");
     expect(clipIcon(clip({ rtf: true }))).toBe("formatted");
+    // HTML too large to preview is still formatted text.
+    expect(clipIcon(clip({ hasHtml: true }))).toBe("formatted");
   });
 
   it("shows images and files", () => {
@@ -56,6 +59,7 @@ describe("clipTitle", () => {
     expect(clipTitle(clip({ image }))).toBe("Image · 1280×720");
     expect(clipTitle(clip({ image: { ...image, width: null, height: null } }))).toBe("Image");
     expect(clipTitle(clip({ rtf: true, text: "  " }))).toBe("Formatted text");
+    expect(clipTitle(clip({ hasHtml: true }))).toBe("Formatted text");
     expect(clipTitle(clip({}))).toBe("Empty clip");
   });
 

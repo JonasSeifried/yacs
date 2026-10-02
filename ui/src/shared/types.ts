@@ -20,6 +20,8 @@ export interface ClipView {
   textTruncated: boolean;
   /** Raw, unsanitized HTML from the sender; null when absent or too large to preview. */
   html: string | null;
+  /** The clip has HTML, previewed or not. */
+  hasHtml: boolean;
   rtf: boolean;
   image: ImageInfo | null;
   files: FileInfo[];

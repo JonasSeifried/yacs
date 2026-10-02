@@ -471,7 +471,7 @@ function Preview({ meta, loaded, now }: { meta: ClipMeta; loaded: Loaded | undef
 
   const { clip } = loaded;
   const files = clip.files.length && (clip.files.length === 1 ? "file" : `${clip.files.length} files`);
-  const formats = [files, clip.text !== null && "text", (clip.html !== null || clip.rtf) && "formatted", clip.image && "image"]
+  const formats = [files, clip.text !== null && "text", (clip.hasHtml || clip.rtf) && "formatted", clip.image && "image"]
     .filter(Boolean)
     .join(", ");
   const size = clip.image?.width && clip.image.height ? ` · ${clip.image.width}×${clip.image.height}` : "";

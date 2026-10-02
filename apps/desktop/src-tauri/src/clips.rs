@@ -190,6 +190,8 @@ pub struct ClipView {
     pub text_truncated: bool,
     /// `None` when the clip has no HTML or it's too large to preview.
     pub html: Option<String>,
+    /// The clip has HTML, previewed or not.
+    pub has_html: bool,
     pub rtf: bool,
     pub image: Option<ImageView>,
     pub files: Vec<FileView>,
@@ -220,6 +222,7 @@ impl From<&Entry> for ClipView {
             text: None,
             text_truncated: false,
             html: None,
+            has_html: false,
             rtf: false,
             image: None,
             files: Vec::new(),
@@ -234,8 +237,11 @@ impl From<&Entry> for ClipView {
                         None => text.clone(),
                     });
                 }
-                ClipItem::Html(html) if view.html.is_none() && html.len() <= PREVIEW_HTML_BYTES => {
-                    view.html = Some(html.clone());
+                ClipItem::Html(html) => {
+                    view.has_html = true;
+                    if view.html.is_none() && html.len() <= PREVIEW_HTML_BYTES {
+                        view.html = Some(html.clone());
+                    }
                 }
                 ClipItem::Rtf(_) => view.rtf = true,
                 ClipItem::Image(image) if view.image.is_none() => {
@@ -339,6 +345,8 @@ mod tests {
         assert_eq!(view.text.unwrap().chars().count(), PREVIEW_TEXT_CHARS);
         assert!(view.text_truncated);
         assert_eq!(view.html, None);
+        // Still formatted text, for the list.
+        assert!(view.has_html);
         assert!(view.rtf);
         assert_eq!(view.image, None);
         assert_eq!(view.device_name, "MacBook");
