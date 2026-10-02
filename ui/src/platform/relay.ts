@@ -110,10 +110,24 @@ export async function retrying<T>(attempt: () => Promise<T>, signal: AbortSignal
       return await attempt();
     } catch (e) {
       if (signal.aborted || !(e instanceof RelayError && e.transient) || i >= ATTEMPTS) throw e;
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await sleep(delay, signal);
+      if (signal.aborted) throw e;
       delay = Math.min(delay * 2, BACKOFF_MAX_MS);
     }
   }
+}
+
+/** Resolves after `ms`, or as soon as `signal` aborts. */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done, { once: true });
+  });
 }
 
 export function errorText(e: unknown): string {

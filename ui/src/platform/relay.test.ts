@@ -43,4 +43,17 @@ describe("retrying", () => {
     await failed;
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+
+  it("stops waiting once cancelled between tries", async () => {
+    vi.useFakeTimers();
+    const fetch = answering(502, 201);
+    const cancel = new AbortController();
+    const done = retrying(post(cancel.signal), cancel.signal);
+    const failed = expect(done).rejects.toMatchObject({ status: 502 });
+    // The first try has failed; the next one is a second away.
+    await vi.advanceTimersByTimeAsync(10);
+    cancel.abort();
+    await failed;
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
 });
