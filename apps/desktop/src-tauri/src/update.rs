@@ -11,9 +11,6 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 use crate::{tray, windows};
 
-/// Soon after launch, so a release that came out while YACS wasn't running
-/// shows up as soon as the user looks.
-const FIRST_CHECK: Duration = Duration::from_secs(5);
 /// Checks are skipped until the last one is this old.
 const RECHECK_AFTER: Duration = Duration::from_secs(60 * 60);
 /// Left in the config directory by an install, so the restarted app shows
@@ -54,24 +51,9 @@ impl Updates {
     }
 }
 
-/// Check in the background now and then. Release builds only: dev builds
+/// Check when a window opens, unless a check ran within the hour: nothing
+/// checks while the app sits in the tray. Release builds only: dev builds
 /// would offer to "update" to the last release.
-pub fn spawn_checks(app: &AppHandle) {
-    if cfg!(debug_assertions) {
-        return;
-    }
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(FIRST_CHECK).await;
-        loop {
-            check_if_due(&app).await;
-            tokio::time::sleep(RECHECK_AFTER).await;
-        }
-    });
-}
-
-/// Check when a window opens, unless a check ran recently. The timer alone
-/// isn't enough: it stops while the computer sleeps.
 pub fn check_in_background(app: &AppHandle) {
     if cfg!(debug_assertions) {
         return;

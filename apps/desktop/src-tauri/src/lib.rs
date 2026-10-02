@@ -88,7 +88,6 @@ pub fn run() {
             app.manage(live::Live::default());
             app.manage(transfers::Transfers::default());
             app.manage(codes::Codes::default());
-            live::restart(app.handle());
 
             windows::create(app.handle())?;
             tray::create(app.handle())?;
@@ -103,7 +102,6 @@ pub fn run() {
             if !in_space || !at_login || updated {
                 windows::show_settings(app.handle());
             }
-            update::spawn_checks(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

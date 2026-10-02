@@ -1,5 +1,7 @@
-//! Listens to the relay's event stream while in a space, so an open Spotlight
-//! updates by itself and a new clip is already decrypted when it's opened.
+//! Listens to the relay's event stream while Spotlight or Settings is open,
+//! so Spotlight shows new clips as they come and Settings hears that an
+//! invite was used. Nothing is kept open while the app sits in the tray, and
+//! clips are only downloaded when Spotlight shows them.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -10,7 +12,6 @@ use tokio::sync::Notify;
 use yacs_client::{Client, Error};
 use yacs_core::api::ChannelEvent;
 
-use crate::clips;
 use crate::state::AppState;
 use crate::windows;
 
@@ -19,8 +20,6 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// Relays before 0.2.0 have no event stream; look again now and then, in
 /// case the relay was updated (and whenever Spotlight opens, see `wake`).
 const OLD_RELAY_RETRY: Duration = Duration::from_secs(10 * 60);
-/// New clips up to this size are fetched right away.
-const PREFETCH_BYTES: u64 = 4 * 1024 * 1024;
 
 #[derive(Default)]
 pub struct Live {
@@ -28,15 +27,36 @@ pub struct Live {
     wake: Arc<Notify>,
 }
 
-/// Listen for the space in use, replacing any earlier listener. Call it
-/// whenever that changes.
+/// The space in use changed: listen to the new one, if a window is open.
 pub fn restart(app: &AppHandle) {
+    connect(app, true);
+}
+
+/// A window opened: listen, or retry now if the listener is waiting to
+/// reconnect (the relay was down or too old a moment ago).
+pub fn resume(app: &AppHandle) {
+    connect(app, false);
+    app.state::<Live>().wake.notify_waiters();
+}
+
+/// A window closed: stop listening once none is open.
+pub fn pause_if_hidden(app: &AppHandle) {
+    connect(app, false);
+}
+
+fn connect(app: &AppHandle, replace: bool) {
+    // Asked before taking the lock: off the main thread, asking waits for
+    // it, and the main thread may be waiting for the lock.
+    let open = windows::any_open(app);
+    let client = app.state::<AppState>().client().filter(|_| open);
     let live = app.state::<Live>();
     let mut task = live.task.lock().expect("live lock poisoned");
-    if let Some(old) = task.take() {
+    if (replace || client.is_none())
+        && let Some(old) = task.take()
+    {
         old.abort();
     }
-    if let Some(client) = app.state::<AppState>().client() {
+    if let (Some(client), None) = (client, task.as_ref()) {
         let wake = live.wake.clone();
         *task = Some(tauri::async_runtime::spawn(listen(
             app.clone(),
@@ -44,12 +64,6 @@ pub fn restart(app: &AppHandle) {
             wake,
         )));
     }
-}
-
-/// Retry now if the listener is waiting to reconnect, e.g. because the relay
-/// was down or too old a moment ago. Called when Spotlight opens.
-pub fn wake(app: &AppHandle) {
-    app.state::<Live>().wake.notify_waiters();
 }
 
 /// Sleep for `duration`, or until `wake`.
@@ -67,7 +81,7 @@ async fn listen(app: AppHandle, client: Arc<Client>, wake: Arc<Notify>) {
                 changed(&app);
                 loop {
                     match events.next().await {
-                        Ok(Some(event)) => handle(&app, &client, event).await,
+                        Ok(Some(event)) => handle(&app, event),
                         Ok(None) => break,
                         Err(e) => {
                             tracing::info!(error = %e, "live updates interrupted");
@@ -94,16 +108,9 @@ async fn listen(app: AppHandle, client: Arc<Client>, wake: Arc<Notify>) {
     }
 }
 
-async fn handle(app: &AppHandle, client: &Client, event: ChannelEvent) {
+fn handle(app: &AppHandle, event: ChannelEvent) {
     let state = app.state::<AppState>();
     match event {
-        // A chunked clip is only its small header here.
-        ChannelEvent::Added { clip } if clip.size <= PREFETCH_BYTES || clip.chunked => {
-            // Before telling Spotlight, so it finds the clip in the cache.
-            if let Err(e) = clips::load(client, &state.clips, &clip.id).await {
-                tracing::debug!(error = %e, "prefetch failed");
-            }
-        }
         ChannelEvent::Deleted { id } => state
             .clips
             .lock()

@@ -37,6 +37,12 @@ Checks after a release, on the real apps, instead of building on every platform 
 - [ ] Leave the space in the app, then `yacs join` with a code or link, then open Spotlight: it shows the space's clips, and new ones arrive.
 - [ ] `yacs leave`, then open Settings: it shows "Welcome to YACS". Join in the app: `yacs spaces` shows it.
 
+**Nothing in the background** (desktop, each OS)
+- [ ] With Spotlight open, copy something on the phone: it shows up in Spotlight by itself.
+- [ ] Close Spotlight, send a few clips from the phone, open Spotlight: they're all listed, the top one previews.
+- [ ] Show an invite code or QR in Settings and use it on another device: Settings says it joined.
+- [ ] Settings → Updates still finds a new version (only once a release is out: open Settings an hour after the last check).
+
 ## 0.7.2
 
 What the automated tests couldn't cover, or covered only in a browser. Everything not listed (the relay's disk limit, the upload retries, the damaged spaces files, the client's timeouts) is covered by tests that failed without the fix.

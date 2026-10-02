@@ -190,7 +190,7 @@ pub fn toggle_spotlight(app: &AppHandle) {
             let _ = settings.hide();
         }
         let _ = app.emit_to(SPOTLIGHT, EVENT_SPOTLIGHT_SHOWN, ());
-        crate::live::wake(app);
+        crate::live::resume(app);
         crate::update::check_in_background(app);
     }
 }
@@ -201,6 +201,7 @@ pub fn hide_spotlight(app: &AppHandle) {
     };
     if w.is_visible().unwrap_or(false) {
         let _ = w.hide();
+        crate::live::pause_if_hidden(app);
         return_focus(app);
     }
 }
@@ -215,6 +216,7 @@ pub fn show_settings(app: &AppHandle) {
         let _ = w.show();
         let _ = w.set_focus();
         let _ = app.emit_to(SETTINGS, EVENT_SETTINGS_SHOWN, ());
+        crate::live::resume(app);
         crate::update::check_in_background(app);
     }
     hide_spotlight(app);
@@ -224,9 +226,21 @@ pub fn hide_settings(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(SETTINGS) {
         let _ = w.hide();
     }
+    crate::live::pause_if_hidden(app);
     // In case it closed while recording a shortcut.
     crate::commands::resume_hotkey(app.clone(), app.state());
     return_focus(app);
+}
+
+fn is_visible(app: &AppHandle, label: &str) -> bool {
+    app.get_webview_window(label)
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false)
+}
+
+/// Is Spotlight or Settings showing? The app only talks to the relay then.
+pub fn any_open(app: &AppHandle) -> bool {
+    is_visible(app, SPOTLIGHT) || is_visible(app, SETTINGS)
 }
 
 /// Undo `return_focus`: windows of a hidden macOS app stay invisible even
@@ -243,12 +257,7 @@ fn unhide_app(app: &AppHandle) {
 fn return_focus(app: &AppHandle) {
     #[cfg(target_os = "macos")]
     {
-        let visible = |label| {
-            app.get_webview_window(label)
-                .and_then(|w| w.is_visible().ok())
-                .unwrap_or(false)
-        };
-        if !visible(SPOTLIGHT) && !visible(SETTINGS) {
+        if !any_open(app) {
             let _ = app.hide();
         }
     }
