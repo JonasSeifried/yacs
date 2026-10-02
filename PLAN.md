@@ -252,7 +252,7 @@ Offsets follow from the sizes. Other items (text) can sit next to it. Older clie
 POST   /api/v1/channels/{c}/uploads?ttl=&length=&chunk_size=   body: header envelope → 201 { id }
 PUT    /api/v1/channels/{c}/uploads/{id}/chunks/{i}            body: sealed chunk i, any order, repeatable → 204
 GET    /api/v1/channels/{c}/uploads/{id}                       → { received: [i, …] }
-POST   /api/v1/channels/{c}/uploads/{id}/complete              → 201 ClipMeta (409 if chunks are missing)
+POST   /api/v1/channels/{c}/uploads/{id}/complete              → 201 ClipMeta (409 if chunks are missing; 200 and the same ClipMeta when asked again within 10 min)
 DELETE /api/v1/channels/{c}/uploads/{id}                       abort
 GET    /api/v1/channels/{c}/clips/{id}                         → the header envelope, as today
 GET    /api/v1/channels/{c}/clips/{id}/chunks/{i}              → sealed chunk i (immutable, cacheable)
@@ -439,17 +439,17 @@ A review of the whole codebase after 0.7.1, sorted by how bad each problem is an
 - Relay: an announced upload length near `u64::MAX` wrapped the disk reservation to a few bytes, so a member of an unlimited space could fill the disk past `YACS_MAX_DISK`; the reservation is checked and one compare-and-swap now.
 - Relay: the reaper stopped at the first clip it couldn't delete, every minute at the same place, so the disk filled with expired clips; it logs and skips now, and only recounts usage when it could read every channel.
 - Relay: a damaged `accounts.json` crash-looped the relay; it falls back to `accounts.json.bak` (section 8).
-- Desktop and CLI: an unreadable spaces file was overwritten by the next join, keys and all; it's kept as `spaces.json.corrupt-<time>` / `cli.json.corrupt-<time>` now, and saves are fsynced before the rename.
-- All clients: the request that completes a chunked upload wasn't retried, so one 502 there deleted every chunk.
+- Desktop and CLI: an unreadable spaces file was overwritten by the next join, keys and all; it's kept as `spaces.json.corrupt-<time>` / `cli.json.corrupt-<time>` now, and saves are fsynced before the rename. The desktop moves it only before a save, so a read that fails once doesn't lose the spaces; a `cli.json` that can't be read at all stops the join.
+- All clients: the request that completes a chunked upload wasn't retried, so one 502 there deleted every chunk. The relay answers a repeated `complete` with the same clip for 10 minutes, so a lost answer no longer reports a sent clip as failed.
 - Spotlight: a click into the HTML preview blurred the window and sent pending deletes while Undo still showed.
-- PWA: deletes sent on hiding could be cut off when iOS froze the app (now `keepalive`, and on `pagehide` too); the Undo toast goes once its delete is sent; a join that failed after taking the invite can be retried without "already used".
-- PWA: previews are cut like the desktop's (20,000 characters, HTML up to 512 KB), so a multi-MB log no longer freezes an iPhone; the sanitized HTML is kept between renders. The expiry picker is 16px, so iOS doesn't zoom on tap. The app asks for persistent storage while in a space. "Sent · expires in" shows the relay's expiry, capped to the plan.
+- PWA: deletes sent on hiding could be cut off when iOS froze the app (now `keepalive`, and on `pagehide` too); the Undo toast goes once its delete is sent; a join that failed after taking the invite can be retried without "already used" (the invite is kept with its link).
+- PWA: previews are cut like the desktop's (20,000 characters, HTML up to 512 KB), so a multi-MB log no longer freezes an iPhone; the sanitized HTML is kept between renders. The expiry picker is 16px, so iOS doesn't zoom on tap. The app asks for persistent storage while in a space. "Sent · expires in" shows the relay's expiry, capped to the plan. A clip whose only HTML is too big to preview still shows as formatted text (desktop too).
 - Client: single-clip uploads get time for their size (at 128 kbit/s, 120 s at least) instead of 120 s in all; single-clip downloads fail after 60 s without data instead.
 - Core: an envelope opens with the version it carries and chunks use a fixed AAD version, so a new envelope version can't make stored clips or streams unreadable; `ClipItem::Ext` lets later kinds of item be skipped by older builds (section 3, Versioning).
 - CI: Rust is pinned (1.98.1 in `rust-toolchain.toml`, so a new stable's lints can't fail `-D warnings`), and `rust-version` is 1.98 to match: nobody builds YACS from source with an older Rust, and 1.85 only held back syntax and dependency updates. The Rust tests run on macOS and Windows too. Releases no longer save a Rust cache that no later tag can restore.
 - Relay: on a stop, it waited for every request (a code exchange waits 25 s) before saving the free spaces registered since the last reap, so Docker killed it after 10 s and they were lost; it saves first now and stops requests still running after 8 s.
-- CLI: `yacs recv` into a folder kept only the first of two files with one name (for big files, the second replaced it); they're numbered now, as on the desktop, and every target is checked before anything is written. Piped bytes that aren't text or an image go as `stdin.bin` instead of being refused.
-- All clients: the reads of a code exchange are retried on network trouble, so one 502 no longer ends `yacs join` / `yacs invite` or the apps' codes (and typing the code again no longer says someone else used it). The writes still aren't.
+- CLI: `yacs recv` into a folder kept only the first of two files with one name (for big files, the second replaced it); they're numbered now, as on the desktop, and every target is checked before anything is written. Piped bytes that aren't text or an image go as `stdin.bin` instead of being refused; more than one clip takes fails before anything is uploaded.
+- All clients: the reads of a code exchange are retried on network trouble, so one 502 no longer ends `yacs join` / `yacs invite` or the apps' codes (and typing the code again no longer says someone else used it). The writes still aren't. A lost invite reports the network failure instead of "wrong code". The PWA's code reads give up after about 30 s, as the apps' do, and its retries stop as soon as they're cancelled.
 
 ### Serious, plan first
 Each needs a short design or a test on a real machine before code.
@@ -476,4 +476,3 @@ Each needs a short design or a test on a real machine before code.
 - PWA: the service worker shows a proxy's 502 page instead of the cached app, caches nothing until the second launch, and never prunes old assets. Every live event re-fetches config, limits and list, and responses aren't ordered; patch the list from the event instead. Accessibility: clip cards aren't buttons, the settings sheet doesn't trap focus, errors aren't live regions. A code join can't be cancelled for up to 10 minutes.
 - Relay: the reaper holds the store lock for its whole scan; its recount drops reservations of `put`s in flight; a cancelled request can leave `.tmp` and `.part` files. `authorize` parses the channel id and 20 handlers parse it again.
 - Core: derived keys aren't zeroized; nothing but the callers stops sealing a chunk twice.
-- If the answer to `complete` is lost, the retry finds no upload and the send is reported as failed although the clip exists.
