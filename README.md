@@ -70,7 +70,7 @@ The apps show these limits and only offer what fits. For bigger files and longer
 mkdir -p ~/.local/bin
 curl -fsSLo ~/.local/bin/yacs https://github.com/JonasSeifried/yacs/releases/latest/download/yacs-cli-linux-$(uname -m)
 chmod +x ~/.local/bin/yacs
-yacs join   # paste the link from a computer in the space: Settings → Invite a device… → Copy link
+yacs join 12-panda-tulip   # the code or link from a computer in the space: Settings → Invite a device…
 ```
 
 On a Mac or Windows PC with the desktop app, use Settings → Command line → **Install command** instead: it joins the computer's space and updates along with the app. (`yacs-cli-macos` and `yacs-cli-windows-x86_64.exe` are also on the [releases page](https://github.com/JonasSeifried/yacs/releases).) Once it's in a space:

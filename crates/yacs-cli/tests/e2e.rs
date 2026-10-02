@@ -515,7 +515,7 @@ fn joins_with_a_link_and_remembers_it() {
     let err = stderr_of_failure(saved(&relay, &["join"]).write_stdin(invite_link(&relay, None)));
     assert!(err.contains("account key"), "{err}");
     assert!(!relay.home.path().join("cli.json").exists());
-    let err = stderr_of_failure(saved(&relay, &["join"]).write_stdin("tundra velvet anchor"));
+    let err = stderr_of_failure(&mut saved(&relay, &["join", "tundra", "velvet", "anchor"]));
     assert!(err.contains("isn't an invite link"), "{err}");
 
     let out = saved(&relay, &["pair"])
@@ -776,11 +776,14 @@ fn joins_by_typing_a_code() {
     let code = codes.next().unwrap().unwrap();
     assert!(code.split('-').count() == 3, "{code}");
 
+    // As arguments, with spaces instead of dashes.
     let other = TempDir::new().unwrap();
-    let joined = saved(&relay, &["join"])
+    let typed = code.replace('-', " ").to_uppercase();
+    let mut args = vec!["join"];
+    args.extend(typed.split(' '));
+    let joined = saved(&relay, &args)
         .env("YACS_CONFIG", other.path().join("cli.json"))
         .env("YACS_SERVER", &relay.url)
-        .write_stdin(format!("{}\n", code.replace('-', " ").to_uppercase()))
         .assert()
         .success()
         .get_output()

@@ -21,7 +21,7 @@ mod update;
 
 const EXAMPLES: &str = "\
 Examples:
-  yacs join                          once: paste an invite link or type a code from another device
+  yacs join 12-panda-tulip           once: a code or invite link from another device
   yacs space new                     or start a space on the free relay, then `yacs invite` other devices
   yacs space new --relay URL         the same on your own relay
   yacs send ~/.ssh/id_ed25519.pub    a text file arrives as text, an image as an image
@@ -78,11 +78,14 @@ struct Cli {
 enum Command {
     /// Join a space once, so other commands need no flags.
     ///
-    /// Asks for an invite link (on a computer in the space: Settings → Invite
-    /// a device… → Copy link, or `yacs invite`), checks it with the relay and
-    /// saves the space, readable only by you. Replaces the space saved before.
+    /// Takes an invite link or code (on a computer in the space: Settings →
+    /// Invite a device…, or `yacs invite`), asking for it if not given, checks
+    /// it with the relay and saves the space, readable only by you. Replaces
+    /// the space saved before.
     #[command(alias = "pair")]
     Join {
+        /// The invite link or code. A code can have spaces instead of dashes.
+        invite: Vec<String>,
         /// What to call the space here. Defaults to the name in the link.
         #[arg(long)]
         name: Option<String>,
@@ -191,7 +194,9 @@ async fn main() -> std::process::ExitCode {
 
 async fn run(cli: Cli) -> Result<()> {
     match &cli.command {
-        Command::Join { name } => return join(&cli, name.as_deref()).await,
+        Command::Join { invite, name } => {
+            return join(&cli, &invite.join(" "), name.as_deref()).await;
+        }
         Command::Space {
             command: SpaceCommand::New { name },
         } => return new_space(&cli, name).await,
@@ -440,13 +445,17 @@ fn connect(cli: &Cli) -> Result<(String, Client)> {
     Ok((server, client))
 }
 
-async fn join(cli: &Cli, name: Option<&str>) -> Result<()> {
-    if std::io::stdin().is_terminal() {
-        eprintln!(
-            "Paste an invite link or type the code (on a computer in the space: Settings → Invite a device…,\nor `yacs invite`)."
-        );
-    }
-    let input = prompt("Invite link or code: ")?;
+async fn join(cli: &Cli, input: &str, name: Option<&str>) -> Result<()> {
+    let input = if input.trim().is_empty() {
+        if std::io::stdin().is_terminal() {
+            eprintln!(
+                "Paste an invite link or type the code (on a computer in the space: Settings → Invite a device…,\nor `yacs invite`)."
+            );
+        }
+        prompt("Invite link or code: ")?
+    } else {
+        input.trim().to_owned()
+    };
     let joining = if yacs_core::looks_like_code(&input) {
         let code: yacs_core::Code = input.parse()?;
         let relay = match &cli.server {
