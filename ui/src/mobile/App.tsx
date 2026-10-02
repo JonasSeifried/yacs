@@ -132,8 +132,11 @@ function JoinFromLink(props: { link: InviteLink; stored: Stored | null; onDone: 
   const [deviceName, setDeviceName] = useState(() => props.stored?.deviceName ?? guessDeviceName());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /** The relay hands an invite out once, so a retry after a failed join can't take it again. */
-  const taken = useRef<TakenInvite | null>(null);
+  /**
+   * The relay hands an invite out once, so a retry after a failed join can't
+   * take it again. Kept with its link: another one can open on this screen.
+   */
+  const taken = useRef<{ link: InviteLink; invite: TakenInvite } | null>(null);
   const replacing = (props.stored?.spaces.length ?? 0) > 0;
 
   const submit = async (e: FormEvent) => {
@@ -142,8 +145,11 @@ function JoinFromLink(props: { link: InviteLink; stored: Stored | null; onDone: 
     setError(null);
     try {
       if (link.kind === "invite" || link.kind === "code") {
-        const invite = (taken.current ??=
-          link.kind === "invite" ? await takeInvite(link.secret) : await joinWithCode(link.code, deviceName));
+        let invite = taken.current?.link === link ? taken.current.invite : null;
+        if (!invite) {
+          invite = link.kind === "invite" ? await takeInvite(link.secret) : await joinWithCode(link.code, deviceName);
+          taken.current = { link, invite };
+        }
         props.onDone(await enterSpace(invite.space, invite.name, invite.token, deviceName));
       } else {
         props.onDone(await enterSpace(link.secret, link.name ?? DEFAULT_SPACE_NAME, link.token, deviceName));
