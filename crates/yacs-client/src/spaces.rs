@@ -7,6 +7,9 @@
 //! spaces, so an invite never has to carry one.
 
 use std::collections::BTreeMap;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use yacs_core::{InviteSecret, Pairing};
@@ -256,6 +259,23 @@ pub fn clean_name(name: &str) -> Option<String> {
 /// Trimmed, without a trailing slash, so one relay always has one key in `tokens`.
 pub fn normalize_relay(url: &str) -> String {
     url.trim().trim_end_matches('/').to_owned()
+}
+
+/// Moves a spaces file that couldn't be read to `<name>.corrupt-<unix secs>`
+/// beside it, so saving a space afterwards can't overwrite keys that may
+/// still be in it. `None` if there's no file.
+pub fn set_aside(path: &Path) -> io::Result<Option<PathBuf>> {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut aside = path.as_os_str().to_owned();
+    aside.push(format!(".corrupt-{secs}"));
+    let aside = PathBuf::from(aside);
+    match std::fs::rename(path, &aside) {
+        Ok(()) => Ok(Some(aside)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 #[cfg(test)]

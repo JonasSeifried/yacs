@@ -6,7 +6,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
 use yacs_client::spaces::{DEFAULT_SPACE_NAME, Space, Spaces};
@@ -26,18 +26,28 @@ pub enum SpacesError {
 
 pub struct SpacesFile {
     dir: PathBuf,
+    /// The last `load` failed, so the file may hold keys this app doesn't
+    /// have: the next `save` moves it aside first.
+    unreadable: AtomicBool,
 }
 
 impl SpacesFile {
     pub fn new(config_dir: &Path) -> Self {
         Self {
             dir: config_dir.to_owned(),
+            unreadable: AtomicBool::new(false),
         }
     }
 
     /// Empty if there's nothing yet. A pairing from 0.3 or earlier becomes a
     /// space called "My devices", saved in the new file.
     pub fn load(&self) -> Result<Spaces, SpacesError> {
+        let loaded = self.read_spaces();
+        self.unreadable.store(loaded.is_err(), Ordering::SeqCst);
+        loaded
+    }
+
+    fn read_spaces(&self) -> Result<Spaces, SpacesError> {
         let Some(json) = read(&self.dir.join(FILE))? else {
             return self.upgrade();
         };
@@ -48,22 +58,16 @@ impl SpacesFile {
         Ok(spaces)
     }
 
-    /// Moves a file `load` couldn't read to `spaces.json.corrupt-<unix secs>`,
-    /// so saving a space afterwards can't overwrite keys that may still be
-    /// in it. `None` if there's no file.
-    pub fn set_aside(&self) -> io::Result<Option<PathBuf>> {
-        let secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
-        let aside = self.dir.join(format!("{FILE}.corrupt-{secs}"));
-        match fs::rename(self.dir.join(FILE), &aside) {
-            Ok(()) => Ok(Some(aside)),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e),
-        }
-    }
-
+    /// Never over a file `load` couldn't read: that one is moved to
+    /// `spaces.json.corrupt-<unix secs>` first. Moving it at startup instead
+    /// would lose the spaces to a read that only failed for a moment.
     pub fn save(&self, spaces: &Spaces) -> Result<(), SpacesError> {
+        if self.unreadable.load(Ordering::SeqCst) {
+            if let Some(aside) = yacs_client::spaces::set_aside(&self.dir.join(FILE))? {
+                tracing::warn!(path = %aside.display(), "kept the spaces that couldn't be read aside");
+            }
+            self.unreadable.store(false, Ordering::SeqCst);
+        }
         let json = serde_json::to_string_pretty(spaces).expect("spaces always serialize");
         Ok(write_private(&self.dir.join(FILE), &json)?)
     }
@@ -180,27 +184,36 @@ mod tests {
     }
 
     /// Joining again after that must not overwrite the keys that may still
-    /// be in the file.
+    /// be in the file, and nothing moves until then.
     #[test]
-    fn an_unreadable_file_is_kept_aside() {
+    fn an_unreadable_file_is_kept_aside_when_saving() {
         let dir = tempfile::tempdir().unwrap();
         let file = SpacesFile::new(dir.path());
-        assert_eq!(file.set_aside().unwrap(), None);
-
         fs::write(dir.path().join(FILE), "garbage").unwrap();
         assert!(matches!(file.load(), Err(SpacesError::Corrupt)));
-        let aside = file.set_aside().unwrap().unwrap();
-        assert_eq!(aside.parent(), Some(dir.path()));
-        assert!(
-            aside
-                .file_name()
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .starts_with("spaces.json.corrupt-")
+        assert_eq!(
+            fs::read_to_string(dir.path().join(FILE)).unwrap(),
+            "garbage"
         );
-        assert_eq!(fs::read_to_string(&aside).unwrap(), "garbage");
-        assert_eq!(file.load().unwrap(), Spaces::default());
+
+        let mut spaces = Spaces::default();
+        spaces.set_current(
+            Space::new("Anna & me", "https://clip.example.com", &pairing()),
+            None,
+        );
+        file.save(&spaces).unwrap();
+        assert_eq!(file.load().unwrap(), spaces);
+        let aside: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.to_string_lossy().contains("spaces.json.corrupt-"))
+            .collect();
+        assert_eq!(aside.len(), 1, "{aside:?}");
+        assert_eq!(fs::read_to_string(&aside[0]).unwrap(), "garbage");
+
+        // Saving again replaces the file as usual.
+        file.save(&Spaces::default()).unwrap();
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
     }
 
     #[test]
