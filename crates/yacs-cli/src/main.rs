@@ -498,7 +498,14 @@ async fn join(cli: &Cli, input: &str, name: Option<&str>) -> Result<()> {
         space.relay,
         relay_version(&config)
     );
-    eprintln!("Saved to {}; `yacs leave` forgets it.", path.display());
+    if config::is_desktop_apps(&path) {
+        eprintln!(
+            "Saved to {}, so the desktop app is in it too; `yacs leave` leaves it on both.",
+            path.display()
+        );
+    } else {
+        eprintln!("Saved to {}; `yacs leave` forgets it.", path.display());
+    }
     Ok(())
 }
 
@@ -594,8 +601,13 @@ fn manage(command: &Command) -> Result<()> {
         Command::Leave => match saved.leave_current() {
             Some(space) => {
                 config::save_or_remove(&path, &saved)?;
+                let also = if config::is_desktop_apps(&path) {
+                    " (the desktop app too)"
+                } else {
+                    ""
+                };
                 eprintln!(
-                    "Left \"{}\". Its clips stay on {} for its other devices.",
+                    "Left \"{}\"{also}. Its clips stay on {} for its other devices.",
                     space.name, space.relay
                 );
             }

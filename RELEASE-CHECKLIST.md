@@ -27,6 +27,16 @@ Checks after a release, on the real apps, instead of building on every platform 
 **CLI**
 - [ ] `yacs update`, then `yacs --version` shows the new version; `yacs send --text hi` and `yacs recv` work.
 
+## Next release (after 0.7.2)
+
+**`yacs join` on Windows** (it said "wrong code" in the 0.7.2 checks)
+- [ ] Show a code on the phone and run `yacs join 12-panda-tulip` with it: it joins. Typing it at the prompt shows what you type.
+
+**One space for the app and the command** (a Mac or Windows PC with the command installed)
+- [ ] After the update, `yacs spaces` shows the app's space without installing the command again. If `yacs` was in another space before, its first command says it now uses the app's.
+- [ ] Leave the space in the app, then `yacs join` with a code or link: within a few seconds the app is in the space too (Settings and Spotlight show it, clips arrive).
+- [ ] `yacs leave`: the app shows "Welcome to YACS" within a few seconds. Join in the app: `yacs spaces` shows it.
+
 ## 0.7.2
 
 What the automated tests couldn't cover, or covered only in a browser. Everything not listed (the relay's disk limit, the upload retries, the damaged spaces files, the client's timeouts) is covered by tests that failed without the fix.

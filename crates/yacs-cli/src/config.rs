@@ -1,5 +1,6 @@
 //! The spaces `yacs join` and `yacs space new` save, so later commands need
-//! no flags. The format is shared with the desktop app, see `yacs_client::spaces`.
+//! no flags. On a computer with the desktop app that's the app's own file, so
+//! both are always in the same space; see `yacs_client::spaces`.
 
 use std::path::{Path, PathBuf};
 
@@ -28,7 +29,12 @@ impl Legacy {
     }
 }
 
-/// `YACS_CONFIG`, or `yacs/cli.json` in the user's config directory
+/// The desktop app's folder in the user's config directory (Tauri's
+/// `app_config_dir`), named after the app's identifier.
+const DESKTOP_APP_DIR: &str = "com.jonasseifried.yacs";
+
+/// `YACS_CONFIG`; else the desktop app's `spaces.json` if the app is on this
+/// computer; else `yacs/cli.json` in the user's config directory
 /// (`~/.config` on Linux).
 pub fn path() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("YACS_CONFIG") {
@@ -37,7 +43,55 @@ pub fn path() -> Result<PathBuf> {
     let Some(dir) = dirs::config_dir() else {
         bail!("can't find a config directory; set YACS_CONFIG to a file path");
     };
-    Ok(dir.join("yacs").join("cli.json"))
+    Ok(locate(&dir))
+}
+
+/// Is `path` the desktop app's file, so joining or leaving changes the app too?
+pub fn is_desktop_apps(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == "spaces.json")
+}
+
+/// The first time the desktop app's file is used, a space `yacs` joined on
+/// its own goes there if the app isn't in one; otherwise the app's space
+/// wins, and `cli.json` is kept as `cli.json.old`.
+fn locate(config_dir: &Path) -> PathBuf {
+    let own = config_dir.join("yacs").join("cli.json");
+    let desktop = config_dir.join(DESKTOP_APP_DIR);
+    if !desktop.is_dir() {
+        return own;
+    }
+    let shared = desktop.join("spaces.json");
+    if own.exists()
+        && let Err(e) = move_into(&own, &shared)
+    {
+        eprintln!("warning: {e:#}");
+    }
+    shared
+}
+
+/// Leaves both files alone while the app's can't be read.
+fn move_into(own: &Path, shared: &Path) -> Result<()> {
+    let theirs = load(shared)?;
+    let mut old = own.as_os_str().to_owned();
+    old.push(".old");
+    let old = PathBuf::from(old);
+    match load(own) {
+        Ok(mine) => match (mine.current(), theirs.current()) {
+            (Some(_), None) => save(shared, &mine)?,
+            (Some(mine), Some(theirs)) if mine.pairing().ok() != theirs.pairing().ok() => {
+                eprintln!(
+                    "yacs now uses the desktop app's space, \"{}\" on {}, instead of \"{}\" (kept in {}).",
+                    theirs.name,
+                    theirs.relay,
+                    mine.name,
+                    old.display()
+                );
+            }
+            _ => {}
+        },
+        Err(e) => eprintln!("{e:#}. Kept it as {}.", old.display()),
+    }
+    std::fs::rename(own, &old).with_context(|| format!("moving {} aside", own.display()))
 }
 
 /// Empty if nothing is saved yet. A file from 0.3 or earlier becomes a space
@@ -111,6 +165,69 @@ mod tests {
     use yacs_core::{ChannelId, ChannelKey};
 
     use super::*;
+
+    fn joined(name: &str, n: u8) -> Spaces {
+        let pairing = Pairing {
+            channel_id: ChannelId::from_bytes([n; 32]),
+            key: ChannelKey::from_bytes([n; 32]),
+        };
+        let mut spaces = Spaces::default();
+        spaces.set_current(Space::new(name, "https://clip.example.com", &pairing), None);
+        spaces
+    }
+
+    #[test]
+    fn without_the_desktop_app_yacs_keeps_its_own_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(locate(dir.path()), dir.path().join("yacs").join("cli.json"));
+    }
+
+    /// Joined with `yacs` while the app was in no space: the app joins too.
+    #[test]
+    fn a_space_only_yacs_is_in_goes_to_the_desktop_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let own = dir.path().join("yacs").join("cli.json");
+        save(&own, &joined("Server", 1)).unwrap();
+        std::fs::create_dir(dir.path().join(DESKTOP_APP_DIR)).unwrap();
+
+        let shared = locate(dir.path());
+        assert_eq!(shared, dir.path().join(DESKTOP_APP_DIR).join("spaces.json"));
+        assert_eq!(load(&shared).unwrap(), joined("Server", 1));
+        assert!(!own.exists());
+        assert!(own.with_extension("json.old").exists());
+        assert_eq!(locate(dir.path()), shared);
+    }
+
+    #[test]
+    fn the_desktop_apps_space_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let own = dir.path().join("yacs").join("cli.json");
+        let shared = dir.path().join(DESKTOP_APP_DIR).join("spaces.json");
+        save(&own, &joined("Server", 1)).unwrap();
+        save(&shared, &joined("Home", 2)).unwrap();
+
+        assert_eq!(locate(dir.path()), shared);
+        assert_eq!(load(&shared).unwrap(), joined("Home", 2));
+        assert_eq!(
+            load(&own.with_extension("json.old")).unwrap(),
+            joined("Server", 1)
+        );
+    }
+
+    /// Whatever is in it may be the only copy of a space's key.
+    #[test]
+    fn nothing_moves_while_the_desktop_apps_file_is_damaged() {
+        let dir = tempfile::tempdir().unwrap();
+        let own = dir.path().join("yacs").join("cli.json");
+        let shared = dir.path().join(DESKTOP_APP_DIR).join("spaces.json");
+        save(&own, &joined("Server", 1)).unwrap();
+        std::fs::create_dir(shared.parent().unwrap()).unwrap();
+        std::fs::write(&shared, "garbage").unwrap();
+
+        assert_eq!(locate(dir.path()), shared);
+        assert_eq!(load(&own).unwrap(), joined("Server", 1));
+        assert_eq!(std::fs::read_to_string(&shared).unwrap(), "garbage");
+    }
 
     #[test]
     fn upgrades_a_pairing_saved_before_spaces() {

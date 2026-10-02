@@ -73,7 +73,7 @@ chmod +x ~/.local/bin/yacs
 yacs join 12-panda-tulip   # the code or link from a computer in the space: Settings → Invite a device…
 ```
 
-On a Mac or Windows PC with the desktop app, use Settings → Command line → **Install command** instead: it joins the computer's space and updates along with the app. (`yacs-cli-macos` and `yacs-cli-windows-x86_64.exe` are also on the [releases page](https://github.com/JonasSeifried/yacs/releases).) Once it's in a space:
+On a Mac or Windows PC with the desktop app, use Settings → Command line → **Install command** instead: it updates along with the app. On a computer with the desktop app, `yacs` uses the app's spaces, so both are always in the same space: joining or leaving with one does it for the other too. (`yacs-cli-macos` and `yacs-cli-windows-x86_64.exe` are also on the [releases page](https://github.com/JonasSeifried/yacs/releases).) Once it's in a space:
 
 ```sh
 yacs send ~/.ssh/id_ed25519.pub   # text files arrive as text, images as images

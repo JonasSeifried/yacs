@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::{Channel, Response};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
-use yacs_client::spaces::{Accepted, DEFAULT_SPACE_NAME, Link, Space, clean_name};
+use yacs_client::spaces::{Accepted, DEFAULT_SPACE_NAME, Link, Space, Spaces, clean_name};
 use yacs_client::{Client, LocalFiles, PUBLIC_RELAY, stream_of};
 use yacs_core::api::{ClipMeta, ServerConfig, SpaceLimits};
 use yacs_core::{Clip, ClipItem, Pairing, Stream, StreamFile};
@@ -196,6 +196,59 @@ pub fn leave_space(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> 
     live::restart(&app);
     let _ = app.emit(windows::EVENT_STATUS_CHANGED, ());
     Ok(())
+}
+
+/// How often to look whether `yacs` changed the spaces file.
+const SPACES_POLL: Duration = Duration::from_secs(2);
+
+/// The `yacs` command on this computer saves its spaces in this app's file,
+/// so a space joined, left or renamed there is here too, while the app runs.
+pub fn watch_spaces(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let mut seen = state.spaces_file.stamp();
+        loop {
+            tokio::time::sleep(SPACES_POLL).await;
+            let stamp = state.spaces_file.stamp();
+            if stamp == seen {
+                continue;
+            }
+            seen = stamp;
+            if let Some(spaces) = state.spaces_file.reread() {
+                adopt_spaces(&app, spaces);
+            }
+        }
+    });
+}
+
+/// Switches to the space in use in `next` if that's another one (or the
+/// relay's token changed); a new name only needs the windows told.
+fn adopt_spaces(app: &AppHandle, next: Spaces) {
+    let state = app.state::<AppState>();
+    let in_use = |spaces: &Spaces| {
+        spaces.current().map(|space| {
+            let token = spaces.token(&space.relay).map(str::to_owned);
+            (space.pairing().ok(), space.relay.clone(), token)
+        })
+    };
+    let switched = {
+        let mut spaces = state.spaces();
+        if *spaces == next {
+            return;
+        }
+        let switched = in_use(&spaces) != in_use(&next);
+        *spaces = next;
+        switched.then(|| client_for(&spaces))
+    };
+    if let Some(client) = switched {
+        tracing::info!("the yacs command changed the space in use");
+        app.state::<Transfers>().cancel();
+        codes::stop(app);
+        state.set_client(client);
+        live::restart(app);
+    }
+    let _ = app.emit(windows::EVENT_STATUS_CHANGED, ());
 }
 
 #[derive(Deserialize)]
@@ -654,18 +707,11 @@ pub fn stop_code(app: AppHandle) {
     codes::stop(&app);
 }
 
-/// Puts `yacs` on the PATH and, if this computer is in a space, adds the
-/// command to it. May wait for macOS's admin password prompt.
+/// Puts `yacs` on the PATH, in this computer's space (see `watch_spaces`).
+/// May wait for macOS's admin password prompt.
 #[tauri::command]
-pub async fn install_cli(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
-    let link = {
-        let spaces = state.spaces();
-        spaces
-            .current()
-            .filter(|_| state.client().is_some())
-            .and_then(|space| pairing::space_link(space, spaces.token(&space.relay)).ok())
-    };
-    let result = tauri::async_runtime::spawn_blocking(move || cli::install(link.as_deref()))
+pub async fn install_cli(app: AppHandle) -> CmdResult<()> {
+    let result = tauri::async_runtime::spawn_blocking(cli::install)
         .await
         .map_err(|e| e.to_string())?;
     let _ = app.emit(windows::EVENT_STATUS_CHANGED, ());

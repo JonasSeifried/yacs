@@ -89,6 +89,7 @@ pub fn run() {
             app.manage(transfers::Transfers::default());
             app.manage(codes::Codes::default());
             live::restart(app.handle());
+            commands::watch_spaces(app.handle());
 
             windows::create(app.handle())?;
             tray::create(app.handle())?;

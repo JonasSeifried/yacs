@@ -1,12 +1,14 @@
 //! The spaces this computer is in (see `yacs_client::spaces`), with their
 //! keys and the relays' access tokens, stored in `spaces.json` in the app's
-//! config dir, readable only by the user. The `yacs` command keeps its own
-//! list the same way.
+//! config dir, readable only by the user. The `yacs` command on this computer
+//! uses the same file, so a space joined or left there is here too
+//! (`commands::watch_spaces`).
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::SystemTime;
 
 use serde::Deserialize;
 use yacs_client::spaces::{DEFAULT_SPACE_NAME, Space, Spaces};
@@ -45,6 +47,30 @@ impl SpacesFile {
         let loaded = self.read_spaces();
         self.unreadable.store(loaded.is_err(), Ordering::SeqCst);
         loaded
+    }
+
+    /// What's in the file now, after `yacs` may have changed it; `None` if
+    /// it can't be read. Unlike `load`, a failed read doesn't make the next
+    /// `save` move the file aside: it may fail just while `yacs` replaces it.
+    pub fn reread(&self) -> Option<Spaces> {
+        let json = read(&self.dir.join(FILE)).ok()?;
+        let Some(json) = json else {
+            // `yacs leave` removes the file with the last space.
+            return Some(Spaces::default());
+        };
+        let spaces: Spaces = serde_json::from_str(&json).ok()?;
+        if spaces.spaces.iter().any(|s| s.pairing().is_err()) {
+            return None;
+        }
+        // Readable again, e.g. because `yacs join` replaced a damaged file.
+        self.unreadable.store(false, Ordering::SeqCst);
+        Some(spaces)
+    }
+
+    /// Changes whenever the file is replaced or removed.
+    pub fn stamp(&self) -> Option<(SystemTime, u64)> {
+        let meta = fs::metadata(self.dir.join(FILE)).ok()?;
+        Some((meta.modified().ok()?, meta.len()))
     }
 
     fn read_spaces(&self) -> Result<Spaces, SpacesError> {
@@ -214,6 +240,44 @@ mod tests {
         // Saving again replaces the file as usual.
         file.save(&Spaces::default()).unwrap();
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+
+    /// What the `yacs` command does to the file while the app runs.
+    #[test]
+    fn rereads_what_yacs_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = SpacesFile::new(dir.path());
+        assert_eq!(file.stamp(), None);
+        assert_eq!(file.reread(), Some(Spaces::default()));
+
+        // A file `yacs` is just replacing reads as nothing new, and doesn't
+        // make the next save move it aside.
+        fs::write(dir.path().join(FILE), "garbage").unwrap();
+        let garbage = file.stamp();
+        assert!(garbage.is_some());
+        assert_eq!(file.reread(), None);
+
+        let mut joined = Spaces::default();
+        joined.set_current(
+            Space::new("Server", "https://clip.example.com", &pairing()),
+            None,
+        );
+        // As `yacs join` writes it, from a startup that found it damaged.
+        assert!(file.load().is_err());
+        fs::write(
+            dir.path().join(FILE),
+            serde_json::to_string(&joined).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(file.stamp(), garbage);
+        assert_eq!(file.reread(), Some(joined.clone()));
+        file.save(&joined).unwrap();
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+
+        // `yacs leave` removes it with the last space.
+        fs::remove_file(dir.path().join(FILE)).unwrap();
+        assert_eq!(file.stamp(), None);
+        assert_eq!(file.reread(), Some(Spaces::default()));
     }
 
     #[test]

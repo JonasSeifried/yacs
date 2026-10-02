@@ -2,7 +2,7 @@
 //! invite link other devices join with.
 
 use yacs_client::Client;
-use yacs_client::spaces::{Space, SpaceLink, invite_url, normalize_relay};
+use yacs_client::spaces::{invite_url, normalize_relay};
 use yacs_core::InviteSecret;
 use yacs_core::Pairing;
 
@@ -54,14 +54,6 @@ pub fn invite(relay: &str, secret: &InviteSecret) -> Invite {
     }
 }
 
-/// For the bundled `yacs` command, on this computer: the space itself, so
-/// installing needs no round trip to the relay.
-pub fn space_link(space: &Space, token: Option<&str>) -> Result<String, String> {
-    Ok(SpaceLink::new(space, token)
-        .map_err(|e| e.to_string())?
-        .to_url())
-}
-
 fn warning(relay: &str) -> Option<String> {
     let parsed = url::Url::parse(relay).ok();
     let host = parsed
@@ -110,17 +102,6 @@ mod tests {
             let warning = invite(local, &secret).warning.unwrap();
             assert!(warning.contains("can't reach"), "{local}: {warning}");
         }
-    }
-
-    #[test]
-    fn space_link_carries_the_space_and_token() {
-        let space = Space::new("Home", "https://clip.example.com/", &pairing());
-        let url = space_link(&space, Some("s3cret &x")).unwrap();
-        let secret = pairing().to_secret();
-        assert_eq!(
-            url,
-            format!("https://clip.example.com/#pair={secret}&token=s3cret+%26x&name=Home")
-        );
     }
 
     #[tokio::test]

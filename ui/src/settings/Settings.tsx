@@ -178,12 +178,13 @@ function CommandLine({ status }: { status: Status }) {
               <code>yacs</code> is installed at {location}.
             </>
           )}{" "}
-          Try <code>yacs send notes.txt</code> or <code>yacs recv</code>. It updates along with the app.
+          Try <code>yacs send notes.txt</code> or <code>yacs recv</code>. It updates along with the app,
+          and it's always in the same space as this computer.
         </p>
       ) : (
         <p className="hint">
-          Adds the <code>yacs</code> command for terminals and scripts
-          {status.space && `, in “${status.space.name}” like this computer`}.{" "}
+          Adds the <code>yacs</code> command for terminals and scripts, always in the same space as this
+          computer{status.space && ` (now “${status.space.name}”)`}.{" "}
           {status.os === "macos"
             ? `It goes to ${location}; macOS may ask for your password.`
             : "It updates along with the app."}

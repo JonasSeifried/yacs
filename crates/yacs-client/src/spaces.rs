@@ -1,6 +1,7 @@
 //! The spaces a device takes part in, as the desktop app (`spaces.json`) and
-//! the `yacs` command (`cli.json`) store them. Each app keeps its own file,
-//! readable only by the user: it holds every space's key.
+//! the `yacs` command store them, in one file readable only by the user: it
+//! holds every space's key. `yacs` uses the desktop app's file if the app is
+//! on the computer, else its own `cli.json`.
 //!
 //! The list can hold several spaces, possibly on different relays; the apps
 //! use the first one for now. Access tokens are kept per relay, apart from the
