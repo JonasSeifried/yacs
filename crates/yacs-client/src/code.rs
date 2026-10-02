@@ -1,15 +1,15 @@
 //! Typed codes over the relay's rendezvous (see `yacs_core::code` for the
 //! exchange, `yacs_core::api` for the routes).
 //!
-//! Reads are retried on network trouble and server errors, since asking
-//! again changes nothing. Writes aren't: one whose answer got lost would be
-//! refused the second time, as if someone else had used the code.
+//! Reads are retried on network trouble and server errors. Writes aren't:
+//! one whose answer got lost would be refused the second time, as if
+//! someone else had used the code.
 
 use reqwest::{Response, Url};
 use yacs_core::api::{ENVELOPE_CONTENT_TYPE, RendezvousOpened};
 use yacs_core::{Code, CodeInviter, CodeJoiner, Invite};
 
-use crate::chunks::retry;
+use crate::chunks::{retry, transient};
 use crate::{Client, Error, Result, checked, open_http, relay_url};
 
 /// Seconds each read waits on the relay before asking again.
@@ -137,9 +137,22 @@ pub async fn join_with_code(relay: &str, code: &Code, device_name: &str) -> Resu
         Ok(url)
     };
 
+    // The relay closes the exchange as it hands the joiner `a/1`, so when
+    // that answer got lost, asking again finds it gone: the failure is the
+    // network's, not a wrong code.
     let read = |path: &'static str| {
         let (http, url) = (&http, &url);
-        retry(move || async move { wait(checked(http.get(url(path)?).send().await?).await).await })
+        let once =
+            move || async move { wait(checked(http.get(url(path)?).send().await?).await).await };
+        async move {
+            match once().await {
+                Err(e) if transient(&e) => match retry(once).await {
+                    Ok(Waited::Gone) => Err(e),
+                    retried => retried,
+                },
+                first => first,
+            }
+        }
     };
 
     let message = loop {
@@ -204,14 +217,20 @@ mod tests {
 
     /// A rendezvous that answers each read in `flaky` with a 502 once, as a
     /// proxy in front of a relay might. Reads don't wait: nothing yet is 204.
-    async fn flaky_rendezvous(flaky: &[&str]) -> String {
+    /// A read in `lost` takes the message once it's there, like the relay
+    /// does with `a/1`, but its answer comes back as a 502.
+    async fn flaky_rendezvous(flaky: &[&str], lost: &[&str]) -> String {
         let slots = Arc::new(Mutex::new(HashMap::<String, Vec<u8>>::new()));
-        let flaky = Arc::new(Mutex::new(
-            flaky.iter().map(|s| s.to_string()).collect::<HashSet<_>>(),
-        ));
+        let set = |slots: &[&str]| {
+            Arc::new(Mutex::new(
+                slots.iter().map(|s| s.to_string()).collect::<HashSet<_>>(),
+            ))
+        };
+        let (flaky, lost, gone) = (set(flaky), set(lost), set(&[]));
         let app = axum::Router::new().fallback(
             move |method: Method, uri: Uri, body: axum::body::Bytes| {
                 let (slots, flaky) = (slots.clone(), flaky.clone());
+                let (lost, gone) = (lost.clone(), gone.clone());
                 async move {
                     let path = uri.path();
                     if method == Method::POST && path.ends_with("/rendezvous") {
@@ -226,6 +245,16 @@ mod tests {
                             StatusCode::NO_CONTENT.into_response()
                         }
                         Method::GET if flaky.lock().unwrap().remove(&slot) => {
+                            StatusCode::BAD_GATEWAY.into_response()
+                        }
+                        Method::GET if gone.lock().unwrap().contains(&slot) => {
+                            StatusCode::NOT_FOUND.into_response()
+                        }
+                        Method::GET
+                            if lost.lock().unwrap().contains(&slot)
+                                && slots.lock().unwrap().remove(&slot).is_some() =>
+                        {
+                            gone.lock().unwrap().insert(slot);
                             StatusCode::BAD_GATEWAY.into_response()
                         }
                         Method::GET => match slots.lock().unwrap().get(&slot) {
@@ -247,7 +276,7 @@ mod tests {
     /// typed again then said someone else had used it.
     #[tokio::test]
     async fn a_code_exchange_rides_out_a_bad_gateway() {
-        let relay = flaky_rendezvous(&["7/a/0", "7/b/0", "7/a/1"]).await;
+        let relay = flaky_rendezvous(&["7/a/0", "7/b/0", "7/a/1"], &[]).await;
         let pairing = yacs_core::Pairing {
             channel_id: yacs_core::ChannelId::from_bytes([1; 32]),
             key: yacs_core::ChannelKey::from_bytes([2; 32]),
@@ -267,5 +296,27 @@ mod tests {
             (invite.space_name.as_str(), invite.inviter.as_str()),
             ("My devices", "Mac")
         );
+    }
+
+    /// The invite was handed over but its answer lost: asking again finds
+    /// the exchange closed, which is no reason to call the code wrong.
+    #[tokio::test]
+    async fn a_lost_invite_isnt_a_wrong_code() {
+        let relay = flaky_rendezvous(&[], &["7/a/1"]).await;
+        let pairing = yacs_core::Pairing {
+            channel_id: yacs_core::ChannelId::from_bytes([1; 32]),
+            key: yacs_core::ChannelKey::from_bytes([2; 32]),
+        };
+        let client = Client::new(&relay, None, pairing).unwrap();
+        let offer = client.offer_code().await.unwrap();
+        let code = offer.code();
+
+        let (outcome, invite) = tokio::join!(
+            client.complete_code(offer, "My devices", "Mac"),
+            join_with_code(&relay, &code, "Phone"),
+        );
+        assert!(matches!(outcome, Ok(CodeOutcome::Joined { .. })));
+        let err = invite.unwrap_err();
+        assert!(matches!(err, Error::Server { status: 502, .. }), "{err}");
     }
 }

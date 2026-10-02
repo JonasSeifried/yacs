@@ -12,7 +12,7 @@ import { cutText, htmlFitsPreview } from "../shared/clip";
 import { SseParser } from "../shared/sse";
 import { chunkSizeFor } from "../shared/stream";
 import type { ChannelEvent, Clip, ClipItem, ClipMeta, ClipView, ServerConfig, SpaceLimits, StreamInfo } from "../shared/types";
-import { API, relayRequest, relayUpload, retrying } from "./relay";
+import { API, RelayError, relayRequest, relayUpload, retrying } from "./relay";
 
 const STORAGE_KEY = "yacs.spaces";
 /** Before spaces: one pairing, `{ secret, token, deviceName }`. */
@@ -168,14 +168,24 @@ export async function joinWithCode(code: string, deviceName: string): Promise<Ta
     const base = `${API}/rendezvous/${joiner.nameplate}`;
     /**
      * A message the other device leaves, or null once the rendezvous is gone.
-     * Retried on network trouble, since asking again changes nothing. The
-     * answer isn't: one whose response got lost would be refused the second
-     * time, as if someone else had used the code.
+     * Retried on network trouble. The answer isn't: one whose response got
+     * lost would be refused the second time, as if someone else had used
+     * the code.
      */
     const never = new AbortController().signal;
     const read = async (path: string) => {
+      const ask = () => relayRequest(`${base}/${path}?wait=25`, null, {}, [204, 404]);
       for (;;) {
-        const res = await retrying(() => relayRequest(`${base}/${path}?wait=25`, null, {}, [204, 404]), never);
+        let res: Response;
+        try {
+          res = await ask();
+        } catch (e) {
+          if (!(e instanceof RelayError && e.transient)) throw e;
+          res = await retrying(ask, never);
+          // The relay closes the rendezvous as it hands over a/1, so when that
+          // answer got lost, it's gone now: the network failed, not the code.
+          if (res.status === 404) throw e;
+        }
         if (res.status === 404) return null;
         if (res.status === 200) return new Uint8Array(await res.arrayBuffer());
       }

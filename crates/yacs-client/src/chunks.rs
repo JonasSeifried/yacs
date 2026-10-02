@@ -304,7 +304,7 @@ pub(crate) async fn retry<T, F: Future<Output = Result<T>>>(
     attempt().await
 }
 
-fn transient(e: &Error) -> bool {
+pub(crate) fn transient(e: &Error) -> bool {
     match e {
         Error::Http(_) | Error::RateLimited => true,
         Error::Server { status, .. } => {
