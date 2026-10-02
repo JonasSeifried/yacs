@@ -46,12 +46,6 @@ export function clipIcon(clip: ClipView): ClipIcon {
 
 export type PreviewKind = "files" | "html" | "text" | "image" | "none";
 
-/**
- * What the preview shows. Files win: someone attached them on purpose.
- * Text wins over the image: an image next to text is
- * usually a rendering of it (Word), while a copied picture from a browser
- * comes with an `<img>` tag pointing at a URL that is never loaded.
- */
 /** As in the desktop's previews (`clips.rs`): text beyond this isn't needed for one. */
 export const PREVIEW_TEXT_CHARS = 20_000;
 /** Rendering huge HTML is slow; plain text is shown instead. */
@@ -75,6 +69,12 @@ export function htmlFitsPreview(html: string): boolean {
   return html.length <= PREVIEW_HTML_BYTES && new TextEncoder().encode(html).length <= PREVIEW_HTML_BYTES;
 }
 
+/**
+ * What the preview shows. Files win: someone attached them on purpose.
+ * Text wins over the image: an image next to text is
+ * usually a rendering of it (Word), while a copied picture from a browser
+ * comes with an `<img>` tag pointing at a URL that is never loaded.
+ */
 export function previewKind(clip: ClipView): PreviewKind {
   // Without a working sanitizer, HTML is never rendered.
   const html = clip.html !== null && DOMPurify.isSupported;
