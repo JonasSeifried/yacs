@@ -255,7 +255,10 @@ async fn run(cli: Cli) -> Result<()> {
                         }
                     }
                 }
-                (None, _) => content::from_stdin(client.config().await?.inline_max())?,
+                (None, _) => {
+                    let (config, limits) = client.check().await?;
+                    content::from_stdin(config.inline_max(limits.as_ref()))?
+                }
             };
             let clip = Clip {
                 created_at_ms: now_ms() as i64,

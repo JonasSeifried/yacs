@@ -119,16 +119,21 @@ fn text_round_trip_via_argument_and_stdin() {
 #[test]
 fn piping_more_than_a_clip_takes_fails_early() {
     // 36 KB for content, once the relay's room for the envelope is taken off.
-    let relay = relay(&["--max-size", "100KB"]);
-    let err = stderr_of_failure(yacs(&relay, &["send"]).write_stdin(vec![0xff; 50_000]));
+    let small = relay(&["--max-size", "100KB"]);
+    let err = stderr_of_failure(yacs(&small, &["send"]).write_stdin(vec![0xff; 50_000]));
     assert!(err.contains("save it to a file"), "{err}");
-    let err = stderr_of_failure(&mut yacs(&relay, &["recv"]));
+    let err = stderr_of_failure(&mut yacs(&small, &["recv"]));
     assert!(err.contains("no clip"), "{err}");
 
-    yacs(&relay, &["send", "-"])
+    yacs(&small, &["send", "-"])
         .write_stdin(vec![0xff; 30_000])
         .assert()
         .success();
+
+    // A free space's clips are smaller than the relay's: its plan counts.
+    let free = relay(&["--public", "--free-max-size", "100KB"]);
+    let err = stderr_of_failure(yacs(&free, &["send"]).write_stdin(vec![0xff; 150_000]));
+    assert!(err.contains("save it to a file"), "{err}");
 }
 
 #[test]
