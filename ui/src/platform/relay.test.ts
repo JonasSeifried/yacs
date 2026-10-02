@@ -56,4 +56,15 @@ describe("retrying", () => {
     await failed;
     expect(fetch).toHaveBeenCalledTimes(1);
   });
+
+  it("tries at most as often as asked", async () => {
+    vi.useFakeTimers();
+    const fetch = answering(502, 502, 502, 201);
+    const signal = new AbortController().signal;
+    const done = retrying(post(signal), signal, 3);
+    const failed = expect(done).rejects.toMatchObject({ status: 502 });
+    await vi.runAllTimersAsync();
+    await failed;
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
 });

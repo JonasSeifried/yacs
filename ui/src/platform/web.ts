@@ -12,7 +12,7 @@ import { cutText, htmlFitsPreview } from "../shared/clip";
 import { SseParser } from "../shared/sse";
 import { chunkSizeFor } from "../shared/stream";
 import type { ChannelEvent, Clip, ClipItem, ClipMeta, ClipView, ServerConfig, SpaceLimits, StreamInfo } from "../shared/types";
-import { API, RelayError, relayRequest, relayUpload, retrying } from "./relay";
+import { API, CODE_ATTEMPTS, RelayError, relayRequest, relayUpload, retrying } from "./relay";
 
 const STORAGE_KEY = "yacs.spaces";
 /** Before spaces: one pairing, `{ secret, token, deviceName }`. */
@@ -181,7 +181,7 @@ export async function joinWithCode(code: string, deviceName: string): Promise<Ta
           res = await ask();
         } catch (e) {
           if (!(e instanceof RelayError && e.transient)) throw e;
-          res = await retrying(ask, never);
+          res = await retrying(ask, never, CODE_ATTEMPTS);
           // The relay closes the rendezvous as it hands over a/1, so when that
           // answer got lost, it's gone now: the network failed, not the code.
           if (res.status === 404) throw e;
@@ -339,7 +339,7 @@ export class WebClient {
    */
   private async waitFor(url: string, signal: AbortSignal): Promise<Uint8Array | null> {
     for (;;) {
-      const res = await retrying(() => this.request(`${url}?wait=25`, { signal }, [204, 404]), signal);
+      const res = await retrying(() => this.request(`${url}?wait=25`, { signal }, [204, 404]), signal, CODE_ATTEMPTS);
       if (res.status === 404) return null;
       if (res.status === 200) return new Uint8Array(await res.arrayBuffer());
     }

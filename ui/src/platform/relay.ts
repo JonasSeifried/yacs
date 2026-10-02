@@ -100,16 +100,21 @@ export function relayUpload(
 
 /** Attempts per chunk. With the backoff below, about four minutes of trying. */
 const ATTEMPTS = 10;
+/**
+ * For a code exchange's reads, about half a minute, as the apps do: someone
+ * is watching a spinner, and the other device's code doesn't wait forever.
+ */
+export const CODE_ATTEMPTS = 6;
 const BACKOFF_MAX_MS = 30_000;
 
-/** Runs `attempt` again after transient failures, backing off. */
-export async function retrying<T>(attempt: () => Promise<T>, signal: AbortSignal): Promise<T> {
+/** Runs `attempt` again after transient failures, backing off, up to `attempts` times in all. */
+export async function retrying<T>(attempt: () => Promise<T>, signal: AbortSignal, attempts = ATTEMPTS): Promise<T> {
   let delay = 1000;
   for (let i = 1; ; i++) {
     try {
       return await attempt();
     } catch (e) {
-      if (signal.aborted || !(e instanceof RelayError && e.transient) || i >= ATTEMPTS) throw e;
+      if (signal.aborted || !(e instanceof RelayError && e.transient) || i >= attempts) throw e;
       await sleep(delay, signal);
       if (signal.aborted) throw e;
       delay = Math.min(delay * 2, BACKOFF_MAX_MS);
