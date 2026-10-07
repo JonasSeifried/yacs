@@ -2,6 +2,8 @@
 //! Both are created hidden at startup and only ever shown/hidden afterwards,
 //! so the hotkey opens Spotlight instantly.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 #[cfg(windows)]
 use tauri::webview::ScrollBarStyle;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
@@ -20,7 +22,26 @@ pub const EVENT_CLIPS_CHANGED: &str = "clips-changed";
 /// To Settings, with the slot: one of the space's invites was taken.
 pub const EVENT_INVITE_USED: &str = "invite-used";
 
+/// Which windows are showing, as this app last showed or hid them. Not the
+/// windows' own `is_visible`: on Linux a show or hide takes effect a moment
+/// later, so asking right after one gets the old answer.
+#[derive(Default)]
+struct Showing {
+    spotlight: AtomicBool,
+    settings: AtomicBool,
+}
+
+fn showing(app: &AppHandle, label: &str, now: bool) {
+    let showing = app.state::<Showing>();
+    let flag = match label {
+        SPOTLIGHT => &showing.spotlight,
+        _ => &showing.settings,
+    };
+    flag.store(now, Ordering::SeqCst);
+}
+
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
+    app.manage(Showing::default());
     let spotlight =
         WebviewWindowBuilder::new(app, SPOTLIGHT, WebviewUrl::App("spotlight.html".into()))
             .title("YACS")
@@ -182,6 +203,7 @@ pub fn toggle_spotlight(app: &AppHandle) {
         unhide_app(app);
         let _ = w.center();
         let _ = w.show();
+        showing(app, SPOTLIGHT, true);
         let _ = w.set_focus();
         // One YACS window at a time: Spotlight replaces Settings, as Settings
         // replaces Spotlight. Hidden after Spotlight has focus, so focus never
@@ -189,6 +211,7 @@ pub fn toggle_spotlight(app: &AppHandle) {
         if let Some(settings) = app.get_webview_window(SETTINGS) {
             let _ = settings.hide();
         }
+        showing(app, SETTINGS, false);
         let _ = app.emit_to(SPOTLIGHT, EVENT_SPOTLIGHT_SHOWN, ());
         crate::live::resume(app);
         crate::update::check_in_background(app);
@@ -201,6 +224,7 @@ pub fn hide_spotlight(app: &AppHandle) {
     };
     if w.is_visible().unwrap_or(false) {
         let _ = w.hide();
+        showing(app, SPOTLIGHT, false);
         crate::live::pause_if_hidden(app);
         return_focus(app);
     }
@@ -214,6 +238,7 @@ pub fn show_settings(app: &AppHandle) {
         unhide_app(app);
         let _ = w.unminimize();
         let _ = w.show();
+        showing(app, SETTINGS, true);
         let _ = w.set_focus();
         let _ = app.emit_to(SETTINGS, EVENT_SETTINGS_SHOWN, ());
         crate::live::resume(app);
@@ -226,21 +251,22 @@ pub fn hide_settings(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(SETTINGS) {
         let _ = w.hide();
     }
+    showing(app, SETTINGS, false);
     crate::live::pause_if_hidden(app);
     // In case it closed while recording a shortcut.
     crate::commands::resume_hotkey(app.clone(), app.state());
     return_focus(app);
 }
 
-fn is_visible(app: &AppHandle, label: &str) -> bool {
-    app.get_webview_window(label)
-        .and_then(|w| w.is_visible().ok())
-        .unwrap_or(false)
+/// Is Spotlight showing? Right after it's shown or hidden too (see `Showing`).
+pub fn spotlight_open(app: &AppHandle) -> bool {
+    app.state::<Showing>().spotlight.load(Ordering::SeqCst)
 }
 
 /// Is Spotlight or Settings showing? The app only talks to the relay then.
 pub fn any_open(app: &AppHandle) -> bool {
-    is_visible(app, SPOTLIGHT) || is_visible(app, SETTINGS)
+    let showing = app.state::<Showing>();
+    showing.spotlight.load(Ordering::SeqCst) || showing.settings.load(Ordering::SeqCst)
 }
 
 /// Undo `return_focus`: windows of a hidden macOS app stay invisible even

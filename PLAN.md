@@ -435,6 +435,9 @@ Settled: `YACS_MAX_CLIPS_PER_CHANNEL=50`, with a disk quota covering the worst c
 
 A review of the whole codebase after 0.7.1, sorted by how bad each problem is and how much work the fix is. Every fix is one commit with a test that fails without it, or, where the UI can't be tested that way, a check in the real app.
 
+### Fixed in 0.7.4
+- Desktop on Linux: live updates didn't start when Spotlight or Settings opened, and didn't stop when they closed. The app asked the window whether it was showing right after showing or hiding it, and on Linux that only takes effect a moment later; it keeps track of what it showed and hid itself now.
+
 ### Fixed in 0.7.3
 - CLI: `yacs join` showed nothing while typing, so a typo in a code was impossible to spot ("wrong code" on Windows during the 0.7.2 checks); it shows the input now (the relay's account key stays hidden), and takes the link or code as arguments: `yacs join 12-panda-tulip`.
 - Desktop and CLI: one list of spaces per computer (section 8, Spaces).

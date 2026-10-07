@@ -45,8 +45,6 @@ pub fn pause_if_hidden(app: &AppHandle) {
 }
 
 fn connect(app: &AppHandle, replace: bool) {
-    // Asked before taking the lock: off the main thread, asking waits for
-    // it, and the main thread may be waiting for the lock.
     let open = windows::any_open(app);
     let client = app.state::<AppState>().client().filter(|_| open);
     let live = app.state::<Live>();
@@ -132,10 +130,7 @@ fn handle(app: &AppHandle, event: ChannelEvent) {
 
 /// Spotlight re-lists when it's shown anyway, so only an open one is told.
 fn changed(app: &AppHandle) {
-    let open = app
-        .get_webview_window(windows::SPOTLIGHT)
-        .is_some_and(|w| w.is_visible().unwrap_or(false));
-    if open {
+    if windows::spotlight_open(app) {
         let _ = app.emit_to(windows::SPOTLIGHT, windows::EVENT_CLIPS_CHANGED, ());
     }
 }
