@@ -75,6 +75,12 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let window = spotlight.clone();
     spotlight.on_window_event(move |event| match event {
         WindowEvent::Focused(false) => hide_spotlight(&handle),
+        // Alt+F4 only hides too: a closed Spotlight wouldn't open again, and
+        // `Showing` would still count it as open.
+        WindowEvent::CloseRequested { api, .. } => {
+            api.prevent_close();
+            hide_spotlight(&handle);
+        }
         #[cfg(windows)]
         WindowEvent::ThemeChanged(theme) => set_frame(&window, *theme),
         _ => {}
