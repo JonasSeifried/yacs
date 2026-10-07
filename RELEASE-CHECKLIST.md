@@ -27,6 +27,15 @@ Checks after a release, on the real apps, instead of building on every platform 
 **CLI**
 - [ ] `yacs update`, then `yacs --version` shows the new version; `yacs send --text hi` and `yacs recv` work.
 
+## 0.7.4
+
+**Linux .deb after an in-app update** (on GNOME Wayland, 0.5.3 → 0.7.3 left Spotlight unable to open until the .deb was reinstalled; cause unknown)
+- [ ] With only the .deb installed, update from the previous version inside the app. Afterwards, both `yacs-desktop --toggle` (the GNOME shortcut) and the tray's "Open YACS" open Spotlight. If they don't: run `pgrep -af yacs-desktop` and `yacs-desktop --toggle` from a terminal, note the output, then quit and start YACS from the app menu and try again.
+
+**Live updates on Linux** (they never started when a window opened)
+- [ ] With Spotlight open, copy something on the phone: it shows up in Spotlight by itself.
+- [ ] Show an invite code in Settings and use it on another device: Settings says it joined.
+
 ## 0.7.3
 
 **`yacs join` on Windows** (it said "wrong code" in the 0.7.2 checks)
