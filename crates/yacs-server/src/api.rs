@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures_util::TryStreamExt;
+use http_body_util::BodyExt as _;
 use serde::Deserialize;
 use subtle::ConstantTimeEq;
 use tokio_util::io::ReaderStream;
@@ -20,20 +21,21 @@ use ulid::Ulid;
 use yacs_core::api::{
     AccountsConfig, ChannelEvent, ChunkedConfig, ClipMeta, ENVELOPE_CONTENT_TYPE, ErrorBody,
     HEADER_CHUNKED, HEADER_CLIP_ID, HEADER_CREATED_AT, HEADER_EXPIRES_AT, HEADER_SIZE, Plan,
-    RendezvousOpened, ServerConfig, SpaceLimits, UploadCreated, UploadStatus,
+    RelayStats, RendezvousOpened, ServerConfig, SpaceLimits, UploadCreated, UploadStatus,
 };
 use yacs_core::{
     CODE_TTL_SECS, ChannelId, Envelope, InviteSlot, MAX_CHUNK_SIZE, MAX_INVITE_TTL_SECS,
     MAX_SEALED_INVITE,
 };
 
-use crate::accounts::{Accounts, Limits, Refusal};
+use crate::accounts::{Accounts, Limits, Refusal, Seen};
 use crate::clients::{Client, Clients, Connection, Crowded};
 use crate::clock::Clock;
 use crate::config::Config;
 use crate::events::Events;
 use crate::invites::{InviteError, Invites};
 use crate::rendezvous::{MAX_INDEX, MAX_MESSAGE, Rendezvous, RendezvousError, Side};
+use crate::stats::Stats;
 use crate::store::{ChunkLayout, IO_BUFFER, PutError, Store, UploadError};
 
 #[derive(Clone)]
@@ -46,6 +48,7 @@ pub struct AppState {
     pub rendezvous: Arc<Rendezvous>,
     pub accounts: Arc<Accounts>,
     pub clients: Arc<Clients>,
+    pub stats: Arc<Stats>,
 }
 
 /// Longest a free upload may take to complete, at least: its plan's longest TTL.
@@ -117,6 +120,9 @@ pub fn router(state: AppState) -> Router {
             put(joiner_writes).layer(message_limit),
         )
         .layer(middleware::from_fn_with_state(state.clone(), identify))
+        .layer(middleware::from_fn_with_state(state.clone(), count))
+        // Not counted, so a monitor asking every minute doesn't show up in them.
+        .route("/stats", get(stats))
         .layer(middleware::map_response(api_headers));
 
     Router::new()
@@ -186,6 +192,8 @@ fn legal_page(url: Option<&str>) -> Response {
 enum ApiError {
     BadRequest(&'static str),
     Unauthorized,
+    /// For `/stats`.
+    NotOwner,
     NotFound,
     TooLarge,
     /// Over the space's plan.
@@ -214,6 +222,10 @@ impl IntoResponse for ApiError {
             Self::Unauthorized => (
                 StatusCode::UNAUTHORIZED,
                 "this relay needs its account key to create a space",
+            ),
+            Self::NotOwner => (
+                StatusCode::UNAUTHORIZED,
+                "the stats need the relay's account key or its stats key",
             ),
             Self::NotFound => (StatusCode::NOT_FOUND, "not found"),
             Self::TooLarge => (
@@ -367,7 +379,15 @@ async fn authorize(
             Refusal::TooManySpaces => ApiError::TooManySpaces,
         })?;
     let limits = match account {
-        Some(account) => Limits::of(account, config),
+        Some((account, seen)) => {
+            if seen != Seen::Before {
+                state.stats.record(state.clock.now_ms(), |u| {
+                    u.active_spaces += 1;
+                    u.new_spaces += u64::from(seen == Seen::New);
+                });
+            }
+            Limits::of(account, config)
+        }
         None => Limits::unlimited(config),
     };
     req.extensions_mut().insert(limits);
@@ -395,6 +415,73 @@ async fn identify(
             .into_response());
     }
     Ok(next.run(req).await)
+}
+
+/// Counts each API request, how it ended and the bytes of its body and its
+/// response's, as they stream.
+async fn count(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let counted = |add: fn(&mut yacs_core::api::Usage, u64)| {
+        let (stats, clock) = (state.stats.clone(), state.clock.clone());
+        move |frame: http_body::Frame<Bytes>| {
+            if let Some(data) = frame.data_ref() {
+                let n = data.len() as u64;
+                stats.record(clock.now_ms(), |u| add(u, n));
+            }
+            frame
+        }
+    };
+    let req = req.map(|body| Body::new(body.map_frame(counted(|u, n| u.bytes_in += n))));
+    let res = next.run(req).await;
+    let status = res.status();
+    state.stats.record(state.clock.now_ms(), |u| {
+        u.requests += 1;
+        match status {
+            StatusCode::TOO_MANY_REQUESTS => u.limited += 1,
+            StatusCode::PAYLOAD_TOO_LARGE => u.too_large += 1,
+            StatusCode::INSUFFICIENT_STORAGE => u.storage_full += 1,
+            StatusCode::UNAUTHORIZED => u.unauthorized += 1,
+            s if s.is_server_error() => u.errors += 1,
+            _ => {}
+        }
+    });
+    res.map(|body| Body::new(body.map_frame(counted(|u, n| u.bytes_out += n))))
+}
+
+/// For the relay's owner and their monitors: see [`RelayStats`].
+async fn stats(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
+    let c = &state.config;
+    let keys = [&c.access_token, &c.stats_token];
+    if keys.iter().all(|k| k.is_none()) {
+        return Err(ApiError::NotFound);
+    }
+    let given = bearer(&headers).ok_or(ApiError::NotOwner)?;
+    let known = keys
+        .iter()
+        .filter_map(|k| k.as_deref())
+        .any(|k| bool::from(given.as_bytes().ct_eq(k.as_bytes())));
+    if !known {
+        return Err(ApiError::NotOwner);
+    }
+    let now = state.clock.now_ms();
+    let recent = state.stats.report(now);
+    let stats = RelayStats {
+        version: env!("CARGO_PKG_VERSION").into(),
+        uptime_secs: state.stats.uptime_secs(now),
+        disk_used_bytes: state.store.used_bytes(),
+        disk_max_bytes: c.max_disk.as_u64(),
+        free_disk_max_bytes: c.free_disk(),
+        listeners: state.events.listeners(),
+        spaces: (c.public || c.access_token.is_some()).then(|| state.accounts.census(now)),
+        last_hour: recent.last_hour,
+        today: recent.today,
+        hours: recent.hours,
+        days: recent.days,
+    };
+    Ok((
+        [(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+        Json(stats),
+    )
+        .into_response())
 }
 
 fn client_of(req: &Request) -> Client {
@@ -593,6 +680,7 @@ async fn create(
         .put(&channel, &body, now, now + ttl_ms, limits.disk_share)
         .await?;
     charged.keep();
+    state.stats.record(now, |u| u.clips += 1);
     state
         .events
         .publish(&channel, ChannelEvent::Added { clip: meta.clone() });
@@ -917,7 +1005,7 @@ async fn put_chunk(
     body: Body,
 ) -> Result<StatusCode, ApiError> {
     let (channel, id) = (parse_channel(&channel)?, parse_id(&id)?);
-    let body = body.into_data_stream().map_err(io::Error::other);
+    let body = TryStreamExt::map_err(body.into_data_stream(), io::Error::other);
     // A chunk sent again (say, after a lost connection) counts once more.
     let again = |len| charge(&state, &channel, &limits, len).is_ok();
     state
@@ -946,13 +1034,12 @@ async fn complete_upload(
     Path((channel, id)): Path<(String, String)>,
 ) -> Result<(StatusCode, Json<ClipMeta>), ApiError> {
     let (channel, id) = (parse_channel(&channel)?, parse_id(&id)?);
-    let (meta, made) = state
-        .store
-        .complete_upload(&channel, id, state.clock.now_ms())
-        .await?;
+    let now = state.clock.now_ms();
+    let (meta, made) = state.store.complete_upload(&channel, id, now).await?;
     if !made {
         return Ok((StatusCode::OK, Json(meta)));
     }
+    state.stats.record(now, |u| u.clips += 1);
     state
         .events
         .publish(&channel, ChannelEvent::Added { clip: meta.clone() });

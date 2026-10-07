@@ -16,6 +16,7 @@ services:
     restart: unless-stopped
     environment:
       YACS_ACCESS_TOKEN: ${YACS_ACCESS_TOKEN:?set YACS_ACCESS_TOKEN in deploy/.env}
+      YACS_STATS_TOKEN: ${YACS_STATS_TOKEN:-}
       YACS_DEFAULT_TTL: ${YACS_DEFAULT_TTL:-15m}
       YACS_MAX_TTL: ${YACS_MAX_TTL:-24h}
       YACS_MAX_SIZE: ${YACS_MAX_SIZE:-20MB}

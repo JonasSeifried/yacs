@@ -45,6 +45,11 @@ pub struct Config {
     #[arg(long, env = "YACS_ACCESS_TOKEN", hide_env_values = true)]
     pub access_token: Option<String>,
 
+    /// A key that only reads the relay's usage totals (`GET /api/v1/stats`),
+    /// for a monitor like Uptime Kuma. The account key reads them too.
+    #[arg(long, env = "YACS_STATS_TOKEN", hide_env_values = true)]
+    pub stats_token: Option<String>,
+
     /// Let anyone create spaces, on the free plan below. Run it behind a
     /// reverse proxy that sets `X-Forwarded-For` to the client's address.
     #[arg(long, env = "YACS_PUBLIC", value_parser = clap::builder::BoolishValueParser::new())]
@@ -120,12 +125,10 @@ impl Config {
         if self.max_size > self.max_disk {
             return Err("max size is larger than max disk".into());
         }
-        if self
-            .access_token
-            .as_deref()
-            .is_some_and(|t| t.trim().is_empty())
-        {
-            self.access_token = None;
+        for token in [&mut self.access_token, &mut self.stats_token] {
+            if token.as_deref().is_some_and(|t| t.trim().is_empty()) {
+                *token = None;
+            }
         }
         for url in [&mut self.privacy_url, &mut self.imprint_url] {
             if url.as_deref().is_some_and(|u| u.trim().is_empty()) {
@@ -204,5 +207,6 @@ mod tests {
     #[test]
     fn blank_token_means_no_token() {
         assert_eq!(parse(&["--access-token", "  "]).unwrap().access_token, None);
+        assert_eq!(parse(&["--stats-token", ""]).unwrap().stats_token, None);
     }
 }

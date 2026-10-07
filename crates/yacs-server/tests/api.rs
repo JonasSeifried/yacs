@@ -11,14 +11,16 @@ use tower::ServiceExt;
 use yacs_core::api::RendezvousOpened;
 use yacs_core::api::{
     AccountsConfig, ChannelEvent, ChunkedConfig, ClipMeta, HEADER_CHUNKED, HEADER_CLIP_ID,
-    HEADER_SIZE, Plan, ServerConfig, SpaceLimits, UploadCreated, UploadStatus,
+    HEADER_SIZE, Plan, RelayStats, ServerConfig, SpaceCount, SpaceLimits, UploadCreated,
+    UploadStatus,
 };
 use yacs_core::{
     CHUNK_TAG_LEN, ChannelId, ChannelKey, Clip, ClipItem, Code, CodeInviter, CodeJoiner, Envelope,
     Invite, InviteSecret, MAX_CHUNK_SIZE, MAX_SEALED_INVITE, MIN_CHUNK_SIZE, Pairing, Payload,
 };
 use yacs_server::{
-    Accounts, AppState, Clients, Config, Events, Invites, ManualClock, Rendezvous, Store, router,
+    Accounts, AppState, Clients, Config, Events, Invites, ManualClock, Rendezvous, Stats, Store,
+    router,
 };
 
 const START_MS: u64 = 1_758_600_000_000;
@@ -80,6 +82,7 @@ async fn app_in(dir: TempDir, args: &[&str]) -> TestApp {
         rendezvous: Arc::new(Rendezvous::default()),
         accounts: accounts.clone(),
         clients,
+        stats: Arc::new(Stats::open(data_dir.as_ref(), START_MS).await.unwrap()),
     });
     TestApp {
         router,
@@ -1819,4 +1822,80 @@ async fn responses_are_https_only_and_api_bytes_never_render() {
             "max-age=31536000"
         );
     }
+}
+
+#[tokio::test]
+async fn the_owner_sees_totals_and_isnt_counted() {
+    let app = app(&[
+        "--public",
+        "--access-token",
+        "s3cret",
+        "--stats-token",
+        "watch",
+        "--free-max-size",
+        "2KiB",
+    ])
+    .await;
+    let stats = |key: &'static str| {
+        let app = &app;
+        async move { app.get_as("/api/v1/stats", key).await }
+    };
+    assert_eq!(
+        app.get("/api/v1/stats").await.status,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(stats("nope").await.status, StatusCode::UNAUTHORIZED);
+
+    let ch = channel(1);
+    let meta = app.create(&ch, None).await;
+    let clip = app.get(&format!("{}/{}", clips(&ch), meta.id)).await;
+    assert_eq!(clip.status, StatusCode::OK);
+    let big = app.post(&clips(&ch), envelope(&"x".repeat(3000))).await;
+    assert_eq!(big.status, StatusCode::PAYLOAD_TOO_LARGE);
+
+    let res = stats("watch").await;
+    assert_eq!(res.status, StatusCode::OK);
+    assert_eq!(res.headers[header::CACHE_CONTROL], "no-store");
+    let s: RelayStats = res.json();
+    let by_owner: RelayStats = stats("s3cret").await.json();
+    assert_eq!(by_owner.today, s.today, "asking isn't counted");
+    assert_eq!(s.today.requests, 3);
+    assert_eq!(s.today.clips, 1);
+    assert_eq!(s.today.new_spaces, 1);
+    assert_eq!(s.today.active_spaces, 1);
+    assert_eq!(s.today.too_large, 1);
+    assert!(s.today.bytes_in >= meta.size + 3000, "{:?}", s.today);
+    assert!(s.today.bytes_out >= meta.size, "{:?}", s.today);
+    assert_eq!(s.last_hour, s.today);
+    assert_eq!(s.hours.len(), 48);
+    assert_eq!(s.hours.last().unwrap().usage, s.today);
+    assert_eq!(s.days.len(), 1);
+    assert_eq!(s.disk_used_bytes, meta.size);
+    assert_eq!(
+        s.spaces,
+        Some(SpaceCount {
+            owner: 0,
+            free: 1,
+            active_today: 1,
+            active_week: 1,
+        })
+    );
+
+    // The next day, the same space is active again, not new.
+    app.clock.advance(24 * 60 * MINUTE);
+    app.list(&ch).await;
+    let s: RelayStats = stats("watch").await.json();
+    assert_eq!(s.today.requests, 1);
+    assert_eq!(s.today.active_spaces, 1);
+    assert_eq!(s.today.new_spaces, 0);
+    assert_eq!(s.last_hour, s.today);
+    let clips_per_day: Vec<u64> = s.days.iter().map(|d| d.usage.clips).collect();
+    assert_eq!(clips_per_day, [1, 0]);
+}
+
+#[tokio::test]
+async fn a_relay_without_keys_has_no_stats() {
+    let app = app(&[]).await;
+    let res = app.get_as("/api/v1/stats", "anything").await;
+    assert_eq!(res.status, StatusCode::NOT_FOUND);
 }

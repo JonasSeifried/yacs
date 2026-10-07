@@ -9,6 +9,7 @@ mod config;
 mod events;
 mod invites;
 mod rendezvous;
+mod stats;
 pub mod store;
 mod web;
 
@@ -29,6 +30,7 @@ pub use config::Config;
 pub use events::Events;
 pub use invites::Invites;
 pub use rendezvous::Rendezvous;
+pub use stats::Stats;
 pub use store::Store;
 
 const REAP_INTERVAL: Duration = Duration::from_secs(60);
@@ -57,6 +59,7 @@ pub async fn run(
         .await?,
     );
     let accounts = Arc::new(Accounts::open(&config.data_dir).await?);
+    let stats = Arc::new(Stats::open(&config.data_dir, clock.now_ms()).await?);
     let clients = Arc::new(Clients::new(config.public, config.requests_per_minute));
     let invites = Arc::new(Invites::new(config.public));
     let config = Arc::new(config);
@@ -71,10 +74,12 @@ pub async fn run(
         rendezvous: rendezvous.clone(),
         accounts: accounts.clone(),
         clients: clients.clone(),
+        stats: stats.clone(),
     });
 
     let reaper_events = events.clone();
     let reaper_accounts = accounts.clone();
+    let reaper_stats = stats.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(REAP_INTERVAL);
         loop {
@@ -85,6 +90,9 @@ pub async fn run(
             clients.prune(clock.now_ms());
             if let Err(e) = reaper_accounts.prune(clock.now_ms()).await {
                 tracing::error!(error = %e, "can't save the registered spaces");
+            }
+            if let Err(e) = reaper_stats.save().await {
+                tracing::warn!(error = %e, "can't save the stats");
             }
             match store.reap(clock.now_ms()).await {
                 Ok(0) => {}
@@ -134,6 +142,9 @@ pub async fn run(
     match tokio::time::timeout(SHUTDOWN_DEADLINE, serve).await {
         Ok(served) => served?,
         Err(_) => tracing::warn!("stopping with requests still running"),
+    }
+    if let Err(e) = stats.save().await {
+        tracing::warn!(error = %e, "can't save the stats");
     }
     accounts.save().await
 }

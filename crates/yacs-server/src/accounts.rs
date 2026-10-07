@@ -22,7 +22,7 @@ use subtle::ConstantTimeEq;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use yacs_core::ChannelId;
-use yacs_core::api::{Plan, SpaceLimits};
+use yacs_core::api::{Plan, SpaceCount, SpaceLimits};
 
 use crate::clients::{Client, DailyQuota};
 use crate::config::Config;
@@ -59,6 +59,16 @@ pub enum Refusal {
     Unauthorized,
     /// This address created its share of spaces today.
     TooManySpaces,
+}
+
+/// What a request was its space's first of, for the stats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seen {
+    /// The space was used today already.
+    Before,
+    FirstToday,
+    /// It just registered.
+    New,
 }
 
 /// A space's limits, resolved for one request.
@@ -202,8 +212,9 @@ impl Accounts {
         })
     }
 
-    /// The account of `channel` for a request carrying `key`, from `client`.
-    /// Registers the space if it's new and may be. `Ok(None)`: a relay
+    /// The account of `channel` for a request carrying `key`, from `client`,
+    /// and whether the space is new or wasn't used yet today. Registers the
+    /// space if it's new and may be. `Ok(None)`: a relay
     /// without accounts, where every space is unlimited.
     pub async fn authorize(
         &self,
@@ -212,7 +223,7 @@ impl Accounts {
         key: Option<&str>,
         client: Client,
         now_ms: u64,
-    ) -> Result<Option<Account>, Refusal> {
+    ) -> Result<Option<(Account, Seen)>, Refusal> {
         let today = day(now_ms);
         let owner = match (key, &config.access_token) {
             (Some(given), Some(expected)) => {
@@ -234,17 +245,19 @@ impl Accounts {
             match spaces.get_mut(channel) {
                 Some(r) if owner && r.account != Account::Owner => None,
                 Some(r) => {
+                    let mut seen = Seen::Before;
                     if r.used_day != today {
                         r.used_day = today;
                         self.dirty.store(true, Ordering::SeqCst);
+                        seen = Seen::FirstToday;
                     }
-                    Some(r.account)
+                    Some((r.account, seen))
                 }
                 None => None,
             }
         };
-        if let Some(account) = registered {
-            return Ok(Some(account));
+        if let Some(registered) = registered {
+            return Ok(Some(registered));
         }
 
         let account = match (owner, config.public) {
@@ -274,7 +287,7 @@ impl Accounts {
             self.dirty.store(true, Ordering::SeqCst);
             tracing::error!(error = %e, "can't save the registered spaces");
         }
-        Ok(Some(account))
+        Ok(Some((account, Seen::New)))
     }
 
     /// Counts `bytes` against the space's daily transfer, unless they'd go
@@ -380,6 +393,26 @@ impl Accounts {
             return Err(e);
         }
         Ok(())
+    }
+
+    /// How many spaces there are, and how many were used lately.
+    pub fn census(&self, now_ms: u64) -> SpaceCount {
+        let today = day(now_ms);
+        let mut count = SpaceCount {
+            owner: 0,
+            free: 0,
+            active_today: 0,
+            active_week: 0,
+        };
+        for r in self.spaces().values() {
+            match r.account {
+                Account::Owner => count.owner += 1,
+                Account::Free => count.free += 1,
+            }
+            count.active_today += u64::from(r.used_day == today);
+            count.active_week += u64::from(r.used_day + 7 > today);
+        }
+        count
     }
 
     pub fn account(&self, channel: &ChannelId) -> Option<Account> {

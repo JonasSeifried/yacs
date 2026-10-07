@@ -52,7 +52,7 @@ Invites are sealed the same way. The relay hands an invite to the first device t
 
 ## The free relay
 
-`yacs-relay.jonasseifried.com` is a relay anyone can use, run by YACS's author as a free service, with no uptime guarantee. The apps use it unless you choose your own. It sees what any relay sees (see above), plus your IP address, which it keeps in memory only, to limit new spaces and requests per address.
+`yacs-relay.jonasseifried.com` is a relay anyone can use, run by YACS's author as a free service, with no uptime guarantee. The apps use it unless you choose your own. It sees what any relay sees (see above), plus your IP address, which it keeps in memory only, to limit new spaces and requests per address. It counts totals per hour and day (requests, bytes, clips, spaces used), never per space or address.
 
 To keep it free and hard to abuse, spaces on it have limits:
 
@@ -112,6 +112,7 @@ docker compose -f compose.nginx.yaml up -d
 | Setting | Default | |
 | --- | --- | --- |
 | `YACS_ACCESS_TOKEN` | unset | The relay's account key: creating a space needs it, joining one doesn't. Set it whenever the relay is reachable from the internet. |
+| `YACS_STATS_TOKEN` | unset | A key that only reads the relay's usage totals, for a monitor (see [Watching the relay](#watching-the-relay)). The account key reads them too. |
 | `YACS_DEFAULT_TTL` | `15m` | Expiry when a client doesn't choose one. |
 | `YACS_MAX_TTL` | `24h` | Longest expiry a client may choose (`7d` shows up in the apps once allowed). |
 | `YACS_MAX_SIZE` | `20MB` | Largest clip sent in one piece. Bigger files go in chunks, which only `YACS_MAX_DISK` limits. |
@@ -124,6 +125,29 @@ docker compose -f compose.nginx.yaml up -d
 **A public relay** like the free one: set `YACS_PUBLIC=true`, and anyone may create spaces on a free plan (`YACS_FREE_MAX_SIZE` `10MB` per clip, `YACS_FREE_MAX_TTL` `1h`, `YACS_FREE_DAILY_TRANSFER` `500MB` per space, `YACS_FREE_MAX_DISK` for all free spaces together, half of `YACS_MAX_DISK` by default, so they leave the rest to yours), with limits per IP address (`YACS_NEW_SPACES_PER_IP` `10` a day, `YACS_REQUESTS_PER_MINUTE` `600`, `YACS_FREE_DAILY_UPLOAD_PER_IP` `1GB` a day to free spaces). Spaces created with `YACS_ACCESS_TOKEN` keep the limits in the table. The reverse proxy must set `X-Forwarded-For` to the client's address, as both setups here do; `curl https://your.relay/api/v1/address` shows the address the relay counts for you, which should be your public IP. Behind Cloudflare, see the notes in `deploy/nginx.conf`. Point `YACS_PRIVACY_URL` and `YACS_IMPRINT_URL` at your privacy policy and imprint; the phone app links them.
 
 Without Docker: `cargo build --release -p yacs-server` (after building the web app, see [Development](#development)) gives a single binary; put it behind any HTTPS reverse proxy. Keep that proxy's access log off or path-free: request paths contain channel ids. The proxy must accept request bodies above `YACS_MAX_SIZE`, and at least 5 MB for the chunks of big files (nginx: `client_max_body_size 25m`; its default of 1 MB is too small). Cloudflare's limits are fine.
+
+### Watching the relay
+
+`https://your.relay/healthz` answers `ok` while the relay runs. Point an uptime monitor at it (Uptime Kuma: an HTTP(s) monitor, or HTTP(s) – Keyword with `ok`). Going through the public URL also checks your proxy and certificate.
+
+`https://your.relay/api/v1/stats`, with `Authorization: Bearer <key>` (the account key, or `YACS_STATS_TOKEN` so the monitor can't do anything else), shows how much the relay is used: totals only, never per space or address.
+
+- `last_hour` and `today`: requests, `bytes_in` and `bytes_out`, `clips` stored, `new_spaces`, `active_spaces`, and how many requests were refused: `limited` (rate limits and quotas), `too_large`, `storage_full`, `unauthorized`, `errors`
+- `hours` (the last 48) and `days` (up to 90): the same per hour and day, kept across restarts in `stats.json` in the data directory
+- right now: `disk_used_bytes` of `disk_max_bytes`, `listeners` (devices connected for live updates) and `spaces` (`owner`, `free`, `active_today`, `active_week`)
+
+```sh
+curl -H "Authorization: Bearer $YACS_STATS_TOKEN" https://your.relay/api/v1/stats
+```
+
+To be warned when something's off, add Uptime Kuma monitors of the type HTTP(s) – Json Query on that URL, with the header `{"Authorization": "Bearer <stats key>"}`, expected value `true`, and an expression such as:
+
+| Warns when | Json Query |
+| --- | --- |
+| over 2 GB went through in the last hour | `last_hour.bytes_in + last_hour.bytes_out < 2000000000` |
+| the disk is 80 % full | `disk_used_bytes < disk_max_bytes * 0.8` |
+| lots of requests are refused (abuse, or limits too tight) | `last_hour.limited + last_hour.too_large < 500` |
+| the relay fails requests | `last_hour.errors + last_hour.storage_full = 0` |
 
 ### Updating the relay
 

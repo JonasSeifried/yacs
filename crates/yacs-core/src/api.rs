@@ -228,6 +228,111 @@ pub struct RendezvousOpened {
     pub nameplate: u16,
 }
 
+/// `GET /api/v1/stats`, for the relay's owner: how much it's used, in totals
+/// only, never per space or address. Needs the account key or the stats key
+/// (`YACS_STATS_TOKEN`); 404 on a relay with neither. 0.7.4 and later.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayStats {
+    pub version: String,
+    pub uptime_secs: u64,
+    /// Stored clips plus what uploads in progress reserved.
+    pub disk_used_bytes: u64,
+    pub disk_max_bytes: u64,
+    /// Of `disk_max_bytes`, what free spaces may fill together.
+    pub free_disk_max_bytes: u64,
+    /// Devices listening for live updates right now.
+    pub listeners: u64,
+    /// `None` on a relay without accounts, which doesn't keep track of spaces.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spaces: Option<SpaceCount>,
+    /// The last 60 minutes.
+    pub last_hour: Usage,
+    /// Since midnight UTC.
+    pub today: Usage,
+    /// The last 48 hours, oldest first, this one included.
+    pub hours: Vec<UsageAt>,
+    /// Up to 90 days, oldest first, today included.
+    pub days: Vec<UsageAt>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SpaceCount {
+    pub owner: u64,
+    pub free: u64,
+    /// Used since midnight UTC.
+    pub active_today: u64,
+    /// Used in the last 7 days, today included.
+    pub active_week: u64,
+}
+
+/// What happened in some stretch of time. Fields a newer relay adds are 0
+/// from older ones.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Usage {
+    /// API requests, refused ones included.
+    pub requests: u64,
+    /// Request bodies the API received: clips, chunks, invites, codes.
+    pub bytes_in: u64,
+    /// Response bodies the API sent.
+    pub bytes_out: u64,
+    /// Clips stored, big files included.
+    pub clips: u64,
+    pub new_spaces: u64,
+    /// Spaces that made their first request of the day (UTC) then. Per day,
+    /// that's the spaces used that day.
+    pub active_spaces: u64,
+    /// Turned away by a rate limit or quota (429).
+    pub limited: u64,
+    /// Over a size limit (413).
+    pub too_large: u64,
+    /// Refused because the disk was full (507).
+    pub storage_full: u64,
+    /// Without the account key, or with a wrong one (401).
+    pub unauthorized: u64,
+    /// Failed on the relay's side (other 5xx).
+    pub errors: u64,
+}
+
+impl std::ops::AddAssign for Usage {
+    fn add_assign(&mut self, other: Self) {
+        let Self {
+            requests,
+            bytes_in,
+            bytes_out,
+            clips,
+            new_spaces,
+            active_spaces,
+            limited,
+            too_large,
+            storage_full,
+            unauthorized,
+            errors,
+        } = other;
+        self.requests += requests;
+        self.bytes_in += bytes_in;
+        self.bytes_out += bytes_out;
+        self.clips += clips;
+        self.new_spaces += new_spaces;
+        self.active_spaces += active_spaces;
+        self.limited += limited;
+        self.too_large += too_large;
+        self.storage_full += storage_full;
+        self.unauthorized += unauthorized;
+        self.errors += errors;
+    }
+}
+
+/// [`Usage`] of one hour or day.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageAt {
+    /// Its start, in RFC 3339 (UTC), e.g. `2026-10-07T13:00:00Z`.
+    pub start: String,
+    pub start_ms: u64,
+    #[serde(flatten)]
+    pub usage: Usage,
+}
+
 /// Body of every non-2xx JSON response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorBody {

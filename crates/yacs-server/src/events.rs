@@ -80,6 +80,14 @@ impl Events {
         Some(Sse::new(events.take_until(closing)).keep_alive(KeepAlive::new().interval(KEEP_ALIVE)))
     }
 
+    /// Listeners on all channels together.
+    pub fn listeners(&self) -> u64 {
+        self.lock()
+            .values()
+            .map(|tx| tx.receiver_count() as u64)
+            .sum()
+    }
+
     /// Forget channels nobody listens to anymore.
     pub fn prune(&self) {
         self.lock().retain(|_, tx| tx.receiver_count() > 0);
