@@ -27,7 +27,10 @@ Checks after a release, on the real apps, instead of building on every platform 
 **CLI**
 - [ ] `yacs update`, then `yacs --version` shows the new version; `yacs send --text hi` and `yacs recv` work.
 
-## Next release (after 0.7.4)
+## 0.7.5
+
+**Watchtower** (the relay on 0.7.4 until then)
+- [ ] A one-off Watchtower run (`--run-once --label-enable`) updates the relay: `/api/v1/config` shows 0.7.5 afterwards.
 
 **Stats page**
 - [ ] `https://yacs-relay.jonasseifried.com/stats` on the phone and a computer: a wrong key says so, the stats key shows the numbers and charts, and reopening the page doesn't ask again.
