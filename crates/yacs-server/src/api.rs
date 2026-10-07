@@ -122,7 +122,12 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), identify))
         .layer(middleware::from_fn_with_state(state.clone(), count))
         // Not counted, so a monitor asking every minute doesn't show up in them.
-        .route("/stats", get(stats))
+        // Rate limited like the rest: it takes the account key, so it mustn't
+        // let anyone guess at it faster.
+        .route(
+            "/stats",
+            get(stats).layer(middleware::from_fn_with_state(state.clone(), identify)),
+        )
         .layer(middleware::map_response(api_headers));
 
     Router::new()

@@ -1894,6 +1894,31 @@ async fn the_owner_sees_totals_and_isnt_counted() {
 }
 
 #[tokio::test]
+async fn guessing_the_stats_key_is_rate_limited() {
+    // Bursts of one.
+    let app = app(&[
+        "--public",
+        "--access-token",
+        "s3cret",
+        "--requests-per-minute",
+        "5",
+    ])
+    .await;
+    let guess = |key: &'static str| {
+        let app = &app;
+        async move {
+            let auth = format!("Bearer {key}");
+            let headers = [from("203.0.113.1")[0], ("authorization", auth.as_str())];
+            app.call(Method::GET, "/api/v1/stats", &headers, vec![])
+                .await
+                .status
+        }
+    };
+    assert_eq!(guess("nope").await, StatusCode::UNAUTHORIZED);
+    assert_eq!(guess("s3cret").await, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
 async fn a_relay_without_keys_has_no_stats() {
     let app = app(&[]).await;
     let res = app.get_as("/api/v1/stats", "anything").await;
