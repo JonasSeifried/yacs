@@ -1,0 +1,108 @@
+<!doctype html>
+<!-- The relay's stats, for its owner: /api/v1/stats drawn as a page. Served by
+     the relay at /stats; the key stays in this browser. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>YACS relay stats</title>
+<link rel="icon" href="/icons/icon-192.png">
+<style>
+:root {
+  --bg: #f6f6f8; --surface: #fff; --text: #1c1b22; --muted: #6b6878; --border: #e3e1ea;
+  --accent: #d83656; --accent-soft: #fae5e9; --danger: #b42318; --danger-soft: #f9eded; --ok: #177544;
+  --radius: 10px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17161c; --surface: #211f28; --text: #eceaf2; --muted: #9a97a8; --border: #35323f;
+    --accent: #ff8699; --accent-soft: #47313b; --danger: #ff7b63; --danger-soft: #402c30; --ok: #5fd197;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 var(--font); }
+main { max-width: 960px; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 28px 0 10px; }
+.muted { color: var(--muted); }
+.spacer { flex: 1; }
+button, input { font: inherit; color: inherit; }
+button { background: none; border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; cursor: pointer; }
+button:hover { border-color: var(--muted); }
+button.link { border: 0; padding: 0; color: var(--muted); text-decoration: underline; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.tile .label { font-size: 13px; color: var(--muted); }
+.tile .value { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile .sub { font-size: 13px; color: var(--muted); }
+.meter { height: 6px; border-radius: 3px; background: var(--border); margin-top: 8px; overflow: hidden; }
+.meter > div { height: 100%; background: var(--accent); }
+.meter.high > div { background: var(--danger); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 6px 0 6px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; padding-left: 0; }
+th { font-weight: 600; font-size: 13px; color: var(--muted); }
+tr:last-child td { border-bottom: 0; }
+td.bad { color: var(--danger); font-weight: 600; }
+.chart-head { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.chart-head button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+svg { display: block; width: 100%; height: 160px; }
+svg .bar { fill: var(--accent); }
+svg .bar:hover { opacity: .7; }
+svg .grid { stroke: var(--border); }
+svg text { fill: var(--muted); font-size: 11px; }
+.readout { font-size: 13px; min-height: 1.45em; margin-top: 6px; font-variant-numeric: tabular-nums; }
+form { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+form input { flex: 1; min-width: 200px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.error { color: var(--danger); background: var(--danger-soft); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
+[hidden] { display: none !important; }
+</style>
+<script src="/stats.js" defer></script>
+</head>
+<body>
+<main>
+  <header>
+    <h1>YACS relay</h1>
+    <span class="muted" id="about"></span>
+    <span class="spacer"></span>
+    <span class="muted" id="updated"></span>
+    <button id="refresh" hidden>Refresh</button>
+  </header>
+
+  <div class="error" id="error" hidden></div>
+
+  <section class="card" id="login" hidden>
+    <strong>Stats key</strong>
+    <div class="muted">The relay's <code>YACS_STATS_TOKEN</code>, or its account key. It stays in this browser.</div>
+    <form id="key-form">
+      <input id="key" type="password" autocomplete="off" placeholder="Key" required>
+      <button type="submit">Show stats</button>
+    </form>
+  </section>
+
+  <div id="stats" hidden>
+    <div class="tiles">
+      <div class="card tile"><div class="label">Disk</div><div class="value" id="disk"></div><div class="sub" id="disk-sub"></div><div class="meter" id="disk-meter"><div></div></div></div>
+      <div class="card tile"><div class="label">Spaces</div><div class="value" id="spaces"></div><div class="sub" id="spaces-sub"></div></div>
+      <div class="card tile"><div class="label">Active spaces</div><div class="value" id="active"></div><div class="sub" id="active-sub"></div></div>
+      <div class="card tile"><div class="label">Devices connected</div><div class="value" id="listeners"></div><div class="sub">listening for live updates</div></div>
+    </div>
+
+    <h2>Last hour and today</h2>
+    <div class="card"><table id="recent"></table></div>
+
+    <h2>Per day</h2>
+    <div class="card" id="days"></div>
+
+    <h2>Per hour</h2>
+    <div class="card" id="hours"></div>
+
+    <p class="muted">Totals only, never per space or address. Days and hours are UTC. <button class="link" id="forget">Forget the key</button></p>
+  </div>
+</main>
+</body>
+</html>

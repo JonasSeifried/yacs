@@ -136,6 +136,8 @@ Without Docker: `cargo build --release -p yacs-server` (after building the web a
 - `hours` (the last 48) and `days` (up to 90): the same per hour and day, kept across restarts in `stats.json` in the data directory
 - right now: `disk_used_bytes` of `disk_max_bytes`, `listeners` (devices connected for live updates) and `spaces` (`owner`, `free`, `active_today`, `active_week`)
 
+To look at them, open `https://your.relay/stats` and enter the key: it shows the numbers and charts per day and per hour, and keeps the key in that browser only. Or as JSON:
+
 ```sh
 curl -H "Authorization: Bearer $YACS_STATS_TOKEN" https://your.relay/api/v1/stats
 ```

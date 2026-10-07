@@ -435,6 +435,9 @@ Settled: `YACS_MAX_CLIPS_PER_CHANNEL=50`, with a disk quota covering the worst c
 
 A review of the whole codebase after 0.7.1, sorted by how bad each problem is and how much work the fix is. Every fix is one commit with a test that fails without it, or, where the UI can't be tested that way, a check in the real app.
 
+### Since 0.7.4
+- Relay: a page for the stats at `/stats` (the key is entered there and kept in the browser), with charts per day and hour; one HTML file and its script, compiled into the relay.
+
 ### Fixed in 0.7.4
 - Desktop on Linux: live updates didn't start when Spotlight or Settings opened, and didn't stop when they closed. The app asked the window whether it was showing right after showing or hiding it, and on Linux that only takes effect a moment later; it keeps track of what it showed and hid itself now.
 - Relay: its owner couldn't see how much it's used. `GET /api/v1/stats` (account key or the read-only `YACS_STATS_TOKEN`) has totals for the last hour, today, 48 hours and 90 days (kept in `stats.json`), never per space or address, for Uptime Kuma's Json Query monitors (README, Watching the relay).

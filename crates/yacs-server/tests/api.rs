@@ -1899,3 +1899,33 @@ async fn a_relay_without_keys_has_no_stats() {
     let res = app.get_as("/api/v1/stats", "anything").await;
     assert_eq!(res.status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn serves_the_stats_page_without_a_key() {
+    let app = app(&["--access-token", "s3cret"]).await;
+    let page = app.get("/stats").await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(
+        page.headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    let csp = page.headers[header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap();
+    assert!(
+        csp.contains("script-src 'self'") && !csp.contains("script-src 'self' 'unsafe"),
+        "{csp}"
+    );
+    assert!(String::from_utf8_lossy(&page.body).contains("/stats.js"));
+    let script = app.get("/stats.js").await;
+    assert_eq!(script.status, StatusCode::OK);
+    assert!(
+        script.headers[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/javascript")
+    );
+    assert!(String::from_utf8_lossy(&script.body).contains("/api/v1/stats"));
+}

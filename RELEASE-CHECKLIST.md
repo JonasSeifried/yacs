@@ -27,6 +27,11 @@ Checks after a release, on the real apps, instead of building on every platform 
 **CLI**
 - [ ] `yacs update`, then `yacs --version` shows the new version; `yacs send --text hi` and `yacs recv` work.
 
+## Next release (after 0.7.4)
+
+**Stats page**
+- [ ] `https://yacs-relay.jonasseifried.com/stats` on the phone and a computer: a wrong key says so, the stats key shows the numbers and charts, and reopening the page doesn't ask again.
+
 ## 0.7.4
 
 **Linux .deb after an in-app update** (on GNOME Wayland, 0.5.3 → 0.7.3 left Spotlight unable to open until the .deb was reinstalled; cause unknown)
