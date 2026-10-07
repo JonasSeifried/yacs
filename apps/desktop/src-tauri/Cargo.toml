@@ -34,8 +34,8 @@ tokio = { version = "1", features = ["macros", "time"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 url = "2.5.8"
-yacs-client = { version = "0.7.3", path = "../../../crates/yacs-client" }
-yacs-core = { version = "0.7.3", path = "../../../crates/yacs-core" }
+yacs-client = { version = "0.7.4", path = "../../../crates/yacs-client" }
+yacs-core = { version = "0.7.4", path = "../../../crates/yacs-core" }
 
 [target.'cfg(windows)'.dependencies]
 # The versions wry uses: only for the WebView2 settings Tauri doesn't expose.
