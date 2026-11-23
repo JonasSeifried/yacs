@@ -435,6 +435,11 @@ Settled: `YACS_MAX_CLIPS_PER_CHANNEL=50`, with a disk quota covering the worst c
 
 A review of the whole codebase after 0.7.1, sorted by how bad each problem is and how much work the fix is. Every fix is one commit with a test that fails without it, or, where the UI can't be tested that way, a check in the real app.
 
+### Fixed in 0.7.7
+- Desktop: a setting (on by default) for whether Spotlight hides after copying or sending a clip. ⇧↵ copies formatted text as plain text. The tray can send the clipboard or copy the newest clip without opening Spotlight; a failure opens Spotlight with the reason.
+- Phone: formatted previews fit their content instead of a fixed 40% of the screen, with bigger text. A copy icon copies a clip without opening it; titles take two lines and drop Markdown marks from formatted text; the Copied tag sits next to the details. "Copy as text" for formatted clips. Long-pressing the app icon on Android offers Paste & send.
+- Phone on Android 13 and later: copying shows only the system's own "Copied" notice, not a second one from YACS.
+
 ### Fixed in 0.7.6
 - Desktop and web: several clips can be picked (⌘/Ctrl-click, Shift-click, Shift+arrows, ⌘/Ctrl+A; holding a clip on a phone) and copied together, their text a line apart or their files together, or deleted with one undo. Clips copied on this device are marked "Copied".
 - Desktop on Windows: the shortcut does nothing while a full-screen or borderless full-screen app, like a game, is in front (a setting turns it off).

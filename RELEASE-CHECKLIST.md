@@ -27,6 +27,23 @@ Checks after a release, on the real apps, instead of building on every platform 
 **CLI**
 - [ ] `yacs update`, then `yacs --version` shows the new version; `yacs send --text hi` and `yacs recv` work.
 
+## 0.7.7
+
+**Spotlight**
+- [ ] With "Hide YACS after copying or sending a clip" ticked (the default), ↵ and ⌘V close Spotlight as before; unticked, Spotlight stays open after both, and Esc still closes it.
+- [ ] A formatted clip (copied from a chat app or a web page) shows "⇧↵ as text"; ⇧↵ pastes it without formatting.
+
+**Tray** (macOS, Windows, Linux)
+- [ ] "Send clipboard" sends it (macOS and Linux show "Sent" by the icon for 2 s), and it shows up on the phone.
+- [ ] "Copy newest clip" puts the newest clip on the clipboard; with no clips yet, Spotlight opens and says so.
+
+**Phone**
+- [ ] A one-line formatted clip from the Mac opens to a small preview, not a tall white box; a long one stops at about 40% of the screen and scrolls.
+- [ ] The copy icon on a closed clip copies it without opening it; the Copied tag shows next to the details. Holding a clip still starts picking, and the icons go away while picking.
+- [ ] A clip like "**op apps:** Settings" from a chat app shows "op apps: Settings" as its title; copied Python (`__init__`, `**kwargs`) keeps its title as it is.
+- [ ] Android 13+: copying shows only Android's own "Copied" notice. iPhone: the YACS "Copied" toast still shows.
+- [ ] Android: long-press the home-screen icon → Paste & send sends the clipboard (reinstall the app from Chrome if the shortcut doesn't show yet). Reloading afterwards doesn't send again.
+
 ## 0.7.6
 
 **Shortcut over games** (Windows)
