@@ -72,22 +72,29 @@ describe("clipTitle", () => {
   });
 
   it("drops Markdown from formatted text only", () => {
-    expect(clipTitle(clip({ hasHtml: true, text: "**op apps:** Settings" }))).toBe("op apps: Settings");
+    const html = "<p><b>op apps:</b> Settings</p>";
+    expect(clipTitle(clip({ hasHtml: true, html, text: "**op apps:** Settings" }))).toBe("op apps: Settings");
     expect(clipTitle(clip({ text: "**op apps:** Settings" }))).toBe("**op apps:** Settings");
+    const code = '<pre><code>if __name__ == "__main__":</code></pre>';
+    expect(clipTitle(clip({ hasHtml: true, html: code, text: 'if __name__ == "__main__":' }))).toBe('if __name__ == "__main__":');
   });
 });
 
 describe("stripMarkdown", () => {
   it("removes marks that hug their text", () => {
     expect(stripMarkdown("## Plan\n- **bold** and *it* and `code`")).toBe("Plan\nbold and it and code");
-    expect(stripMarkdown("> see [the docs](https://x.y/z) ~~old~~ __u__")).toBe("see the docs old u");
-    expect(stripMarkdown("1. one\n- [x] done")).toBe("one\ndone");
+    expect(stripMarkdown("> see [the docs](https://x.y/z) ~~old~~ __u__")).toBe("see the docs old __u__");
+    expect(stripMarkdown("- [x] done\n* item")).toBe("done\nitem");
+    expect(stripMarkdown("[link](http://a.b/c_(d)) end")).toBe("link end");
   });
 
   it("leaves code and arithmetic alone", () => {
     expect(stripMarkdown("f(*args, **kwargs)")).toBe("f(*args, **kwargs)");
     expect(stripMarkdown("2 * 3 * 4")).toBe("2 * 3 * 4");
     expect(stripMarkdown("snake_case_name")).toBe("snake_case_name");
+    expect(stripMarkdown("x**2 + y**2")).toBe("x**2 + y**2");
+    expect(stripMarkdown("__init__.py and a__b__c")).toBe("__init__.py and a__b__c");
+    expect(stripMarkdown("10. Oktober 2026")).toBe("10. Oktober 2026");
   });
 });
 

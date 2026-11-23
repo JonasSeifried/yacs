@@ -71,6 +71,21 @@ const DESKTOP_DOWNLOADS: Record<DesktopOs, { label: string; href: string }> = {
 const PROGRESS_BYTES = 256 * 1024;
 /** While the app is open without a live connection, look for new clips this often. */
 const POLL_MS = 10_000;
+/**
+ * Opened as `/?send` (the app icon's "Paste & send"). Taken off the address
+ * right away, so a reload doesn't send again, and only honored just after
+ * launch: joining a space first and sending minutes later would surprise.
+ */
+let sendOnLaunch = new URLSearchParams(location.search).has("send");
+if (sendOnLaunch) history.replaceState(null, "", location.pathname + location.hash);
+const SEND_ON_LAUNCH_MS = 10_000;
+
+function takeSendOnLaunch(): boolean {
+  const take = sendOnLaunch && performance.now() < SEND_ON_LAUNCH_MS;
+  sendOnLaunch = false;
+  return take;
+}
+
 /** Phone-sized text in formatted previews; the desktop's 13px is small here. */
 const PREVIEW_FONT_PX = 15;
 /** Holding a clip this long starts picking several. */
@@ -1060,15 +1075,18 @@ function Composer(props: {
     })().catch(() => {});
   }, []);
 
-  // Long-pressing the app icon → "Paste & send" opens `/?send`. Reading the
-  // clipboard needs the page focused; where it's refused, the error says so
-  // and the button is right there.
+  // Long-pressing the app icon → "Paste & send". Reading the clipboard needs
+  // the page focused; where it's refused, the error says so and the button
+  // is right there.
   useEffect(() => {
-    if (!new URLSearchParams(location.search).has("send")) return;
-    history.replaceState(null, "", "/");
+    if (!takeSendOnLaunch()) return;
     const send = () => run(readClipboard);
-    if (document.hasFocus()) send();
-    else window.addEventListener("focus", send, { once: true });
+    if (document.hasFocus()) {
+      send();
+      return;
+    }
+    window.addEventListener("focus", send, { once: true });
+    return () => window.removeEventListener("focus", send);
     // Once, on the first render, like the share above.
   }, []);
 

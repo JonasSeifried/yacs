@@ -3,6 +3,7 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, Wry};
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::commands::{self, CmdResult, Done};
@@ -62,6 +63,8 @@ pub fn refresh(app: &AppHandle) {
 
 /// How long the menu bar says what a tray action did.
 const DONE_SHOWN: Duration = Duration::from_secs(2);
+/// The last title shown: an older one's timer doesn't clear a newer title.
+static TITLE: AtomicU64 = AtomicU64::new(0);
 
 /// Runs a tray action. It says what it did next to the icon (macOS and
 /// Linux show a title there), and a failure opens Spotlight with the reason.
@@ -82,8 +85,11 @@ where
                     Done::Copied => "Copied",
                     Done::Transferring => "Transferring…",
                 }));
+                let shown = TITLE.fetch_add(1, Ordering::SeqCst) + 1;
                 tokio::time::sleep(DONE_SHOWN).await;
-                let _ = tray.set_title(None::<&str>);
+                if TITLE.load(Ordering::SeqCst) == shown {
+                    let _ = tray.set_title(None::<&str>);
+                }
             }
             Err(e) => windows::show_error(&app, e.to_string()),
         }

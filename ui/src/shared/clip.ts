@@ -10,9 +10,13 @@ export function isImageMime(mime: string): boolean {
 
 /** One line for the history list. */
 export function clipTitle(clip: ClipView): string {
-  // Formatted text's plain version is often Markdown (chat apps, editors):
-  // the title shows what the formatting shows, without the syntax.
-  const plain = clip.hasHtml || clip.rtf ? clip.text && stripMarkdown(clip.text) : clip.text;
+  // Formatted text's plain version is often Markdown (chat apps): the title
+  // shows what the formatting shows, without the syntax. Not code, though,
+  // where `__init__` and `# comment` mean what they say. Only the start
+  // matters, and long text would make the patterns slow.
+  const head = clip.text?.slice(0, TITLE_CHARS * 4);
+  const markdown = head && clip.html !== null && !CODE_HTML.test(clip.html);
+  const plain = markdown ? stripMarkdown(head) : head;
   const text = plain?.replace(/\s+/g, " ").trim();
   if (clip.files.length) return capped(filesTitle(clip.files));
   if (text) return capped(text);
@@ -24,18 +28,24 @@ export function clipTitle(clip: ClipView): string {
   return "Empty clip";
 }
 
+/** HTML from an editor or a code block: monospace, kept as it is. */
+const CODE_HTML = /<pre[\s>]|<code[\s>]|white-space:\s*pre/i;
+
 /**
  * The Markdown marks a title doesn't need: emphasis, code, links, and
- * headings, quotes and list bullets at the start of a line. Marks have to
- * hug their text, so `**kwargs, **opts` or `2 * 3 * 4` stay as they are.
+ * headings, quotes and bullets at the start of a line. Marks have to hug
+ * their text and not sit inside a word, so `**kwargs`, `x**2` and `2 * 3 * 4`
+ * stay as they are. Underscores always stay (`__init__.py`), and so do
+ * numbered lists ("10. Oktober").
+ * No lookbehind: Safari before 16.4 can't parse it.
  */
 export function stripMarkdown(text: string): string {
   return text
-    .replace(/^[ \t]*(#{1,6}[ \t]+|>[ \t]?|[-*+][ \t]+(\[[ xX]\][ \t]+)?|\d+[.)][ \t]+)/gm, "")
-    .replace(/!?\[([^\]\n]+)\]\([^)\s]+\)/g, "$1")
-    .replace(/(\*\*|__)(?=\S)([^\n]*?\S)\1/g, "$2")
-    .replace(/(?<![\w*])\*(?=\S)([^*\n]*?\S)\*(?![\w*])/g, "$1")
-    .replace(/~~(?=\S)([^\n]*?\S)~~/g, "$1")
+    .replace(/^[ \t]*(#{1,6}[ \t]+|>[ \t]?|[-*+][ \t]+(\[[ xX]\][ \t]+)?)/gm, "")
+    .replace(/!?\[([^\]\n]+)\]\((?:[^()\s]|\([^()\s]*\))+\)/g, "$1")
+    .replace(/(^|[^\w*])\*\*(?=\S)([^\n]*?\S)\*\*(?![\w*])/gm, "$1$2")
+    .replace(/(^|[^\w*])\*(?=\S)([^*\n]*?\S)\*(?![\w*])/gm, "$1$2")
+    .replace(/(^|[^\w~])~~(?=\S)([^\n]*?\S)~~(?![\w~])/gm, "$1$2")
     .replace(/`([^`\n]+)`/g, "$1");
 }
 

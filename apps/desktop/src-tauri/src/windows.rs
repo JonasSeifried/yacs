@@ -207,30 +207,39 @@ pub fn toggle_spotlight(app: &AppHandle) {
     if w.is_visible().unwrap_or(false) {
         hide_spotlight(app);
     } else {
-        crate::commands::reread_spaces(app);
-        unhide_app(app);
-        let _ = w.center();
-        let _ = w.show();
-        showing(app, SPOTLIGHT, true);
-        let _ = w.set_focus();
-        // One YACS window at a time: Spotlight replaces Settings, as Settings
-        // replaces Spotlight. Hidden after Spotlight has focus, so focus never
-        // goes back to the previous app in between.
-        if let Some(settings) = app.get_webview_window(SETTINGS) {
-            let _ = settings.hide();
-        }
-        showing(app, SETTINGS, false);
-        let _ = app.emit_to(SPOTLIGHT, EVENT_SPOTLIGHT_SHOWN, ());
-        crate::live::resume(app);
-        crate::update::check_in_background(app);
+        show_spotlight(app);
     }
+}
+
+fn show_spotlight(app: &AppHandle) {
+    let Some(w) = app.get_webview_window(SPOTLIGHT) else {
+        return;
+    };
+    crate::commands::reread_spaces(app);
+    unhide_app(app);
+    let _ = w.center();
+    let _ = w.show();
+    showing(app, SPOTLIGHT, true);
+    let _ = w.set_focus();
+    // One YACS window at a time: Spotlight replaces Settings, as Settings
+    // replaces Spotlight. Hidden after Spotlight has focus, so focus never
+    // goes back to the previous app in between.
+    if let Some(settings) = app.get_webview_window(SETTINGS) {
+        let _ = settings.hide();
+    }
+    showing(app, SETTINGS, false);
+    let _ = app.emit_to(SPOTLIGHT, EVENT_SPOTLIGHT_SHOWN, ());
+    crate::live::resume(app);
+    crate::update::check_in_background(app);
 }
 
 /// Shows Spotlight (if it isn't showing) with an error from elsewhere, so a
 /// tray action that failed doesn't fail silently.
 pub fn show_error(app: &AppHandle, message: String) {
+    // Never a toggle: on Linux a show or hide shows up late, and a toggle
+    // could take a Spotlight that's showing up for hidden.
     if !spotlight_open(app) {
-        toggle_spotlight(app);
+        show_spotlight(app);
     }
     // After `EVENT_SPOTLIGHT_SHOWN`, which clears the notice.
     let _ = app.emit_to(SPOTLIGHT, EVENT_ERROR, message);
