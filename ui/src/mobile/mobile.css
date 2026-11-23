@@ -339,8 +339,11 @@ button.quick-copy:active {
   min-width: 0;
 }
 
-.clip-head-row .clip-title {
+.clip-head-row .clip-meta {
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Room to scroll the last clip out from under the pick bar. */
@@ -355,7 +358,6 @@ button.quick-copy:active {
 
 .copied-tag {
   flex: none;
-  margin-left: auto;
   padding: 1px 7px;
   border: 1px solid currentColor;
   border-radius: 999px;

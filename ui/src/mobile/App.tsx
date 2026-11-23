@@ -1311,11 +1311,12 @@ function ClipCard(props: {
     >
       <div className="clip-top">
         <div className="clip-head" {...press.handlers}>
+          <span className={decrypted ? "clip-title" : "clip-title muted"}>{title}</span>
+          {/* Next to the details, so the title keeps the whole width. */}
           <span className="clip-head-row">
-            <span className={decrypted ? "clip-title" : "clip-title muted"}>{title}</span>
+            <span className="clip-meta">{detail}</span>
             {copiedAt !== undefined && <span className="copied-tag">Copied</span>}
           </span>
-          <span className="clip-meta">{detail}</span>
         </div>
         {quickCopy && (
           <button
