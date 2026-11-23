@@ -10,7 +10,10 @@ export function isImageMime(mime: string): boolean {
 
 /** One line for the history list. */
 export function clipTitle(clip: ClipView): string {
-  const text = clip.text?.replace(/\s+/g, " ").trim();
+  // Formatted text's plain version is often Markdown (chat apps, editors):
+  // the title shows what the formatting shows, without the syntax.
+  const plain = clip.hasHtml || clip.rtf ? clip.text && stripMarkdown(clip.text) : clip.text;
+  const text = plain?.replace(/\s+/g, " ").trim();
   if (clip.files.length) return capped(filesTitle(clip.files));
   if (text) return capped(text);
   if (clip.image) {
@@ -19,6 +22,21 @@ export function clipTitle(clip: ClipView): string {
   }
   if (clip.hasHtml || clip.rtf) return "Formatted text";
   return "Empty clip";
+}
+
+/**
+ * The Markdown marks a title doesn't need: emphasis, code, links, and
+ * headings, quotes and list bullets at the start of a line. Marks have to
+ * hug their text, so `**kwargs, **opts` or `2 * 3 * 4` stay as they are.
+ */
+export function stripMarkdown(text: string): string {
+  return text
+    .replace(/^[ \t]*(#{1,6}[ \t]+|>[ \t]?|[-*+][ \t]+(\[[ xX]\][ \t]+)?|\d+[.)][ \t]+)/gm, "")
+    .replace(/!?\[([^\]\n]+)\]\([^)\s]+\)/g, "$1")
+    .replace(/(\*\*|__)(?=\S)([^\n]*?\S)\1/g, "$2")
+    .replace(/(?<![\w*])\*(?=\S)([^*\n]*?\S)\*(?![\w*])/g, "$1")
+    .replace(/~~(?=\S)([^\n]*?\S)~~/g, "$1")
+    .replace(/`([^`\n]+)`/g, "$1");
 }
 
 function filesTitle(files: FileInfo[]): string {
@@ -91,7 +109,7 @@ export function previewKind(clip: ClipView): PreviewKind {
  * request: remote images or fonts would reveal to their host that the clip
  * was viewed.
  */
-export function previewDocument(html: string): string {
+export function previewDocument(html: string, fontSize = 13): string {
   if (!DOMPurify.isSupported) throw new Error("HTML sanitizer unavailable");
   const body = DOMPurify.sanitize(html, { FORBID_TAGS: ["form", "input", "button", "textarea", "select"] });
   return `<!doctype html>
@@ -100,7 +118,7 @@ export function previewDocument(html: string): string {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
 <style>
 html { color-scheme: light; }
-body { margin: 14px 16px; font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: #1c1b22; background: #fff; overflow-wrap: anywhere; display: flow-root; }
+body { margin: 14px 16px; font: ${fontSize}px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: #1c1b22; background: #fff; overflow-wrap: anywhere; display: flow-root; }
 img, video { max-width: 100%; height: auto; }
 img:not([src^="data:"]) { display: none; } /* blocked remote images */
 table { border-collapse: collapse; }

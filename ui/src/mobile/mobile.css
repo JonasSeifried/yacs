@@ -293,6 +293,34 @@ button.icon {
   border-color: var(--accent);
 }
 
+.clip-top {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.clip-top .clip-head {
+  flex: 1;
+}
+
+button.quick-copy {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin: -6px -8px -6px 0;
+  padding: 0;
+  border-radius: 12px;
+  background: none;
+  color: var(--muted);
+}
+
+button.quick-copy:active {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+
 .clip-head {
   display: flex;
   flex-direction: column;
@@ -362,15 +390,11 @@ button.icon {
   bottom: calc(84px + env(safe-area-inset-bottom));
 }
 
+/* Two lines: enough to tell most text clips apart without opening them. */
 .clip-title {
   font-weight: 550;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.clip.open .clip-title {
-  white-space: normal;
+  overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -401,7 +425,7 @@ button.icon {
   margin: 0;
   padding: 12px 14px;
   font-family: var(--mono);
-  font-size: 13px;
+  font-size: 14px;
   line-height: 1.5;
   white-space: pre-wrap;
   overflow-wrap: anywhere;

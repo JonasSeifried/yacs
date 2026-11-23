@@ -6,9 +6,9 @@
 **On a phone or tablet:** nothing to download, [open YACS in the browser](https://yacs-relay.jonasseifried.com)\
 **On a server or over SSH:** the [`yacs` command](#command-line)
 
-- **On your computer**, press `⌘⇧Space` (Mac) or `Ctrl+Shift+Space` (Windows, Linux) for a Spotlight-style panel. `⌘V` / `Ctrl+V` sends what's on your clipboard; `↵` copies a clip back with every format it had: text, formatted text (HTML, RTF), images. `⌘`/`Ctrl`-click or `Shift`-click to pick several and copy them together (their text a line apart, or all their files). Clips you've copied are marked **Copied**. On Windows, the shortcut does nothing while a full-screen app, like a game, is in front; turn that off in Settings.
+- **On your computer**, press `⌘⇧Space` (Mac) or `Ctrl+Shift+Space` (Windows, Linux) for a Spotlight-style panel. `⌘V` / `Ctrl+V` sends what's on your clipboard; `↵` copies a clip back with every format it had: text, formatted text (HTML, RTF), images; `⇧↵` copies formatted text as plain text. `⌘`/`Ctrl`-click or `Shift`-click to pick several and copy them together (their text a line apart, or all their files). Clips you've copied are marked **Copied**. The tray icon can send the clipboard or copy the newest clip without opening the panel. On Windows, the shortcut does nothing while a full-screen app, like a game, is in front; turn that off in Settings.
 - **Files too**: copy a file and send it like anything else. It arrives in Downloads and on the clipboard.
-- **On your phone or tablet**, YACS is a web app. Scan a QR code from another device and it's in; add it to your home screen to use it like any other app. Hold a clip to pick several and copy their text together.
+- **On your phone or tablet**, YACS is a web app. Scan a QR code from another device and it's in; add it to your home screen to use it like any other app. Tap the copy icon on a clip to copy it without opening it, or hold a clip to pick several and copy their text together. On Android, long-press the home-screen icon for **Paste & send**.
 - **From a terminal**, `yacs send` and `yacs recv` do the same, for servers and scripts.
 
 Clips go through a small server, the relay, that can't read them and forgets them when they expire (15 minutes by default). Use the free one, which the apps are set up for, or run your own in a few minutes.

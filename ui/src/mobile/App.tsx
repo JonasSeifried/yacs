@@ -71,6 +71,8 @@ const DESKTOP_DOWNLOADS: Record<DesktopOs, { label: string; href: string }> = {
 const PROGRESS_BYTES = 256 * 1024;
 /** While the app is open without a live connection, look for new clips this often. */
 const POLL_MS = 10_000;
+/** Phone-sized text in formatted previews; the desktop's 13px is small here. */
+const PREVIEW_FONT_PX = 15;
 /** Holding a clip this long starts picking several. */
 const LONG_PRESS_MS = 450;
 /** How often relative times ("2 min ago") are redrawn. */
@@ -953,6 +955,7 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
             loaded={loaded[meta.id]}
             now={now}
             open={!picking && meta.id === open?.id}
+            picking={picking}
             picked={picked.includes(meta.id)}
             copiedAt={copied[meta.id]}
             onClick={(e) => clickClip(meta.id, e)}
@@ -1055,6 +1058,18 @@ function Composer(props: {
       if (sharedText) setText(sharedText);
       if (sharedFiles.length) setFiles(sharedFiles);
     })().catch(() => {});
+  }, []);
+
+  // Long-pressing the app icon → "Paste & send" opens `/?send`. Reading the
+  // clipboard needs the page focused; where it's refused, the error says so
+  // and the button is right there.
+  useEffect(() => {
+    if (!new URLSearchParams(location.search).has("send")) return;
+    history.replaceState(null, "", "/");
+    const send = () => run(readClipboard);
+    if (document.hasFocus()) send();
+    else window.addEventListener("focus", send, { once: true });
+    // Once, on the first render, like the share above.
   }, []);
 
   const run = async (items: () => Promise<ClipItem[]>, bigFiles: File[] = []) => {
@@ -1185,6 +1200,8 @@ function ClipCard(props: {
   loaded: Loaded | undefined;
   now: number;
   open: boolean;
+  /** Picking several: a tap picks, so there's no quick Copy. */
+  picking: boolean;
   picked: boolean;
   /** When this device copied it, if it did. */
   copiedAt: number | undefined;
@@ -1219,6 +1236,14 @@ function ClipCard(props: {
     if (!decrypted) return;
     copyClip(decrypted.clip).then(props.onCopied, (e) => props.onError(errorText(e)));
   };
+  /** Formatted text without its formatting, for apps that paste it badly. */
+  const plainText = decrypted && (decrypted.view.hasHtml || decrypted.view.rtf) ? pick(decrypted.clip, "Text") : undefined;
+  const copyPlain = () => {
+    if (plainText === undefined) return;
+    if (!navigator.clipboard) return props.onError("The clipboard only works on an https:// address.");
+    navigator.clipboard.writeText(plainText).then(props.onCopied, (e) => props.onError(errorText(e)));
+  };
+  const quickCopy = !open && !props.picking && decrypted !== null && canCopy(decrypted.clip);
 
   const stream = decrypted ? pick(decrypted.clip, "Stream") : undefined;
   /** Chunked files, one after another. */
@@ -1266,12 +1291,26 @@ function ClipCard(props: {
         if (!open || ((e.metaKey || e.ctrlKey || e.shiftKey) && !inside)) props.onClick(e);
       }}
     >
-      <div className="clip-head" {...press.handlers}>
-        <span className="clip-head-row">
-          <span className={decrypted ? "clip-title" : "clip-title muted"}>{title}</span>
-          {copiedAt !== undefined && <span className="copied-tag">Copied</span>}
-        </span>
-        <span className="clip-meta">{detail}</span>
+      <div className="clip-top">
+        <div className="clip-head" {...press.handlers}>
+          <span className="clip-head-row">
+            <span className={decrypted ? "clip-title" : "clip-title muted"}>{title}</span>
+            {copiedAt !== undefined && <span className="copied-tag">Copied</span>}
+          </span>
+          <span className="clip-meta">{detail}</span>
+        </div>
+        {quickCopy && (
+          <button
+            className="quick-copy"
+            aria-label="Copy"
+            onClick={(e) => {
+              e.stopPropagation(); // copies without opening the clip
+              copy();
+            }}
+          >
+            <CopyIcon />
+          </button>
+        )}
       </div>
       {open && (
         <>
@@ -1300,6 +1339,11 @@ function ClipCard(props: {
             {(!decrypted || canCopy(decrypted.clip)) && (
               <button className="primary" onClick={copy} disabled={!decrypted}>
                 Copy
+              </button>
+            )}
+            {plainText !== undefined && (
+              <button className="ghost" onClick={copyPlain}>
+                Copy as text
               </button>
             )}
             {decrypted && canSave(decrypted.clip) && !download && (
@@ -1394,7 +1438,7 @@ function ClipPreview({ clip }: { clip: Decrypted }) {
   const url = useObjectUrl(blob);
   // Sanitizing again on every render (progress, the clock) adds up.
   const html = clip.view.html;
-  const srcDoc = useMemo(() => (html === null ? null : previewDocument(html)), [html]);
+  const srcDoc = useMemo(() => (html === null ? null : previewDocument(html, PREVIEW_FONT_PX)), [html]);
   const kind = previewKind(clip.view);
   if (kind === "files") {
     return (
@@ -1852,6 +1896,15 @@ function useObjectUrl(blob: Blob | null) {
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+function CopyIcon() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="9" y="9" width="12" height="12" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </svg>
+  );
 }
 
 function GearIcon() {

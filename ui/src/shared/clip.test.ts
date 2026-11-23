@@ -9,6 +9,7 @@ import {
   htmlFitsPreview,
   previewDocument,
   previewKind,
+  stripMarkdown,
 } from "./clip";
 import type { ClipView } from "./types";
 
@@ -68,6 +69,25 @@ describe("clipTitle", () => {
     const zip = { name: "photos.zip", mime: "application/zip", size: 1 };
     expect(clipTitle(clip({ files: [pdf], text: "see attached" }))).toBe("report.pdf");
     expect(clipTitle(clip({ files: [pdf, zip] }))).toBe("2 files: report.pdf, photos.zip");
+  });
+
+  it("drops Markdown from formatted text only", () => {
+    expect(clipTitle(clip({ hasHtml: true, text: "**op apps:** Settings" }))).toBe("op apps: Settings");
+    expect(clipTitle(clip({ text: "**op apps:** Settings" }))).toBe("**op apps:** Settings");
+  });
+});
+
+describe("stripMarkdown", () => {
+  it("removes marks that hug their text", () => {
+    expect(stripMarkdown("## Plan\n- **bold** and *it* and `code`")).toBe("Plan\nbold and it and code");
+    expect(stripMarkdown("> see [the docs](https://x.y/z) ~~old~~ __u__")).toBe("see the docs old u");
+    expect(stripMarkdown("1. one\n- [x] done")).toBe("one\ndone");
+  });
+
+  it("leaves code and arithmetic alone", () => {
+    expect(stripMarkdown("f(*args, **kwargs)")).toBe("f(*args, **kwargs)");
+    expect(stripMarkdown("2 * 3 * 4")).toBe("2 * 3 * 4");
+    expect(stripMarkdown("snake_case_name")).toBe("snake_case_name");
   });
 });
 
