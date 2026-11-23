@@ -48,11 +48,11 @@ import {
   guessDeviceName,
   inviteLinkFromCode,
   inviteUrl,
-  isAndroid,
   isIos,
   isIosBrowserTab,
   looksLikeCode,
   parseInviteLink,
+  systemShowsCopied,
 } from "./link";
 import { canScan, qrDecoder } from "./qr";
 
@@ -771,7 +771,7 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
       () => {
         noteCopied(ids);
         setPicked([]);
-        if (!isAndroid()) notify("ok", ids.length === 1 ? "Copied" : `Copied ${ids.length} clips`);
+        if (!systemShowsCopied()) notify("ok", ids.length === 1 ? "Copied" : `Copied ${ids.length} clips`);
       },
       (e) => notify("error", errorText(e)),
     );
@@ -962,7 +962,7 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
             }}
             onCopied={() => {
               noteCopied([meta.id]);
-              if (!isAndroid()) notify("ok", "Copied");
+              if (!systemShowsCopied()) notify("ok", "Copied");
             }}
             onDelete={() => remove([meta.id])}
             onError={(text) => notify("error", text)}
@@ -1434,27 +1434,25 @@ function ClipPreview({ clip }: { clip: Decrypted }) {
 function HtmlPreview({ srcDoc }: { srcDoc: string }) {
   const ref = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState<number>();
-  const measure = useCallback(() => {
+  const observer = useRef<ResizeObserver>(undefined);
+  // Watches the body, so late images and rewrapping (rotating the phone)
+  // resize it too. Each load is a new document, so it starts over.
+  const onLoad = useCallback(() => {
+    observer.current?.disconnect();
     // The body, not the root: the root is never shorter than the frame.
     const body = ref.current?.contentDocument?.body;
     if (!body) return;
-    const style = body.ownerDocument.defaultView?.getComputedStyle(body);
-    const margins = style ? parseFloat(style.marginTop) + parseFloat(style.marginBottom) : 0;
-    setHeight(Math.ceil(body.getBoundingClientRect().height + margins));
+    const measure = () => {
+      const style = body.ownerDocument.defaultView?.getComputedStyle(body);
+      const margins = style ? parseFloat(style.marginTop) + parseFloat(style.marginBottom) : 0;
+      setHeight(Math.ceil(body.getBoundingClientRect().height + margins));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    observer.current = new ResizeObserver(measure);
+    observer.current.observe(body);
   }, []);
-  // Text wraps differently once the width changes (rotating the phone).
-  useEffect(() => {
-    const frame = ref.current;
-    if (!frame || typeof ResizeObserver === "undefined") return;
-    let width = frame.clientWidth;
-    const observer = new ResizeObserver(() => {
-      if (frame.clientWidth === width) return;
-      width = frame.clientWidth;
-      measure();
-    });
-    observer.observe(frame);
-    return () => observer.disconnect();
-  }, [measure]);
+  useEffect(() => () => observer.current?.disconnect(), []);
   return (
     <iframe
       ref={ref}
@@ -1462,7 +1460,7 @@ function HtmlPreview({ srcDoc }: { srcDoc: string }) {
       sandbox="allow-same-origin"
       srcDoc={srcDoc}
       title="Preview"
-      onLoad={measure}
+      onLoad={onLoad}
       style={height === undefined ? undefined : { height }}
     />
   );

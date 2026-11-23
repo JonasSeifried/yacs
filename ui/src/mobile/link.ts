@@ -91,11 +91,20 @@ export function isIosBrowserTab(ua = navigator.userAgent): boolean {
 }
 
 /**
- * Android shows its own "Copied" notice whenever an app copies (13 and
- * later, and Samsung's for longer), so the page doesn't add a second one.
+ * Android 13 and later show their own "Copied" notice whenever an app
+ * copies, so the page doesn't add a second one. Chrome's user agent always
+ * says "Android 10", so the real version comes from `userAgentData`; where
+ * that's missing, assume a current phone.
  */
-export function isAndroid(ua = navigator.userAgent): boolean {
-  return /Android/.test(ua);
+let androidVersion: number | undefined;
+type UaData = { getHighEntropyValues?(hints: string[]): Promise<{ platformVersion?: string }> };
+(navigator as { userAgentData?: UaData }).userAgentData
+  ?.getHighEntropyValues?.(["platformVersion"])
+  .then((v) => (androidVersion = parseInt(v.platformVersion ?? "", 10) || undefined))
+  .catch(() => {});
+
+export function systemShowsCopied(ua = navigator.userAgent): boolean {
+  return /Android/.test(ua) && (androidVersion === undefined || androidVersion >= 13);
 }
 
 /** iPhone and iPad, including iPads that claim to be a Mac. */
