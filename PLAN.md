@@ -435,6 +435,12 @@ Settled: `YACS_MAX_CLIPS_PER_CHANNEL=50`, with a disk quota covering the worst c
 
 A review of the whole codebase after 0.7.1, sorted by how bad each problem is and how much work the fix is. Every fix is one commit with a test that fails without it, or, where the UI can't be tested that way, a check in the real app.
 
+### Fixed in 0.7.6
+- Desktop and web: several clips can be picked (⌘/Ctrl-click, Shift-click, Shift+arrows, ⌘/Ctrl+A; holding a clip on a phone) and copied together, their text a line apart or their files together, or deleted with one undo. Clips copied on this device are marked "Copied".
+- Desktop on Windows: the shortcut does nothing while a full-screen or borderless full-screen app, like a game, is in front (a setting turns it off).
+- Desktop on Windows and Linux: Alt+F4 destroyed Spotlight, so it couldn't open again until a restart; closing only hides it now.
+- Relay: `/api/v1/stats` is rate limited like the rest of the API, so its key can't be guessed at full speed.
+
 ### Fixed in 0.7.5
 - Relay: a page for the stats at `/stats` (the key is entered there and kept in the browser), with charts per day and hour; one HTML file and its script, compiled into the relay.
 

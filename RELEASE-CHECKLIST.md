@@ -27,7 +27,7 @@ Checks after a release, on the real apps, instead of building on every platform 
 **CLI**
 - [ ] `yacs update`, then `yacs --version` shows the new version; `yacs send --text hi` and `yacs recv` work.
 
-## Next release (after 0.7.5)
+## 0.7.6
 
 **Shortcut over games** (Windows)
 - [ ] In a game in borderless and in exclusive full screen, the shortcut does nothing; with the game on one monitor, clicking into a window on the other and pressing it opens Spotlight.
