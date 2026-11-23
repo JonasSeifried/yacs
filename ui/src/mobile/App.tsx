@@ -1080,7 +1080,9 @@ function Composer(props: {
   // is right there.
   useEffect(() => {
     if (!takeSendOnLaunch()) return;
-    const send = () => run(readClipboard);
+    // Focus may come much later (another app was in front): by then the
+    // clipboard holds something else, so it's too late to send.
+    const send = () => performance.now() < SEND_ON_LAUNCH_MS && run(readClipboard);
     if (document.hasFocus()) {
       send();
       return;
