@@ -160,6 +160,7 @@ export function Spotlight() {
       platform.onStatusChanged(refresh),
       // Live updates from the relay: keeps the chosen expiry and selection.
       platform.onClipsChanged(reloadList),
+      platform.onError((text) => setNotice({ kind: "error", text })),
       platform.onTransferChanged(({ transfer, finished }) => {
         setTransfer(transfer);
         if (!finished) return;
@@ -186,7 +187,8 @@ export function Spotlight() {
     platform.setDefaultTtl(secs).catch((e) => setNotice({ kind: "error", text: String(e) }));
   }, []);
 
-  const copy = useCallback(async () => {
+  /** `plain`: formatted text without the formatting (⇧↵). */
+  const copy = useCallback(async (plain = false) => {
     if (!selected || busy) return;
     setBusy(true);
     try {
@@ -195,7 +197,7 @@ export function Spotlight() {
         await platform.copyClips(ids);
         noteCopied(ids);
         hideAfter(0);
-      } else if (await platform.copyClip(selected.id)) {
+      } else if (await platform.copyClip(selected.id, plain)) {
         noteCopied([selected.id]);
         hideAfter(0); // paste right away in the app that was in front
       } else {
@@ -372,7 +374,7 @@ export function Spotlight() {
         // Text selected in the preview: let ⌘C copy just that.
       } else if (e.key === "Enter" || (mod && key === "c")) {
         handled();
-        copy();
+        copy(e.key === "Enter" && e.shiftKey);
       } else if (mod && key === "z" && notice?.undo) {
         handled();
         undoDelete(notice.undo);
@@ -397,6 +399,11 @@ export function Spotlight() {
   const space = status?.space ?? null;
   const selectedLoaded = selected ? loaded[selected.id] : undefined;
   const selectedHasFiles = selectedLoaded?.state === "ok" && selectedLoaded.clip.files.length > 0;
+  const selectedFormatted =
+    selectedLoaded?.state === "ok" &&
+    !selectedHasFiles &&
+    (selectedLoaded.clip.hasHtml || selectedLoaded.clip.rtf) &&
+    !!selectedLoaded.clip.text;
   return (
     <main className="panel">
       <header className="panel-header">
@@ -459,7 +466,7 @@ export function Spotlight() {
                   picked={many && picked.includes(clip.id)}
                   copiedAt={copied[clip.id]}
                   onSelect={(e) => click(clip.id, e)}
-                  onCopy={copy}
+                  onCopy={() => copy()}
                 />
               ))}
             </ul>
@@ -502,6 +509,7 @@ export function Spotlight() {
               selected && (
                 <>
                   <Hint keys="↵" label={selectedHasFiles ? "save & copy" : "copy"} />
+                  {selectedFormatted && <Hint keys="⇧↵" label="as text" />}
                   <Hint keys={os === "macos" ? "⌘⌫" : "Del"} label="delete" />
                 </>
               )

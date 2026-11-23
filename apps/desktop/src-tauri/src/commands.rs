@@ -21,7 +21,7 @@ use crate::transfers::{self, Direction, FolderSink, Transfer, Transfers};
 use crate::update::{self, Updates};
 use crate::{cli, clipboard, codes, hotkey, live, pairing, windows};
 
-type CmdResult<T> = Result<T, String>;
+pub type CmdResult<T> = Result<T, String>;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -350,9 +350,27 @@ pub async fn clip_image(state: State<'_, AppState>, id: String) -> CmdResult<Res
 /// Downloads first and go on the clipboard as files. Returns `false` when
 /// they're big and download in the background first (see `transfers`); they
 /// go on the clipboard once they're in.
+///
+/// `plain`: just the text, without its formatting (for apps that paste
+/// formatted text badly). A clip without text is copied as usual.
 #[tauri::command]
-pub async fn copy_clip(app: AppHandle, state: State<'_, AppState>, id: String) -> CmdResult<bool> {
+pub async fn copy_clip(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    plain: Option<bool>,
+) -> CmdResult<bool> {
     let entry = load(&state, &id).await?;
+    let text = entry.clip.items.iter().find_map(|item| match item {
+        ClipItem::Text(text) => Some(text.clone()),
+        _ => None,
+    });
+    if let (Some(true), Some(text), false) = (plain, text, entry.has_files()) {
+        tauri::async_runtime::spawn_blocking(move || clipboard::write(&[ClipItem::Text(text)]))
+            .await
+            .map_err(|e| e.to_string())??;
+        return Ok(true);
+    }
     let downloads = match entry.has_files() {
         true => Some(
             app.path()
@@ -611,6 +629,39 @@ fn upload(
                 .expect("clip cache lock poisoned")
                 .insert(Entry { meta, clip });
             Ok(format!("Sent {label}."))
+        },
+    )
+}
+
+/// What a tray action did, for the menu bar.
+pub enum Done {
+    Sent,
+    Copied,
+    /// Big files: they move in the background (see `transfers`).
+    Transferring,
+}
+
+/// Tray: send the clipboard with the default expiry, without Spotlight.
+pub async fn send_from_tray(app: &AppHandle) -> CmdResult<Done> {
+    let ttl = app.state::<AppState>().settings().default_ttl_secs;
+    let sent = send_clipboard(app.clone(), app.state(), ttl, Channel::new(|_| Ok(()))).await?;
+    Ok(match sent.clip {
+        Some(_) => Done::Sent,
+        None => Done::Transferring,
+    })
+}
+
+/// Tray: copy the newest clip, as the relay lists it right now.
+pub async fn copy_newest_from_tray(app: &AppHandle) -> CmdResult<Done> {
+    let newest = list_clips(app.state())
+        .await?
+        .into_iter()
+        .next()
+        .ok_or("There are no clips yet.")?;
+    Ok(
+        match copy_clip(app.clone(), app.state(), newest.id, None).await? {
+            true => Done::Copied,
+            false => Done::Transferring,
         },
     )
 }

@@ -3,16 +3,31 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, Wry};
 
+use std::time::Duration;
+
+use crate::commands::{self, CmdResult, Done};
 use crate::{update, windows};
 
 const TRAY_ID: &str = "main";
 
 fn menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
+    let send = MenuItem::with_id(app, "send", "Send clipboard", true, None::<&str>)?;
+    let copy = MenuItem::with_id(app, "copy-newest", "Copy newest clip", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open YACS", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit YACS", true, None::<&str>)?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&open, &settings, &separator, &quit])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &send,
+            &copy,
+            &PredefinedMenuItem::separator(app)?,
+            &open,
+            &settings,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
     let updates = app.state::<update::Updates>();
     let item = match (updates.installing(), updates.available()) {
         (Some(version), _) => Some((format!("Installing {version}…"), false)),
@@ -45,6 +60,36 @@ pub fn refresh(app: &AppHandle) {
     }
 }
 
+/// How long the menu bar says what a tray action did.
+const DONE_SHOWN: Duration = Duration::from_secs(2);
+
+/// Runs a tray action. It says what it did next to the icon (macOS and
+/// Linux show a title there), and a failure opens Spotlight with the reason.
+fn run<F, Fut>(app: &AppHandle, action: F)
+where
+    F: FnOnce(AppHandle) -> Fut + Send + 'static,
+    Fut: Future<Output = CmdResult<Done>> + Send + 'static,
+{
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        match action(app.clone()).await {
+            Ok(done) => {
+                let Some(tray) = app.tray_by_id(TRAY_ID) else {
+                    return;
+                };
+                let _ = tray.set_title(Some(match done {
+                    Done::Sent => "Sent",
+                    Done::Copied => "Copied",
+                    Done::Transferring => "Transferring…",
+                }));
+                tokio::time::sleep(DONE_SHOWN).await;
+                let _ = tray.set_title(None::<&str>);
+            }
+            Err(e) => windows::show_error(&app, e.to_string()),
+        }
+    });
+}
+
 pub fn create(app: &AppHandle) -> tauri::Result<()> {
     let menu = menu(app)?;
 
@@ -64,6 +109,13 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         // the app, right click opens the menu.
         .show_menu_on_left_click(cfg!(target_os = "macos"))
         .on_menu_event(|app, event| match event.id().as_ref() {
+            "send" => run(
+                app,
+                |app| async move { commands::send_from_tray(&app).await },
+            ),
+            "copy-newest" => run(app, |app| async move {
+                commands::copy_newest_from_tray(&app).await
+            }),
             "open" => windows::toggle_spotlight(app),
             "settings" => windows::show_settings(app),
             "quit" => app.exit(0),

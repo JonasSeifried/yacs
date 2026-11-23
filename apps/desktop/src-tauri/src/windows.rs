@@ -21,6 +21,8 @@ pub const EVENT_STATUS_CHANGED: &str = "status-changed";
 pub const EVENT_CLIPS_CHANGED: &str = "clips-changed";
 /// To Settings, with the slot: one of the space's invites was taken.
 pub const EVENT_INVITE_USED: &str = "invite-used";
+/// To Spotlight, with a message: something started elsewhere (the tray) failed.
+pub const EVENT_ERROR: &str = "error";
 
 /// Which windows are showing, as this app last showed or hid them. Not the
 /// windows' own `is_visible`: on Linux a show or hide takes effect a moment
@@ -222,6 +224,16 @@ pub fn toggle_spotlight(app: &AppHandle) {
         crate::live::resume(app);
         crate::update::check_in_background(app);
     }
+}
+
+/// Shows Spotlight (if it isn't showing) with an error from elsewhere, so a
+/// tray action that failed doesn't fail silently.
+pub fn show_error(app: &AppHandle, message: String) {
+    if !spotlight_open(app) {
+        toggle_spotlight(app);
+    }
+    // After `EVENT_SPOTLIGHT_SHOWN`, which clears the notice.
+    let _ = app.emit_to(SPOTLIGHT, EVENT_ERROR, message);
 }
 
 pub fn hide_spotlight(app: &AppHandle) {

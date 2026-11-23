@@ -18,7 +18,7 @@ export const tauriPlatform: Platform = {
     const bytes = await invoke<ArrayBuffer>("clip_image", { id });
     return new Blob([bytes]);
   },
-  copyClip: (id) => invoke("copy_clip", { id }),
+  copyClip: (id, plain) => invoke("copy_clip", { id, plain: plain ?? false }),
   copyClips: (ids) => invoke("copy_clips", { ids }),
   sendClipboard: (ttlSecs, onProgress) => {
     const channel = new Channel<{ done: number; total: number }>();
@@ -46,6 +46,7 @@ export const tauriPlatform: Platform = {
   onStatusChanged: (handler) => listen("status-changed", handler),
   onSettingsShown: (handler) => listen("settings-shown", handler),
   onClipsChanged: (handler) => listen("clips-changed", handler),
+  onError: (handler) => listen<string>("error", (e) => handler(e.payload)),
   onInviteUsed: (handler) => listen<string>("invite-used", (e) => handler(e.payload)),
   onInviteCode: (handler) => listen<CodeEvent>("invite-code", (e) => handler(e.payload)),
   onTransferChanged: (handler) => listen<TransferChanged>("transfer-changed", (e) => handler(e.payload)),

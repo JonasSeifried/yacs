@@ -38,8 +38,9 @@ export interface Platform {
   /**
    * Puts every format of the clip on the clipboard. False when its files are
    * big: they download in the background first (see `onTransferChanged`).
+   * `plain`: only the text, without its formatting.
    */
-  copyClip(id: string): Promise<boolean>;
+  copyClip(id: string, plain?: boolean): Promise<boolean>;
   /** Several clips at once, in this order: all their files, or their text a line apart. */
   copyClips(ids: string[]): Promise<void>;
   /**
@@ -78,6 +79,8 @@ export interface Platform {
   onSettingsShown(handler: () => void): Promise<() => void>;
   /** The relay reported new or deleted clips (only sent while Spotlight is open). */
   onClipsChanged(handler: () => void): Promise<() => void>;
+  /** Something started outside Spotlight (the tray) failed; Spotlight opens to say why. */
+  onError(handler: (message: string) => void): Promise<() => void>;
   onInviteCode(handler: (event: CodeEvent) => void): Promise<() => void>;
   /** One of the space's invites was taken (by its slot). */
   onInviteUsed(handler: (slot: string) => void): Promise<() => void>;
