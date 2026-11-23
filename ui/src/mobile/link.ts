@@ -90,6 +90,14 @@ export function isIosBrowserTab(ua = navigator.userAgent): boolean {
   return ios && !standalone;
 }
 
+/**
+ * Android shows its own "Copied" notice whenever an app copies (13 and
+ * later, and Samsung's for longer), so the page doesn't add a second one.
+ */
+export function isAndroid(ua = navigator.userAgent): boolean {
+  return /Android/.test(ua);
+}
+
 /** iPhone and iPad, including iPads that claim to be a Mac. */
 export function isIos(ua = navigator.userAgent): boolean {
   return /iPad|iPhone/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);

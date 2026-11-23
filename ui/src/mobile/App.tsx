@@ -48,6 +48,7 @@ import {
   guessDeviceName,
   inviteLinkFromCode,
   inviteUrl,
+  isAndroid,
   isIos,
   isIosBrowserTab,
   looksLikeCode,
@@ -770,7 +771,7 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
       () => {
         noteCopied(ids);
         setPicked([]);
-        notify("ok", ids.length === 1 ? "Copied" : `Copied ${ids.length} clips`);
+        if (!isAndroid()) notify("ok", ids.length === 1 ? "Copied" : `Copied ${ids.length} clips`);
       },
       (e) => notify("error", errorText(e)),
     );
@@ -961,7 +962,7 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
             }}
             onCopied={() => {
               noteCopied([meta.id]);
-              notify("ok", "Copied");
+              if (!isAndroid()) notify("ok", "Copied");
             }}
             onDelete={() => remove([meta.id])}
             onError={(text) => notify("error", text)}
@@ -1412,7 +1413,7 @@ function ClipPreview({ clip }: { clip: Decrypted }) {
   }
   if (kind === "image") return url ? <img className="clip-image" src={url} alt="" /> : null;
   if (kind === "html" && srcDoc !== null) {
-    return <iframe className="clip-html" sandbox="" srcDoc={srcDoc} title="Preview" />;
+    return <HtmlPreview srcDoc={srcDoc} />;
   }
   if (kind === "text") {
     return (
@@ -1423,6 +1424,48 @@ function ClipPreview({ clip }: { clip: Decrypted }) {
     );
   }
   return <p className="muted">Rich text without a preview. Copy works in apps that take it.</p>;
+}
+
+/**
+ * Sized to its content, up to the cap in CSS, so a line of text doesn't sit
+ * in a tall empty box. `allow-same-origin` lets this page measure it; scripts
+ * stay off (no `allow-scripts`, and the document's CSP blocks them too).
+ */
+function HtmlPreview({ srcDoc }: { srcDoc: string }) {
+  const ref = useRef<HTMLIFrameElement>(null);
+  const [height, setHeight] = useState<number>();
+  const measure = useCallback(() => {
+    // The body, not the root: the root is never shorter than the frame.
+    const body = ref.current?.contentDocument?.body;
+    if (!body) return;
+    const style = body.ownerDocument.defaultView?.getComputedStyle(body);
+    const margins = style ? parseFloat(style.marginTop) + parseFloat(style.marginBottom) : 0;
+    setHeight(Math.ceil(body.getBoundingClientRect().height + margins));
+  }, []);
+  // Text wraps differently once the width changes (rotating the phone).
+  useEffect(() => {
+    const frame = ref.current;
+    if (!frame || typeof ResizeObserver === "undefined") return;
+    let width = frame.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (frame.clientWidth === width) return;
+      width = frame.clientWidth;
+      measure();
+    });
+    observer.observe(frame);
+    return () => observer.disconnect();
+  }, [measure]);
+  return (
+    <iframe
+      ref={ref}
+      className="clip-html"
+      sandbox="allow-same-origin"
+      srcDoc={srcDoc}
+      title="Preview"
+      onLoad={measure}
+      style={height === undefined ? undefined : { height }}
+    />
+  );
 }
 
 function SettingsSheet(props: {

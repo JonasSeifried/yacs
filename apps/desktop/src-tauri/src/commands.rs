@@ -34,6 +34,7 @@ pub struct Status {
     /// Wayland: bind the command in the desktop instead of recording a hotkey.
     manual_shortcut: Option<hotkey::ManualShortcut>,
     ignore_hotkey_in_fullscreen: bool,
+    hide_after_use: bool,
     default_ttl_secs: u64,
     autostart: bool,
     /// `macos`, `windows`, `linux`: lets the UI show ⌘ vs Ctrl.
@@ -70,6 +71,7 @@ pub fn status(app: AppHandle, state: State<'_, AppState>) -> Status {
         hotkey_error: state.hotkey_error.lock().expect("lock poisoned").clone(),
         manual_shortcut: hotkey::manual(),
         ignore_hotkey_in_fullscreen: settings.ignore_hotkey_in_fullscreen,
+        hide_after_use: settings.hide_after_use,
         default_ttl_secs: settings.default_ttl_secs,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         os: std::env::consts::OS,
@@ -245,6 +247,7 @@ pub struct Preferences {
     device_name: String,
     hotkey: String,
     ignore_hotkey_in_fullscreen: bool,
+    hide_after_use: bool,
     default_ttl_secs: u64,
     autostart: bool,
 }
@@ -282,6 +285,7 @@ pub fn save_preferences(
         settings.device_name = device_name;
         settings.hotkey = preferences.hotkey;
         settings.ignore_hotkey_in_fullscreen = preferences.ignore_hotkey_in_fullscreen;
+        settings.hide_after_use = preferences.hide_after_use;
         settings.default_ttl_secs = preferences.default_ttl_secs;
         state
             .settings_file

@@ -676,6 +676,7 @@ function PreferencesForm({ status, maxTtlSecs }: { status: Status; maxTtlSecs: n
     deviceName: s.deviceName,
     hotkey: s.hotkey,
     ignoreHotkeyInFullscreen: s.ignoreHotkeyInFullscreen,
+    hideAfterUse: s.hideAfterUse,
     defaultTtlSecs: s.defaultTtlSecs,
     autostart: s.autostart,
   });
@@ -763,6 +764,10 @@ function PreferencesForm({ status, maxTtlSecs }: { status: Status; maxTtlSecs: n
           Ignore the shortcut while a full-screen app is in front, like a game
         </label>
       )}
+      <label className="check">
+        <input type="checkbox" checked={prefs.hideAfterUse} onChange={(e) => set("hideAfterUse", e.target.checked)} />
+        Hide YACS after copying or sending a clip
+      </label>
       <label>
         Default expiry for sent clips
         <select value={prefs.defaultTtlSecs} onChange={(e) => set("defaultTtlSecs", Number(e.target.value))}>

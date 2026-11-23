@@ -100,7 +100,7 @@ export function previewDocument(html: string): string {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
 <style>
 html { color-scheme: light; }
-body { margin: 14px 16px; font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: #1c1b22; background: #fff; overflow-wrap: anywhere; }
+body { margin: 14px 16px; font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; color: #1c1b22; background: #fff; overflow-wrap: anywhere; display: flow-root; }
 img, video { max-width: 100%; height: auto; }
 img:not([src^="data:"]) { display: none; } /* blocked remote images */
 table { border-collapse: collapse; }

@@ -20,6 +20,9 @@ pub struct Settings {
     /// The hotkey does nothing while a full-screen app (a game, say) is in
     /// front, see `fullscreen`.
     pub ignore_hotkey_in_fullscreen: bool,
+    /// Spotlight hides itself after copying or sending a clip, so you can
+    /// paste right away in the app that was in front.
+    pub hide_after_use: bool,
 }
 
 impl Default for Settings {
@@ -29,6 +32,7 @@ impl Default for Settings {
             hotkey: DEFAULT_HOTKEY.into(),
             default_ttl_secs: DEFAULT_TTL_SECS,
             ignore_hotkey_in_fullscreen: true,
+            hide_after_use: true,
         }
     }
 }
@@ -86,6 +90,7 @@ mod tests {
             hotkey: "Alt+Space".into(),
             default_ttl_secs: 3600,
             ignore_hotkey_in_fullscreen: false,
+            hide_after_use: false,
         };
         file.save(&settings).unwrap();
         assert_eq!(file.load(), settings);
@@ -99,6 +104,7 @@ mod tests {
         assert_eq!(settings.device_name, "PC");
         assert_eq!(settings.hotkey, DEFAULT_HOTKEY);
         assert!(settings.ignore_hotkey_in_fullscreen);
+        assert!(settings.hide_after_use);
     }
 
     #[test]

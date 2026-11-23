@@ -112,6 +112,8 @@ export interface Status {
   manualShortcut: ManualShortcut | null;
   /** The hotkey does nothing while a full-screen app (a game, say) is in front. */
   ignoreHotkeyInFullscreen: boolean;
+  /** Spotlight hides after copying or sending a clip. */
+  hideAfterUse: boolean;
   defaultTtlSecs: number;
   autostart: boolean;
   os: Os;
@@ -168,6 +170,7 @@ export interface Preferences {
   deviceName: string;
   hotkey: string;
   ignoreHotkeyInFullscreen: boolean;
+  hideAfterUse: boolean;
   defaultTtlSecs: number;
   autostart: boolean;
 }

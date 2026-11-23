@@ -60,9 +60,14 @@ export function Spotlight() {
   const pendingDeletes = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const os = status?.os ?? guessOs();
 
+  /** The "hide after copying or sending" setting; a ref so listeners see changes. */
+  const hideAfterUse = useRef(true);
+  /** After a copy or send: hides unless the settings say to stay open. */
   const hideAfter = useCallback((ms: number) => {
     clearTimeout(hideTimer.current);
-    hideTimer.current = setTimeout(() => platform.hideSpotlight(), ms);
+    if (!hideAfterUse.current) return;
+    if (ms === 0) platform.hideSpotlight();
+    else hideTimer.current = setTimeout(() => platform.hideSpotlight(), ms);
   }, []);
   const cancelHide = useCallback(() => {
     clearTimeout(hideTimer.current);
@@ -130,6 +135,7 @@ export function Spotlight() {
   const refresh = useCallback(async () => {
     const s = await platform.status();
     setStatus(s);
+    hideAfterUse.current = s.hideAfterUse;
     platform.transferStatus().then(setTransfer, () => {});
     setTtl(s.defaultTtlSecs);
     if (!s.space) return;
@@ -164,11 +170,11 @@ export function Spotlight() {
           pendingCopy.current = null;
         }
         // The files are on the clipboard now: paste them where you were.
-        if (finished.ok && finished.direction === "download") platform.hideSpotlight();
+        if (finished.ok && finished.direction === "download") hideAfter(0);
       }),
     ];
     return () => subscriptions.forEach((s) => s.then((unsubscribe) => unsubscribe()));
-  }, [refresh, reloadList, cancelHide, noteCopied]);
+  }, [refresh, reloadList, cancelHide, noteCopied, hideAfter]);
 
   useEffect(() => {
     if (selected) load(selected.id);
@@ -188,10 +194,10 @@ export function Spotlight() {
         const ids = pickedClips.map((c) => c.id);
         await platform.copyClips(ids);
         noteCopied(ids);
-        platform.hideSpotlight();
+        hideAfter(0);
       } else if (await platform.copyClip(selected.id)) {
         noteCopied([selected.id]);
-        platform.hideSpotlight(); // paste right away in the app that was in front
+        hideAfter(0); // paste right away in the app that was in front
       } else {
         // Big files download first; the transfer bar shows how far.
         pendingCopy.current = selected.id;
@@ -201,7 +207,7 @@ export function Spotlight() {
     } finally {
       setBusy(false);
     }
-  }, [selected, busy, many, pickedClips, noteCopied]);
+  }, [selected, busy, many, pickedClips, noteCopied, hideAfter]);
 
   const send = useCallback(async () => {
     if (busy) return;
