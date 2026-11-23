@@ -298,6 +298,68 @@ button.icon {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  /* Holding a clip picks it: no text selection or iOS callout on the way. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.clip-head-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.clip-head-row .clip-title {
+  min-width: 0;
+}
+
+/* Room to scroll the last clip out from under the pick bar. */
+.history.picking {
+  padding-bottom: 80px;
+}
+
+.clip.picked {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.copied-tag {
+  flex: none;
+  margin-left: auto;
+  padding: 1px 7px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  color: var(--ok);
+  font-size: 11.5px;
+  font-weight: 550;
+  line-height: 1.4;
+}
+
+.pick-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: fixed;
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  width: min(560px, calc(100% - 32px));
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 18%);
+}
+
+.pick-count {
+  margin-right: auto;
+  font-weight: 550;
+}
+
+.toast.above-bar {
+  bottom: calc(84px + env(safe-area-inset-bottom));
 }
 
 .clip-title {

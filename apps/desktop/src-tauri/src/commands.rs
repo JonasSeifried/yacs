@@ -33,6 +33,7 @@ pub struct Status {
     hotkey_error: Option<String>,
     /// Wayland: bind the command in the desktop instead of recording a hotkey.
     manual_shortcut: Option<hotkey::ManualShortcut>,
+    ignore_hotkey_in_fullscreen: bool,
     default_ttl_secs: u64,
     autostart: bool,
     /// `macos`, `windows`, `linux`: lets the UI show ⌘ vs Ctrl.
@@ -68,6 +69,7 @@ pub fn status(app: AppHandle, state: State<'_, AppState>) -> Status {
         hotkey: settings.hotkey,
         hotkey_error: state.hotkey_error.lock().expect("lock poisoned").clone(),
         manual_shortcut: hotkey::manual(),
+        ignore_hotkey_in_fullscreen: settings.ignore_hotkey_in_fullscreen,
         default_ttl_secs: settings.default_ttl_secs,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
         os: std::env::consts::OS,
@@ -242,6 +244,7 @@ fn adopt_spaces(app: &AppHandle, next: Spaces) {
 pub struct Preferences {
     device_name: String,
     hotkey: String,
+    ignore_hotkey_in_fullscreen: bool,
     default_ttl_secs: u64,
     autostart: bool,
 }
@@ -278,6 +281,7 @@ pub fn save_preferences(
         let mut settings = state.settings();
         settings.device_name = device_name;
         settings.hotkey = preferences.hotkey;
+        settings.ignore_hotkey_in_fullscreen = preferences.ignore_hotkey_in_fullscreen;
         settings.default_ttl_secs = preferences.default_ttl_secs;
         state
             .settings_file
@@ -370,6 +374,37 @@ pub async fn copy_clip(app: AppHandle, state: State<'_, AppState>, id: String) -
     .await
     .map_err(|e| e.to_string())??;
     Ok(true)
+}
+
+/// Several clips at once, in the order given: their files, or their text a
+/// line apart (see `clipboard::combine`).
+#[tauri::command]
+pub async fn copy_clips(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    ids: Vec<String>,
+) -> CmdResult<()> {
+    let mut entries = Vec::with_capacity(ids.len());
+    for id in &ids {
+        entries.push(load(&state, id).await?);
+    }
+    let downloads = app.path().download_dir();
+    tauri::async_runtime::spawn_blocking(move || {
+        let clips: Vec<&Clip> = entries.iter().map(|e| &e.clip).collect();
+        let items = clipboard::combine(&clips)?;
+        if items.iter().all(|i| matches!(i, ClipItem::File(_))) {
+            let dir = downloads.map_err(|e| format!("can't find the Downloads folder: {e}"))?;
+            let mut paths = clipboard::save_files(&items, &dir)?;
+            // The same file in two clips is saved once: put it on once.
+            let mut seen = std::collections::HashSet::new();
+            paths.retain(|p| seen.insert(p.clone()));
+            clipboard::write_files(&paths)
+        } else {
+            clipboard::write(&items)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Where the clip's big files were downloaded before, if they're all still there.

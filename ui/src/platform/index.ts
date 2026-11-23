@@ -40,6 +40,8 @@ export interface Platform {
    * big: they download in the background first (see `onTransferChanged`).
    */
   copyClip(id: string): Promise<boolean>;
+  /** Several clips at once, in this order: all their files, or their text a line apart. */
+  copyClips(ids: string[]): Promise<void>;
   /**
    * Encrypts and sends what's on the clipboard right now, telling
    * `onProgress` how much went out; big files upload in the background.

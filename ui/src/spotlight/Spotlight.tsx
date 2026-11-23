@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type MouseEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { platform } from "../platform";
 import { EAGER_CONCURRENCY, loadsEagerly, runLimited } from "../shared/async";
 import { type ClipIcon, clipIcon, clipTitle, isImageMime, previewDocument, previewKind } from "../shared/clip";
@@ -6,6 +6,7 @@ import { guessOs, modKey } from "../shared/hotkey";
 import { maxTtlSecs } from "../shared/plan";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
 import type { ClipMeta, ClipView, FileInfo, ServerConfig, SpaceLimits, Status, Transfer } from "../shared/types";
+import { type Copied, loadCopied, markCopied, pickAfterClick, pruneCopied, saveCopied, stepPick } from "../shared/picks";
 import { onFocusLeft } from "./focus";
 
 /** A failed refresh keeps the clips it had, with `error` set, instead of hiding them. */
@@ -14,8 +15,11 @@ type List =
   | { state: "ok"; clips: ClipMeta[]; error?: string }
   | { state: "error"; message: string };
 type Loaded = { state: "loading" } | { state: "ok"; clip: ClipView } | { state: "gone" } | { state: "error"; message: string };
-/** `undo`: the clip just deleted, which ⌘Z brings back. */
-type Notice = { kind: "ok" | "info" | "error"; text: string; undo?: string };
+/** `undo`: the clips just deleted, which ⌘Z brings back. */
+type Notice = { kind: "ok" | "info" | "error"; text: string; undo?: string[] };
+
+/** One picked clip is just the selected one: none are left picked. */
+const several = (ids: string[]) => (ids.length > 1 ? ids : []);
 
 /** How long "Sent" stays up before Spotlight gets out of the way. */
 const SENT_HIDE_MS = 5000;
@@ -31,6 +35,14 @@ export function Spotlight() {
   const [list, setList] = useState<List>({ state: "loading" });
   const [loaded, setLoaded] = useState<Record<string, Loaded>>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** ⌘/Ctrl- or Shift-clicked clips, in click order; two or more copy and delete together. */
+  const [picked, setPicked] = useState<string[]>([]);
+  /** When this computer copied which clips, to mark them. */
+  const [copied, setCopied] = useState<Copied>(loadCopied);
+  /** A clip whose big files are downloading: copied once they're done. */
+  const pendingCopy = useRef<string | null>(null);
+  /** Where a Shift-click range starts, and the picks it adds to (as in Finder and Explorer). */
+  const rangeFrom = useRef<{ id: string; picks: string[] } | null>(null);
   const [ttl, setTtl] = useState(15 * 60);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(false);
@@ -59,6 +71,22 @@ export function Spotlight() {
 
   const clips = list.state === "ok" ? list.clips.filter((c) => !deleting.includes(c.id)) : [];
   const selected = clips.find((c) => c.id === selectedId) ?? clips[0] ?? null;
+  const pickedClips = picked.flatMap((id) => clips.filter((c) => c.id === id));
+  /** Picks still in the list: expired or deleted ones don't come back. */
+  const pickedIds = pickedClips.map((c) => c.id);
+  const many = pickedClips.length > 1;
+  // Picks cleared (Esc, delete, expiry): a Shift-click starts afresh.
+  useEffect(() => {
+    if (!many) rangeFrom.current = null;
+  }, [many]);
+
+  const noteCopied = useCallback((ids: string[]) => {
+    setCopied((c) => {
+      const next = markCopied(c, ids, Date.now());
+      saveCopied(next);
+      return next;
+    });
+  }, []);
 
   const load = useCallback(async (id: string) => {
     if (requested.current.has(id)) return;
@@ -80,6 +108,11 @@ export function Spotlight() {
     try {
       const listed = await platform.listClips();
       setList({ state: "ok", clips: listed });
+      setCopied((c) => {
+        const next = pruneCopied(c, listed.map((clip) => clip.id));
+        saveCopied(next);
+        return next;
+      });
       const ids = new Set(listed.map((c) => c.id));
       for (const id of requested.current) if (!ids.has(id)) requested.current.delete(id);
       setLoaded((l) => Object.fromEntries(Object.entries(l).filter(([id]) => ids.has(id))));
@@ -110,6 +143,8 @@ export function Spotlight() {
     const onShown = () => {
       cancelHide();
       setSelectedId(null); // back to the newest
+      setPicked([]);
+      rangeFrom.current = null;
       setNotice(null);
       setBusy(false);
       refresh();
@@ -124,12 +159,16 @@ export function Spotlight() {
         if (!finished) return;
         setNotice({ kind: finished.ok ? "ok" : finished.cancelled ? "info" : "error", text: finished.message });
         if (finished.ok && finished.direction === "upload") reloadList();
+        if (finished.direction === "download") {
+          if (finished.ok && pendingCopy.current) noteCopied([pendingCopy.current]);
+          pendingCopy.current = null;
+        }
         // The files are on the clipboard now: paste them where you were.
         if (finished.ok && finished.direction === "download") platform.hideSpotlight();
       }),
     ];
     return () => subscriptions.forEach((s) => s.then((unsubscribe) => unsubscribe()));
-  }, [refresh, reloadList, cancelHide]);
+  }, [refresh, reloadList, cancelHide, noteCopied]);
 
   useEffect(() => {
     if (selected) load(selected.id);
@@ -145,14 +184,24 @@ export function Spotlight() {
     if (!selected || busy) return;
     setBusy(true);
     try {
-      // Big files download first; the transfer bar shows how far.
-      if (await platform.copyClip(selected.id)) platform.hideSpotlight(); // paste right away in the app that was in front
+      if (many) {
+        const ids = pickedClips.map((c) => c.id);
+        await platform.copyClips(ids);
+        noteCopied(ids);
+        platform.hideSpotlight();
+      } else if (await platform.copyClip(selected.id)) {
+        noteCopied([selected.id]);
+        platform.hideSpotlight(); // paste right away in the app that was in front
+      } else {
+        // Big files download first; the transfer bar shows how far.
+        pendingCopy.current = selected.id;
+      }
     } catch (e) {
       setNotice({ kind: "error", text: String(e) });
     } finally {
       setBusy(false);
     }
-  }, [selected, busy]);
+  }, [selected, busy, many, pickedClips, noteCopied]);
 
   const send = useCallback(async () => {
     if (busy) return;
@@ -190,7 +239,7 @@ export function Spotlight() {
     clearTimeout(pendingDeletes.current.get(id));
     pendingDeletes.current.delete(id);
     // Too late for ⌘Z now, so don't offer it.
-    setNotice((n) => (n?.undo === id ? null : n));
+    setNotice((n) => (n?.undo?.includes(id) ? null : n));
     try {
       await platform.deleteClip(id);
       setList((l) => (l.state === "ok" ? { ...l, clips: l.clips.filter((c) => c.id !== id) } : l));
@@ -204,22 +253,55 @@ export function Spotlight() {
   /** Hidden at once; deleted for every device unless ⌘Z comes first. */
   const remove = useCallback(() => {
     if (!selected || busy) return;
-    const id = selected.id;
-    const index = clips.indexOf(selected);
-    const rest = clips.filter((c) => c.id !== id);
-    setDeleting((d) => [...d, id]);
-    pendingDeletes.current.set(id, setTimeout(() => commitDelete(id), UNDO_MS));
-    setSelectedId(rest[Math.min(index, rest.length - 1)]?.id ?? null);
-    setNotice({ kind: "info", text: "Deleted", undo: id });
-  }, [selected, clips, busy, commitDelete]);
+    const ids = many ? pickedClips.map((c) => c.id) : [selected.id];
+    setDeleting((d) => [...d, ...ids]);
+    for (const id of ids) pendingDeletes.current.set(id, setTimeout(() => commitDelete(id), UNDO_MS));
+    setPicked([]);
+    // The selected clip stays if it wasn't deleted; else the next one that's left.
+    if (ids.includes(selected.id)) {
+      const index = clips.indexOf(selected);
+      const after = clips.slice(index).find((c) => !ids.includes(c.id));
+      const before = clips.slice(0, index).reverse().find((c) => !ids.includes(c.id));
+      setSelectedId((after ?? before)?.id ?? null);
+    }
+    setNotice({ kind: "info", text: ids.length > 1 ? `Deleted ${ids.length} clips` : "Deleted", undo: ids });
+  }, [selected, clips, busy, many, pickedClips, commitDelete]);
 
-  const undoDelete = useCallback((id: string) => {
-    clearTimeout(pendingDeletes.current.get(id));
-    pendingDeletes.current.delete(id);
-    setDeleting((d) => d.filter((x) => x !== id));
-    setSelectedId(id);
+  const undoDelete = useCallback((ids: string[]) => {
+    for (const id of ids) {
+      clearTimeout(pendingDeletes.current.get(id));
+      pendingDeletes.current.delete(id);
+    }
+    setDeleting((d) => d.filter((x) => !ids.includes(x)));
+    setSelectedId(ids[0]);
+    setPicked(ids.length > 1 ? ids : []);
     setNotice(null);
   }, []);
+
+  /** ⌘-click (Ctrl-click off a Mac) picks one more or one less, Shift-click a range; a plain click just selects. */
+  const click = (id: string, e: MouseEvent) => {
+    const how = (os === "macos" ? e.metaKey : e.ctrlKey) ? "toggle" : e.shiftKey ? "range" : "only";
+    if (how !== "only") {
+      e.preventDefault(); // Shift-click would select text
+      // ⌘C and ↵ then copy the picks, not text left highlighted in the preview.
+      window.getSelection()?.removeAllRanges();
+    }
+    const order = clips.map((c) => c.id);
+    if (how === "range") {
+      const kept = rangeFrom.current && order.includes(rangeFrom.current.id) ? rangeFrom.current : null;
+      const from = kept ?? { id: selected?.id ?? id, picks: many ? pickedIds : [] };
+      rangeFrom.current = from;
+      setPicked(several(pickAfterClick(from.picks, order, from.id, id, "range")));
+      setSelectedId(id);
+      return;
+    }
+    const next = how === "only" ? [] : several(pickAfterClick(pickedIds, order, selected?.id ?? null, id, how));
+    // Unpicking down to one clip: that one is what ↵ copies now, not the one just dropped.
+    const lone = how === "toggle" && next.length === 0 ? pickedIds.find((x) => x !== id) : undefined;
+    rangeFrom.current = { id: lone ?? id, picks: lone ? [] : next.filter((x) => x !== id) };
+    setPicked(next);
+    setSelectedId(lone ?? id);
+  };
 
   // Undo only lasts while Spotlight is open: hiding sends pending deletes now.
   // A click into the HTML preview doesn't count (see `onFocusLeft`).
@@ -240,6 +322,11 @@ export function Spotlight() {
       const key = e.key.toLowerCase();
       const handled = () => e.preventDefault();
 
+      if (e.key === "Escape" && many) {
+        handled();
+        setPicked([]);
+        return;
+      }
       if (e.key === "Escape" || (sent && mod && key === "v")) {
         handled();
         platform.hideSpotlight();
@@ -259,9 +346,23 @@ export function Spotlight() {
       } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         handled();
         if (!selected) return;
-        const next = clips.indexOf(selected) + (e.key === "ArrowDown" ? 1 : -1);
-        if (clips[next]) setSelectedId(clips[next].id);
-      } else if (mod && key === "c" && window.getSelection()?.toString()) {
+        const next = clips[clips.indexOf(selected) + (e.key === "ArrowDown" ? 1 : -1)];
+        if (!next) return;
+        // Shift+arrow picks as it goes, and unpicks going back.
+        if (e.shiftKey) {
+          setPicked(several(stepPick(pickedIds, selected.id, next.id)));
+        } else {
+          setPicked([]);
+          rangeFrom.current = null;
+        }
+        setSelectedId(next.id);
+      } else if (mod && key === "a" && !window.getSelection()?.toString()) {
+        // With text highlighted in the preview, ⌘A selects text as usual.
+        handled();
+        setPicked(several(clips.map((c) => c.id)));
+        // A Shift-click after picking all picks just that range.
+        rangeFrom.current = selected ? { id: selected.id, picks: [] } : null;
+      } else if (mod && key === "c" && !many && window.getSelection()?.toString()) {
         // Text selected in the preview: let ⌘C copy just that.
       } else if (e.key === "Enter" || (mod && key === "c")) {
         handled();
@@ -285,7 +386,7 @@ export function Spotlight() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [os, status, clips, selected, choices, ttl, sent, notice, copy, send, remove, undoDelete, changeTtl, cancelHide]);
+  }, [os, status, clips, selected, many, pickedIds, choices, ttl, sent, notice, copy, send, remove, undoDelete, changeTtl, cancelHide]);
 
   const space = status?.space ?? null;
   const selectedLoaded = selected ? loaded[selected.id] : undefined;
@@ -335,7 +436,13 @@ export function Spotlight() {
           />
         ) : list.state === "ok" && selected ? (
           <div className="split">
-            <ul className="clips" role="listbox" aria-label="Clips" aria-activedescendant={`clip-${selected.id}`}>
+            <ul
+              className="clips"
+              role="listbox"
+              aria-label="Clips"
+              aria-multiselectable="true"
+              aria-activedescendant={`clip-${selected.id}`}
+            >
               {clips.map((clip) => (
                 <ClipRow
                   key={clip.id}
@@ -343,12 +450,14 @@ export function Spotlight() {
                   loaded={loaded[clip.id]}
                   now={now}
                   selected={clip.id === selected.id}
-                  onSelect={() => setSelectedId(clip.id)}
+                  picked={many && picked.includes(clip.id)}
+                  copiedAt={copied[clip.id]}
+                  onSelect={(e) => click(clip.id, e)}
                   onCopy={copy}
                 />
               ))}
             </ul>
-            <Preview meta={selected} loaded={loaded[selected.id]} now={now} />
+            <Preview meta={selected} loaded={loaded[selected.id]} now={now} copiedAt={copied[selected.id]} />
           </div>
         ) : null}
       </section>
@@ -377,11 +486,19 @@ export function Spotlight() {
       <footer className="panel-footer">
         {space && (
           <>
-            {selected && (
+            {selected && many ? (
               <>
-                <Hint keys="↵" label={selectedHasFiles ? "save & copy" : "copy"} />
-                <Hint keys={os === "macos" ? "⌘⌫" : "Del"} label="delete" />
+                <Hint keys="↵" label={`copy ${pickedClips.length}`} />
+                <Hint keys={os === "macos" ? "⌘⌫" : "Del"} label={`delete ${pickedClips.length}`} />
+                <Hint keys="esc" label="unpick" />
               </>
+            ) : (
+              selected && (
+                <>
+                  <Hint keys="↵" label={selectedHasFiles ? "save & copy" : "copy"} />
+                  <Hint keys={os === "macos" ? "⌘⌫" : "Del"} label="delete" />
+                </>
+              )
             )}
             <Hint keys={modKey(os, "V")} label="send clipboard" />
             <label className="ttl tip tip-above" data-tip="Tab / Shift+Tab to change">
@@ -408,10 +525,14 @@ function ClipRow(props: {
   loaded: Loaded | undefined;
   now: number;
   selected: boolean;
-  onSelect: () => void;
+  /** One of several picked clips. */
+  picked: boolean;
+  /** When this computer copied it, if it did. */
+  copiedAt: number | undefined;
+  onSelect: (e: MouseEvent) => void;
   onCopy: () => void;
 }) {
-  const { meta, loaded, now, selected } = props;
+  const { meta, loaded, now, selected, picked, copiedAt } = props;
   const ref = useRef<HTMLLIElement>(null);
   useEffect(() => {
     if (selected) ref.current?.scrollIntoView({ block: "nearest" });
@@ -439,10 +560,11 @@ function ClipRow(props: {
       ref={ref}
       id={`clip-${meta.id}`}
       role="option"
-      aria-selected={selected}
-      className={selected ? "clip selected" : "clip"}
+      aria-selected={selected || picked}
+      className={["clip", selected && "selected", picked && "picked"].filter(Boolean).join(" ")}
       onMouseDown={props.onSelect}
-      onDoubleClick={props.onCopy}
+      // Double-clicking copies; a quick ⌘/Ctrl- or Shift-click twice is picking.
+      onDoubleClick={(e) => !(e.metaKey || e.ctrlKey || e.shiftKey) && props.onCopy()}
     >
       <span className="clip-icon">
         <KindIcon kind={icon} />
@@ -451,12 +573,15 @@ function ClipRow(props: {
         <span className="clip-title">{title}</span>
         <span className="clip-meta">{detail}</span>
       </span>
+      {copiedAt !== undefined && <span className="copied-tag">Copied</span>}
     </li>
   );
 }
 
-function Preview({ meta, loaded, now }: { meta: ClipMeta; loaded: Loaded | undefined; now: number }) {
-  const expires = `expires in ${formatDuration(meta.expires_at_ms - now)}`;
+function Preview(props: { meta: ClipMeta; loaded: Loaded | undefined; now: number; copiedAt: number | undefined }) {
+  const { meta, loaded, now, copiedAt } = props;
+  const copiedAgo = copiedAt === undefined ? "" : ` · copied ${formatDuration(now - copiedAt)} ago`;
+  const expires = `expires in ${formatDuration(meta.expires_at_ms - now)}${copiedAgo}`;
   if (!loaded || loaded.state === "loading") {
     return <PreviewShell footer={expires}><p className="preview-note">Decrypting…</p></PreviewShell>;
   }

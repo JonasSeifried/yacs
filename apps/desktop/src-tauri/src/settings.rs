@@ -17,6 +17,9 @@ pub struct Settings {
     pub hotkey: String,
     /// Preselected expiry in the Spotlight TTL dropdown.
     pub default_ttl_secs: u64,
+    /// The hotkey does nothing while a full-screen app (a game, say) is in
+    /// front, see `fullscreen`.
+    pub ignore_hotkey_in_fullscreen: bool,
 }
 
 impl Default for Settings {
@@ -25,6 +28,7 @@ impl Default for Settings {
             device_name: gethostname::gethostname().to_string_lossy().into_owned(),
             hotkey: DEFAULT_HOTKEY.into(),
             default_ttl_secs: DEFAULT_TTL_SECS,
+            ignore_hotkey_in_fullscreen: true,
         }
     }
 }
@@ -81,6 +85,7 @@ mod tests {
             device_name: "MacBook".into(),
             hotkey: "Alt+Space".into(),
             default_ttl_secs: 3600,
+            ignore_hotkey_in_fullscreen: false,
         };
         file.save(&settings).unwrap();
         assert_eq!(file.load(), settings);
@@ -93,6 +98,7 @@ mod tests {
         let settings = SettingsFile::new(dir.path()).load();
         assert_eq!(settings.device_name, "PC");
         assert_eq!(settings.hotkey, DEFAULT_HOTKEY);
+        assert!(settings.ignore_hotkey_in_fullscreen);
     }
 
     #[test]

@@ -1,4 +1,14 @@
-import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type FormEvent,
+  type MouseEvent,
+  type PointerEvent,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   DEFAULT_SPACE_NAME,
   type Decrypted,
@@ -23,10 +33,12 @@ import {
 } from "../platform/web";
 import { EAGER_CONCURRENCY, loadsEagerly, runLimited } from "../shared/async";
 import { clipTitle, isImageMime, previewDocument, previewKind } from "../shared/clip";
+import { type Copied, joinTexts, loadCopied, markCopied, pickAfterClick, pruneCopied, saveCopied } from "../shared/picks";
 import { PUBLIC_RELAY, describeLimits, maxTtlSecs } from "../shared/plan";
+import { guessOs } from "../shared/hotkey";
 import { inlineFileLimit, streamTotal } from "../shared/stream";
 import { formatDuration, formatSize, ttlChoices } from "../shared/time";
-import type { ClipItem, ClipMeta, ServerConfig, SpaceLimits } from "../shared/types";
+import type { Clip, ClipItem, ClipMeta, ServerConfig, SpaceLimits } from "../shared/types";
 import { canCopy, canSave, copyClip, fileItem, pick, readClipboard, savable, shareFiles } from "./clipboard";
 import {
   type DesktopOs,
@@ -58,6 +70,8 @@ const DESKTOP_DOWNLOADS: Record<DesktopOs, { label: string; href: string }> = {
 const PROGRESS_BYTES = 256 * 1024;
 /** While the app is open without a live connection, look for new clips this often. */
 const POLL_MS = 10_000;
+/** Holding a clip this long starts picking several. */
+const LONG_PRESS_MS = 450;
 /** How often relative times ("2 min ago") are redrawn. */
 const TICK_MS = 30_000;
 const LIVE_RETRY_MIN_MS = 1_000;
@@ -554,7 +568,8 @@ type Progress = { done: number; total: number; cancel: () => void };
 class Cancelled extends Error {}
 type Loaded = { state: "loading" } | { state: "ok"; clip: Decrypted } | { state: "gone" } | { state: "error"; message: string };
 /** `undo`: the clip just deleted, which the toast's Undo brings back. */
-type Toast = { kind: "ok" | "error"; text: string; undo?: string };
+/** `undo`: the clips just deleted, which Undo brings back. */
+type Toast = { kind: "ok" | "error"; text: string; undo?: string[] };
 
 /** A delete waits this long for Undo before it goes to the relay (for every device). */
 const UNDO_MS = 5000;
@@ -568,6 +583,12 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
   const [list, setList] = useState<List>({ state: "loading" });
   const [loaded, setLoaded] = useState<Record<string, Loaded>>({});
   const [openId, setOpenId] = useState<string | null>(null);
+  /** Clips picked to copy or delete together, in pick order. Any at all: picking mode. */
+  const [picked, setPicked] = useState<string[]>([]);
+  /** When this device copied which clips, to mark them. */
+  const [copied, setCopied] = useState<Copied>(loadCopied);
+  /** Where a Shift-click range starts, and the picks it adds to. */
+  const rangeFrom = useRef<{ id: string; picks: string[] } | null>(null);
   const [ttl, setTtl] = useState(() => Number(localStorage.getItem(TTL_KEY)) || 15 * 60);
   const [toast, setToast] = useState<Toast | null>(null);
   const [settings, setSettings] = useState(false);
@@ -589,7 +610,7 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
     forgetDownloads();
   }, []);
 
-  const notify = useCallback((kind: Toast["kind"], text: string, undo?: string) => {
+  const notify = useCallback((kind: Toast["kind"], text: string, undo?: string[]) => {
     clearTimeout(toastTimer.current);
     setToast({ kind, text, undo });
     toastTimer.current = setTimeout(() => setToast(null), undo ? UNDO_MS : kind === "ok" ? 2500 : 6000);
@@ -620,6 +641,11 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
     try {
       const listed = await client.list();
       setList({ state: "ok", clips: listed });
+      setCopied((c) => {
+        const next = pruneCopied(c, listed.map((clip) => clip.id));
+        saveCopied(next);
+        return next;
+      });
       const ids = new Set(listed.map((c) => c.id));
       for (const id of requested.current) if (!ids.has(id)) requested.current.delete(id);
       setLoaded((l) => Object.fromEntries(Object.entries(l).filter(([id]) => ids.has(id))));
@@ -660,6 +686,95 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
   useEffect(() => {
     if (open) load(open.id);
   }, [open, load]);
+  const pickedClips = picked.flatMap((id) => clips.filter((c) => c.id === id));
+  /** Picks still in the list: expired or deleted ones don't come back. */
+  const pickedIds = pickedClips.map((c) => c.id);
+  const picking = pickedClips.length > 0;
+  // Picks cleared (Done, Cancel, a copy, a delete, expiry): a Shift-click starts afresh.
+  useEffect(() => {
+    if (!picking) rangeFrom.current = null;
+  }, [picking]);
+  // Copying several must not wait for decryption once tapped (Safari).
+  useEffect(() => {
+    for (const id of picked) load(id);
+  }, [picked, load]);
+
+  const noteCopied = useCallback((ids: string[]) => {
+    setCopied((c) => {
+      const next = markCopied(c, ids, Date.now());
+      saveCopied(next);
+      return next;
+    });
+  }, []);
+
+  /** A tap while picking, or a ⌘/Ctrl- or Shift-click, picks; a plain click opens. */
+  const clickClip = (id: string, e: MouseEvent) => {
+    // ⌘ on a Mac, where Ctrl-click is a right-click.
+    const mod = guessOs() === "macos" ? e.metaKey : e.ctrlKey;
+    const how = mod ? "toggle" : e.shiftKey ? "range" : picking ? "toggle" : null;
+    if (!how) {
+      setOpenId(id);
+      rangeFrom.current = null;
+      return;
+    }
+    e.preventDefault();
+    const order = clips.map((c) => c.id);
+    if (how === "range") {
+      // From the last clip clicked, or else the open one.
+      const kept = rangeFrom.current && order.includes(rangeFrom.current.id) ? rangeFrom.current : null;
+      const from = kept ?? { id: open?.id ?? id, picks: picking ? pickedIds : [] };
+      rangeFrom.current = from;
+      setPicked(pickAfterClick(from.picks, order, from.id, id, "range"));
+      return;
+    }
+    const next = pickAfterClick(pickedIds, order, picking ? null : (open?.id ?? null), id, how);
+    rangeFrom.current = { id, picks: next.filter((x) => x !== id) };
+    setPicked(next);
+  };
+
+  /** Esc stops picking, on a computer (once Settings, over it, is closed). */
+  useEffect(() => {
+    if (!picking || settings) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setPicked([]);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [picking, settings]);
+
+  /** Straight from the tap (Safari). One clip copies as usual; several, their text a line apart. */
+  const copyPicked = () => {
+    const clips: Clip[] = [];
+    for (const c of pickedClips) {
+      const l = loaded[c.id];
+      if (l?.state === "gone") {
+        setPicked(pickedIds.filter((id) => id !== c.id));
+        return notify("error", "One of them expired or was deleted, so it's unpicked. Tap Copy again for the rest.");
+      }
+      if (l?.state === "error") {
+        load(c.id); // a failed decrypt tries again
+        return notify("error", "One of them couldn't be decrypted. Trying again; tap Copy in a moment.");
+      }
+      if (l?.state !== "ok") return notify("error", "Still decrypting. Try again in a moment.");
+      clips.push(l.clip.clip);
+    }
+    const ids = pickedClips.map((c) => c.id);
+    let write: Promise<void>;
+    if (clips.length === 1) {
+      write = copyClip(clips[0]); // just one: images, files and formatting as usual
+    } else {
+      const texts = clips.map((c) => pick(c, "Text"));
+      if (texts.some((t) => t === undefined)) return notify("error", "Only text can be copied together. Copy files and images one at a time.");
+      if (!navigator.clipboard) return notify("error", "The clipboard only works on an https:// address.");
+      write = navigator.clipboard.writeText(joinTexts(texts as string[]));
+    }
+    write.then(
+      () => {
+        noteCopied(ids);
+        setPicked([]);
+        notify("ok", ids.length === 1 ? "Copied" : `Copied ${ids.length} clips`);
+      },
+      (e) => notify("error", errorText(e)),
+    );
+  };
 
   const changeTtl = (secs: number) => {
     setTtl(secs);
@@ -699,7 +814,7 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
       clearTimeout(pendingDeletes.current.get(id));
       pendingDeletes.current.delete(id);
       // Too late for Undo now, so don't offer it.
-      setToast((t) => (t?.undo === id ? null : t));
+      setToast((t) => (t?.undo?.includes(id) ? null : t));
       try {
         await client.delete(id);
         setList((l) => (l.state === "ok" ? { ...l, clips: l.clips.filter((c) => c.id !== id) } : l));
@@ -713,17 +828,20 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
   );
 
   /** Hidden at once; deleted for every device unless Undo comes first. */
-  const remove = (id: string) => {
-    setDeleting((d) => [...d, id]);
-    pendingDeletes.current.set(id, setTimeout(() => commitDelete(id), UNDO_MS));
-    notify("ok", "Deleted", id);
+  const remove = (ids: string[]) => {
+    setDeleting((d) => [...d, ...ids]);
+    for (const id of ids) pendingDeletes.current.set(id, setTimeout(() => commitDelete(id), UNDO_MS));
+    setPicked([]);
+    notify("ok", ids.length === 1 ? "Deleted" : `Deleted ${ids.length} clips`, ids);
   };
 
-  const undoDelete = (id: string) => {
-    clearTimeout(pendingDeletes.current.get(id));
-    pendingDeletes.current.delete(id);
-    setDeleting((d) => d.filter((x) => x !== id));
-    setOpenId(id);
+  const undoDelete = (ids: string[]) => {
+    for (const id of ids) {
+      clearTimeout(pendingDeletes.current.get(id));
+      pendingDeletes.current.delete(id);
+    }
+    setDeleting((d) => d.filter((x) => !ids.includes(x)));
+    setOpenId(ids[0]);
     clearTimeout(toastTimer.current);
     setToast(null);
   };
@@ -808,12 +926,18 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
         onError={(text) => notify("error", text)}
       />
 
-      <section className="history">
+      <section className={picking ? "history picking" : "history"}>
         <div className="history-head">
           <h2>History</h2>
-          <button className="link" onClick={refresh}>
-            Refresh
-          </button>
+          {picking ? (
+            <button className="link" onClick={() => setPicked([])}>
+              Done
+            </button>
+          ) : (
+            <button className="link" onClick={refresh}>
+              Refresh
+            </button>
+          )}
         </div>
         {list.state === "loading" && <p className="muted center">Loading…</p>}
         {list.state === "error" && <p className="error center">{list.message}</p>}
@@ -827,10 +951,19 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
             meta={meta}
             loaded={loaded[meta.id]}
             now={now}
-            open={meta.id === open?.id}
-            onOpen={() => setOpenId(meta.id)}
-            onCopied={() => notify("ok", "Copied")}
-            onDelete={() => remove(meta.id)}
+            open={!picking && meta.id === open?.id}
+            picked={picked.includes(meta.id)}
+            copiedAt={copied[meta.id]}
+            onClick={(e) => clickClip(meta.id, e)}
+            onLongPress={() => {
+              rangeFrom.current = { id: meta.id, picks: pickedIds.filter((x) => x !== meta.id) };
+              setPicked(pickedIds.includes(meta.id) ? pickedIds : [...pickedIds, meta.id]);
+            }}
+            onCopied={() => {
+              noteCopied([meta.id]);
+              notify("ok", "Copied");
+            }}
+            onDelete={() => remove([meta.id])}
             onError={(text) => notify("error", text)}
             onSaved={(text) => notify("ok", text)}
             client={client}
@@ -838,8 +971,22 @@ function Home(props: { stored: Stored; current: Session; addFirst: boolean; onCh
         ))}
       </section>
 
+      {picking && (
+        <div className="pick-bar" role="toolbar" aria-label="Picked clips">
+          <span className="pick-count">{pickedClips.length} picked</span>
+          <button className="primary" onClick={copyPicked}>
+            Copy
+          </button>
+          <button className="ghost danger" onClick={() => remove(pickedClips.map((c) => c.id))}>
+            Delete
+          </button>
+          <button className="ghost" onClick={() => setPicked([])}>
+            Cancel
+          </button>
+        </div>
+      )}
       {toast && (
-        <div className={`toast ${toast.kind}`} role="status">
+        <div className={`toast ${toast.kind}${picking ? " above-bar" : ""}`} role="status">
           {toast.text}
           {toast.undo && (
             <button className="toast-action" onClick={() => undoDelete(toast.undo!)}>
@@ -1037,15 +1184,21 @@ function ClipCard(props: {
   loaded: Loaded | undefined;
   now: number;
   open: boolean;
-  onOpen: () => void;
+  picked: boolean;
+  /** When this device copied it, if it did. */
+  copiedAt: number | undefined;
+  onClick: (e: MouseEvent) => void;
+  /** Held down on a touch screen: starts picking. */
+  onLongPress: () => void;
   onCopied: () => void;
   onDelete: () => void;
   onError: (text: string) => void;
   onSaved: (text: string) => void;
   client: WebClient;
 }) {
-  const { meta, loaded, now, open } = props;
+  const { meta, loaded, now, open, picked, copiedAt } = props;
   const [download, setDownload] = useState<Progress | null>(null);
+  const press = useLongPress(props.onLongPress);
   /** Downloaded files waiting for a tap to share them (iOS wants a fresh one). */
   const [ready, setReady] = useState<File[] | null>(null);
   useTransfer(download !== null);
@@ -1101,9 +1254,22 @@ function ClipCard(props: {
       .catch((e) => props.onError(errorText(e)));
 
   return (
-    <article className={open ? "card clip open" : "card clip"} onClick={open ? undefined : props.onOpen}>
-      <div className="clip-head">
-        <span className={decrypted ? "clip-title" : "clip-title muted"}>{title}</span>
+    <article
+      className={["card clip", open && "open", picked && "picked"].filter(Boolean).join(" ")}
+      aria-selected={picked}
+      onPointerDownCapture={press.reset}
+      onClick={(e) => {
+        if (press.consumeClick()) return;
+        // Buttons and the preview inside an open clip keep their own clicks.
+        const inside = (e.target as Element).closest("button, a, input, select, .clip-body");
+        if (!open || ((e.metaKey || e.ctrlKey || e.shiftKey) && !inside)) props.onClick(e);
+      }}
+    >
+      <div className="clip-head" {...press.handlers}>
+        <span className="clip-head-row">
+          <span className={decrypted ? "clip-title" : "clip-title muted"}>{title}</span>
+          {copiedAt !== undefined && <span className="copied-tag">Copied</span>}
+        </span>
         <span className="clip-meta">{detail}</span>
       </div>
       {open && (
@@ -1159,6 +1325,61 @@ function ClipCard(props: {
       )}
     </article>
   );
+}
+
+/** Calls `onPress` when a finger stays down (and still) long enough; mice and pens use clicks. */
+function useLongPress(onPress: () => void) {
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const start = useRef<{ x: number; y: number } | null>(null);
+  /** A press fired: the click its release may bring is swallowed. */
+  const fired = useRef(false);
+  const cancel = () => {
+    clearTimeout(timer.current);
+    start.current = null;
+  };
+  useEffect(() => cancel, []);
+  return {
+    /** Whether this click ends a long press (then it's used up). */
+    consumeClick: () => {
+      const was = fired.current;
+      fired.current = false;
+      return was;
+    },
+    /** Any new touch or click on the card: a press that brought no click is done with. */
+    reset: () => {
+      fired.current = false;
+    },
+    handlers: {
+      onPointerDown: (e: PointerEvent) => {
+        if (e.pointerType !== "touch") return;
+        start.current = { x: e.clientX, y: e.clientY };
+        clearTimeout(timer.current);
+        timer.current = setTimeout(() => {
+          fired.current = true;
+          start.current = null;
+          navigator.vibrate?.(10);
+          onPress();
+        }, LONG_PRESS_MS);
+      },
+      onPointerMove: (e: PointerEvent) => {
+        const s = start.current;
+        if (s && Math.hypot(e.clientX - s.x, e.clientY - s.y) > 10) cancel();
+      },
+      onPointerUp: cancel,
+      onPointerCancel: cancel,
+      onContextMenu: (e: MouseEvent) => {
+        // Android's own long-press menu can come first: holding picks instead.
+        if (!start.current && !fired.current) return;
+        e.preventDefault();
+        if (!fired.current) {
+          clearTimeout(timer.current);
+          start.current = null;
+          fired.current = true;
+          onPress();
+        }
+      },
+    },
+  };
 }
 
 function ClipPreview({ clip }: { clip: Decrypted }) {

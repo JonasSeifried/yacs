@@ -110,6 +110,8 @@ export interface Status {
   hotkeyError: string | null;
   /** Wayland: the user binds this in their desktop instead of recording a hotkey. */
   manualShortcut: ManualShortcut | null;
+  /** The hotkey does nothing while a full-screen app (a game, say) is in front. */
+  ignoreHotkeyInFullscreen: boolean;
   defaultTtlSecs: number;
   autostart: boolean;
   os: Os;
@@ -165,6 +167,7 @@ export interface Invite {
 export interface Preferences {
   deviceName: string;
   hotkey: string;
+  ignoreHotkeyInFullscreen: boolean;
   defaultTtlSecs: number;
   autostart: boolean;
 }

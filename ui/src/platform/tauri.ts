@@ -19,6 +19,7 @@ export const tauriPlatform: Platform = {
     return new Blob([bytes]);
   },
   copyClip: (id) => invoke("copy_clip", { id }),
+  copyClips: (ids) => invoke("copy_clips", { ids }),
   sendClipboard: (ttlSecs, onProgress) => {
     const channel = new Channel<{ done: number; total: number }>();
     channel.onmessage = ({ done, total }) => onProgress(done, total);

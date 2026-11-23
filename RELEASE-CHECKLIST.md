@@ -27,6 +27,17 @@ Checks after a release, on the real apps, instead of building on every platform 
 **CLI**
 - [ ] `yacs update`, then `yacs --version` shows the new version; `yacs send --text hi` and `yacs recv` work.
 
+## Next release (after 0.7.5)
+
+**Shortcut over games** (Windows)
+- [ ] In a game in borderless and in exclusive full screen, the shortcut does nothing; with the game on one monitor, clicking into a window on the other and pressing it opens Spotlight.
+- [ ] A maximized browser, with the taskbar set to auto-hide, still opens Spotlight; so does the desktop. Unticking the setting makes the shortcut work over the game again.
+
+**Picking several clips**
+- [ ] Spotlight: ⌘-click (Ctrl-click on Windows/Linux), Shift-click and Shift+arrows pick several; ↵ copies their text a line apart, or their files together; delete removes them and undo brings them back. Copied clips show "Copied".
+- [ ] Phone: holding a clip starts picking, taps add more, Copy copies their text; one picked image copies as an image. Android's own long-press menu doesn't show.
+- [ ] Web on a computer: Ctrl/⌘-click and Shift-click pick, Esc stops picking.
+
 ## 0.7.5
 
 **Watchtower** (the relay on 0.7.4 until then)

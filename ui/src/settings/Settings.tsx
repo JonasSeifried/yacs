@@ -675,6 +675,7 @@ function PreferencesForm({ status, maxTtlSecs }: { status: Status; maxTtlSecs: n
   const fromStatus = (s: Status): Preferences => ({
     deviceName: s.deviceName,
     hotkey: s.hotkey,
+    ignoreHotkeyInFullscreen: s.ignoreHotkeyInFullscreen,
     defaultTtlSecs: s.defaultTtlSecs,
     autostart: s.autostart,
   });
@@ -751,6 +752,16 @@ function PreferencesForm({ status, maxTtlSecs }: { status: Status; maxTtlSecs: n
           <HotkeyRecorder value={prefs.hotkey} os={status.os} onChange={(v) => set("hotkey", v)} />
           {status.hotkeyError && <span className="error">{status.hotkeyError}</span>}
         </div>
+      )}
+      {status.os === "windows" && (
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={prefs.ignoreHotkeyInFullscreen}
+            onChange={(e) => set("ignoreHotkeyInFullscreen", e.target.checked)}
+          />
+          Ignore the shortcut while a full-screen app is in front, like a game
+        </label>
       )}
       <label>
         Default expiry for sent clips

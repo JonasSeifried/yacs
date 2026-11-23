@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use clipboard_rs::common::{RustImage, RustImageData};
 use clipboard_rs::{Clipboard, ClipboardContent, ClipboardContext, ContentFormat};
-use yacs_core::{ClipItem, Image};
+use yacs_core::{Clip, ClipItem, Image};
 
 const PNG_MIME: &str = "image/png";
 const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
@@ -287,6 +287,49 @@ pub fn write(items: &[ClipItem]) -> Result<(), String> {
         .map_err(|e| format!("couldn't write to the clipboard: {e}"))
 }
 
+/// What copying several clips at once puts on the clipboard, in the order
+/// given: all their files, if each is files only, or else their plain text,
+/// a line apart. The clipboard holds one image and one piece of formatted
+/// text, so images and formatting don't combine.
+pub fn combine(clips: &[&Clip]) -> Result<Vec<ClipItem>, String> {
+    if clips.is_empty() {
+        return Err("nothing to copy".into());
+    }
+    let is_file = |item: &ClipItem| matches!(item, ClipItem::File(_));
+    if clips
+        .iter()
+        .any(|c| c.items.iter().any(|i| matches!(i, ClipItem::Stream(_))))
+    {
+        return Err("big files copy one clip at a time".into());
+    }
+    if clips.iter().all(|c| c.items.iter().any(is_file)) {
+        return Ok(clips
+            .iter()
+            .flat_map(|c| c.items.iter().filter(|i| is_file(i)).cloned())
+            .collect());
+    }
+    let texts: Option<Vec<&str>> = clips
+        .iter()
+        .map(|c| {
+            c.items.iter().find_map(|item| match item {
+                ClipItem::Text(text) => Some(text.as_str()),
+                _ => None,
+            })
+        })
+        .collect();
+    let Some(texts) = texts else {
+        return Err("these can't be copied together: pick only text, or only files".into());
+    };
+    let mut joined = String::new();
+    for text in texts {
+        if !joined.is_empty() && !joined.ends_with('\n') {
+            joined.push('\n');
+        }
+        joined.push_str(text);
+    }
+    Ok(vec![ClipItem::Text(joined)])
+}
+
 fn context() -> Result<ClipboardContext, String> {
     ClipboardContext::new().map_err(|e| format!("can't open the clipboard: {e}"))
 }
@@ -314,6 +357,55 @@ mod tests {
     use image::ImageFormat;
 
     use super::*;
+
+    fn clip(items: Vec<ClipItem>) -> Clip {
+        Clip {
+            created_at_ms: 0,
+            device_name: "PC".into(),
+            items,
+        }
+    }
+
+    fn file(name: &str) -> ClipItem {
+        ClipItem::File(yacs_core::File {
+            name: name.into(),
+            mime: "text/plain".into(),
+            data: b"hi".to_vec(),
+        })
+    }
+
+    #[test]
+    fn combines_text_a_line_apart() {
+        let a = clip(vec![
+            ClipItem::Text("one".into()),
+            ClipItem::Html("<b>one</b>".into()),
+        ]);
+        let b = clip(vec![ClipItem::Text("two\n".into())]);
+        let c = clip(vec![ClipItem::Text("three".into())]);
+        assert_eq!(
+            combine(&[&a, &b, &c]).unwrap(),
+            vec![ClipItem::Text("one\ntwo\nthree".into())]
+        );
+    }
+
+    #[test]
+    fn combines_files() {
+        let a = clip(vec![file("a.txt")]);
+        let b = clip(vec![file("b.txt"), file("c.txt")]);
+        assert_eq!(
+            combine(&[&a, &b]).unwrap(),
+            vec![file("a.txt"), file("b.txt"), file("c.txt")]
+        );
+    }
+
+    #[test]
+    fn wont_mix_images_or_files_with_text() {
+        let text = clip(vec![ClipItem::Text("one".into())]);
+        let image = clip(vec![ClipItem::Image(png(vec![1]))]);
+        assert!(combine(&[&text, &image]).is_err());
+        // A file and text: the text wins only if each clip has some.
+        assert!(combine(&[&text, &clip(vec![file("a.txt")])]).is_err());
+    }
 
     fn encoded(format: image::ImageFormat) -> Vec<u8> {
         let mut out = std::io::Cursor::new(Vec::new());

@@ -6,6 +6,7 @@ mod clipboard;
 mod clips;
 mod codes;
 mod commands;
+mod fullscreen;
 mod hotkey;
 mod live;
 mod pairing;
@@ -54,9 +55,20 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
-                    if event.state == ShortcutState::Pressed {
-                        windows::toggle_spotlight(app);
+                    if event.state != ShortcutState::Pressed {
+                        return;
                     }
+                    // Not over a game: Spotlight would take its focus. Closing
+                    // Spotlight always works.
+                    let ignore = app
+                        .state::<AppState>()
+                        .settings()
+                        .ignore_hotkey_in_fullscreen;
+                    if ignore && !windows::spotlight_open(app) && fullscreen::app_in_front() {
+                        tracing::debug!("hotkey ignored: a full-screen app is in front");
+                        return;
+                    }
+                    windows::toggle_spotlight(app);
                 })
                 .build(),
         )
@@ -117,6 +129,7 @@ pub fn run() {
             commands::get_clip,
             commands::clip_image,
             commands::copy_clip,
+            commands::copy_clips,
             commands::send_clipboard,
             commands::transfer_status,
             commands::cancel_transfer,

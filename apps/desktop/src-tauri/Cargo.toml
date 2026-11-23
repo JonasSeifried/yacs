@@ -41,7 +41,7 @@ yacs-core = { version = "0.7.5", path = "../../../crates/yacs-core" }
 # The versions wry uses: only for the WebView2 settings Tauri doesn't expose.
 webview2-com = "0.38.2"
 windows-core = "0.61.2"
-windows-sys = { version = "0.61.2", features = ["Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging"] }
 winreg = "0.55.0"
 
 [dev-dependencies]
